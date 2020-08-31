@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,19 +18,17 @@
 
 package org.apache.zookeeper.test;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.AfterClass;
+import org.junit.BeforeClass;
 
 public class ClientSkipACLTest extends ClientTest {
-
-    @BeforeAll
-    public static void setup() {
+    @BeforeClass
+    static public void setup() {
         System.setProperty("zookeeper.skipACL", "yes");
     }
 
-    @AfterAll
-    public static void teardown() {
+    @AfterClass
+    static public void teardown() {
         System.clearProperty("zookeeper.skipACL");
     }
-
 }

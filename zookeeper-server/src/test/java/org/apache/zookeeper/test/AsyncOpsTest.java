@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,41 +18,42 @@
 
 package org.apache.zookeeper.test;
 
+import java.lang.Exception;
 import java.util.concurrent.CountDownLatch;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.test.AsyncOps.ACLCB;
 import org.apache.zookeeper.test.AsyncOps.Children2CB;
 import org.apache.zookeeper.test.AsyncOps.ChildrenCB;
 import org.apache.zookeeper.test.AsyncOps.Create2CB;
 import org.apache.zookeeper.test.AsyncOps.DataCB;
-import org.apache.zookeeper.test.AsyncOps.MultiCB;
 import org.apache.zookeeper.test.AsyncOps.StatCB;
 import org.apache.zookeeper.test.AsyncOps.StringCB;
 import org.apache.zookeeper.test.AsyncOps.VoidCB;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.test.AsyncOps.MultiCB;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 public class AsyncOpsTest extends ClientBase {
-
     private static final Logger LOG = LoggerFactory.getLogger(AsyncOpsTest.class);
 
     private ZooKeeper zk;
 
-    @BeforeEach
+    @Before
     @Override
     public void setUp() throws Exception {
         super.setUp();
 
-        LOG.info("Creating client {}", getTestName());
+        LOG.info("Creating client " + getTestName());
 
         zk = createClient();
         zk.addAuthInfo("digest", "ben:passwd".getBytes());
     }
 
-    @AfterEach
+    @After
     @Override
     public void tearDown() throws Exception {
         zk.close();
@@ -116,6 +117,7 @@ public class AsyncOpsTest extends ClientBase {
     public void testAsyncCreate2Failure_NoNode() {
         new Create2CB(zk).verifyCreateFailure_NoNode();
     }
+
 
     @Test
     public void testAsyncCreate2Failure_NoChildForEphemeral() {
@@ -258,13 +260,12 @@ public class AsyncOpsTest extends ClientBase {
     }
 
     @Test
-    public void testAsyncMultiFailure_NoSideEffect() throws Exception {
+    public void testAsyncMultiFailure_NoSideEffect() throws Exception{
         new MultiCB(zk).verifyMultiFailure_NoSideEffect();
     }
 
     @Test
-    public void testAsyncMultiSequential_NoSideEffect() throws Exception {
+    public void testAsyncMultiSequential_NoSideEffect() throws Exception{
         new MultiCB(zk).verifyMultiSequential_NoSideEffect();
     }
-
 }

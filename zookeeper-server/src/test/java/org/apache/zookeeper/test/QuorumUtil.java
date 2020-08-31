@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,9 +18,6 @@
 
 package org.apache.zookeeper.test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -39,6 +36,7 @@ import org.apache.zookeeper.server.quorum.QuorumPeer;
 import org.apache.zookeeper.server.quorum.QuorumPeer.LearnerType;
 import org.apache.zookeeper.server.quorum.QuorumPeer.QuorumServer;
 import org.apache.zookeeper.server.util.OSMXBean;
+import org.junit.Assert;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,15 +52,13 @@ public class QuorumUtil {
 
     private static final Logger LOG = LoggerFactory.getLogger(QuorumUtil.class);
     private static final Set<QuorumPeer.ServerState> CONNECTED_STATES = new TreeSet<>(
-        Arrays.asList(QuorumPeer.ServerState.LEADING, QuorumPeer.ServerState.FOLLOWING, QuorumPeer.ServerState.OBSERVING));
+            Arrays.asList(QuorumPeer.ServerState.LEADING, QuorumPeer.ServerState.FOLLOWING, QuorumPeer.ServerState.OBSERVING));
 
     public static class PeerStruct {
-
         public int id;
         public QuorumPeer peer;
         public File dataDir;
         public int clientPort;
-
     }
 
     private final Map<Long, QuorumServer> peersView = new HashMap<Long, QuorumServer>();
@@ -80,8 +76,6 @@ public class QuorumUtil {
     private int initLimit;
 
     private int syncLimit;
-
-    private int connectToLearnerMasterLimit;
 
     private int electionAlg;
 
@@ -103,7 +97,6 @@ public class QuorumUtil {
             tickTime = 2000;
             initLimit = 3;
             this.syncLimit = syncLimit;
-            connectToLearnerMasterLimit = 3;
             electionAlg = 3;
             hostPort = "";
 
@@ -114,14 +107,19 @@ public class QuorumUtil {
                 ps.clientPort = PortAssignment.unique();
                 peers.put(i, ps);
 
-                peersView.put(Long.valueOf(i), new QuorumServer(i, new InetSocketAddress("127.0.0.1", PortAssignment.unique()), new InetSocketAddress("127.0.0.1", PortAssignment.unique()), new InetSocketAddress("127.0.0.1", ps.clientPort), LearnerType.PARTICIPANT));
+                peersView.put(Long.valueOf(i), new QuorumServer(i, 
+                               new InetSocketAddress("127.0.0.1", PortAssignment.unique()),
+                               new InetSocketAddress("127.0.0.1", PortAssignment.unique()),
+                               new InetSocketAddress("127.0.0.1", ps.clientPort),
+                               LearnerType.PARTICIPANT));
                 hostPort += "127.0.0.1:" + ps.clientPort + ((i == ALL) ? "" : ",");
             }
             for (int i = 1; i <= ALL; ++i) {
                 PeerStruct ps = peers.get(i);
-                LOG.info("Creating QuorumPeer {}; public port {}", i, ps.clientPort);
-                ps.peer = new QuorumPeer(peersView, ps.dataDir, ps.dataDir, ps.clientPort, electionAlg, ps.id, tickTime, initLimit, syncLimit, connectToLearnerMasterLimit);
-                assertEquals(ps.clientPort, ps.peer.getClientPort());
+                LOG.info("Creating QuorumPeer " + i + "; public port " + ps.clientPort);
+                ps.peer = new QuorumPeer(peersView, ps.dataDir, ps.dataDir, ps.clientPort,
+                        electionAlg, ps.id, tickTime, initLimit, syncLimit);
+                Assert.assertEquals(ps.clientPort, ps.peer.getClientPort());
             }
         } catch (Exception e) {
             throw new RuntimeException(e);
@@ -138,6 +136,7 @@ public class QuorumUtil {
 
     // This was added to avoid running into the problem of ZOOKEEPER-1539
     public boolean disableJMXTest = false;
+    
 
     public void enableLocalSession(boolean localSessionEnabled) {
         this.localSessionEnabled = localSessionEnabled;
@@ -147,20 +146,19 @@ public class QuorumUtil {
         shutdownAll();
         for (int i = 1; i <= ALL; ++i) {
             start(i);
-            LOG.info("Started QuorumPeer {}", i);
+            LOG.info("Started QuorumPeer " + i);
         }
 
-        LOG.info("Checking ports {}", hostPort);
+        LOG.info("Checking ports " + hostPort);
         for (String hp : hostPort.split(",")) {
-            assertTrue(ClientBase.waitForServerUp(hp, ClientBase.CONNECTION_TIMEOUT), "waiting for server " + hp + " up");
-            LOG.info("{} is accepting client connections", hp);
+            Assert.assertTrue("waiting for server up", ClientBase.waitForServerUp(hp,
+                    ClientBase.CONNECTION_TIMEOUT));
+            LOG.info(hp + " is accepting client connections");
         }
 
         // This was added to avoid running into the problem of ZOOKEEPER-1539
-        if (disableJMXTest) {
-            return;
-        }
-
+        if (disableJMXTest) return;
+        
         // interesting to see what's there...
         try {
             JMXEnv.dump();
@@ -170,7 +168,8 @@ public class QuorumUtil {
                 ensureNames.add("InMemoryDataTree");
             }
             for (int i = 1; i <= ALL; ++i) {
-                ensureNames.add("name0=ReplicatedServer_id" + i + ",name1=replica." + i + ",name2=");
+                ensureNames
+                        .add("name0=ReplicatedServer_id" + i + ",name1=replica." + i + ",name2=");
             }
             for (int i = 1; i <= ALL; ++i) {
                 for (int j = 1; j <= ALL; ++j) {
@@ -197,44 +196,43 @@ public class QuorumUtil {
             start(i);
         }
         for (int i = 1; i <= N + 1; ++i) {
-            assertTrue(
-                    ClientBase.waitForServerUp("127.0.0.1:" + getPeer(i).clientPort, ClientBase.CONNECTION_TIMEOUT),
-                    "Waiting for server up");
+            Assert.assertTrue("Waiting for server up", ClientBase.waitForServerUp("127.0.0.1:"
+                    + getPeer(i).clientPort, ClientBase.CONNECTION_TIMEOUT));
         }
     }
 
     public void start(int id) throws IOException {
         PeerStruct ps = getPeer(id);
-        LOG.info("Creating QuorumPeer {}; public port {}", ps.id, ps.clientPort);
-        ps.peer = new QuorumPeer(peersView, ps.dataDir, ps.dataDir, ps.clientPort, electionAlg, ps.id, tickTime, initLimit, syncLimit, connectToLearnerMasterLimit);
+        LOG.info("Creating QuorumPeer " + ps.id + "; public port " + ps.clientPort);
+        ps.peer = new QuorumPeer(peersView, ps.dataDir, ps.dataDir, ps.clientPort, electionAlg,
+                ps.id, tickTime, initLimit, syncLimit);
         if (localSessionEnabled) {
             ps.peer.enableLocalSessions(true);
         }
-        assertEquals(ps.clientPort, ps.peer.getClientPort());
+        Assert.assertEquals(ps.clientPort, ps.peer.getClientPort());
 
         ps.peer.start();
     }
 
     public void restart(int id) throws IOException {
         start(id);
-        assertTrue(
-                ClientBase.waitForServerUp("127.0.0.1:" + getPeer(id).clientPort, ClientBase.CONNECTION_TIMEOUT),
-                "Waiting for server up");
+        Assert.assertTrue("Waiting for server up", ClientBase.waitForServerUp("127.0.0.1:"
+                + getPeer(id).clientPort, ClientBase.CONNECTION_TIMEOUT));
     }
 
     public void startThenShutdown(int id) throws IOException {
         PeerStruct ps = getPeer(id);
-        LOG.info("Creating QuorumPeer {}; public port {}", ps.id, ps.clientPort);
-        ps.peer = new QuorumPeer(peersView, ps.dataDir, ps.dataDir, ps.clientPort, electionAlg, ps.id, tickTime, initLimit, syncLimit, connectToLearnerMasterLimit);
+        LOG.info("Creating QuorumPeer " + ps.id + "; public port " + ps.clientPort);
+        ps.peer = new QuorumPeer(peersView, ps.dataDir, ps.dataDir, ps.clientPort, electionAlg,
+                ps.id, tickTime, initLimit, syncLimit);
         if (localSessionEnabled) {
             ps.peer.enableLocalSessions(true);
         }
-        assertEquals(ps.clientPort, ps.peer.getClientPort());
+        Assert.assertEquals(ps.clientPort, ps.peer.getClientPort());
 
         ps.peer.start();
-        assertTrue(
-                ClientBase.waitForServerUp("127.0.0.1:" + getPeer(id).clientPort, ClientBase.CONNECTION_TIMEOUT),
-                "Waiting for server up");
+        Assert.assertTrue("Waiting for server up", ClientBase.waitForServerUp("127.0.0.1:"
+                + getPeer(id).clientPort, ClientBase.CONNECTION_TIMEOUT));
         shutdown(id);
     }
 
@@ -243,30 +241,31 @@ public class QuorumUtil {
             shutdown(i);
         }
         for (String hp : hostPort.split(",")) {
-            assertTrue(ClientBase.waitForServerDown(hp, ClientBase.CONNECTION_TIMEOUT), "Waiting for server down");
-            LOG.info("{} is no longer accepting client connections", hp);
+            Assert.assertTrue("Waiting for server down", ClientBase.waitForServerDown(hp,
+                    ClientBase.CONNECTION_TIMEOUT));
+            LOG.info(hp + " is no longer accepting client connections");
         }
     }
 
     public void shutdown(int id) {
         QuorumPeer qp = getPeer(id).peer;
         try {
-            LOG.info("Shutting down quorum peer {}", qp.getName());
+            LOG.info("Shutting down quorum peer " + qp.getName());
             qp.shutdown();
             Election e = qp.getElectionAlg();
             if (e != null) {
-                LOG.info("Shutting down leader election {}", qp.getName());
+                LOG.info("Shutting down leader election " + qp.getName());
                 e.shutdown();
             } else {
-                LOG.info("No election available to shutdown {}", qp.getName());
+                LOG.info("No election available to shutdown " + qp.getName());
             }
-            LOG.info("Waiting for {} to exit thread", qp.getName());
+            LOG.info("Waiting for " + qp.getName() + " to exit thread");
             qp.join(30000);
             if (qp.isAlive()) {
-                fail("QP failed to shutdown in 30 seconds: " + qp.getName());
+                Assert.fail("QP failed to shutdown in 30 seconds: " + qp.getName());
             }
         } catch (InterruptedException e) {
-            LOG.debug("QP interrupted: {}", qp.getName(), e);
+            LOG.debug("QP interrupted: " + qp.getName(), e);
         }
     }
 
@@ -280,25 +279,25 @@ public class QuorumUtil {
 
     public boolean allPeersAreConnected() {
         return peers.values().stream()
-          .map(ps -> ps.peer)
-          .allMatch(peer -> CONNECTED_STATES.contains(peer.getPeerState()));
+                .map(ps -> ps.peer)
+                .allMatch(peer -> CONNECTED_STATES.contains(peer.getPeerState()));
     }
 
     public QuorumPeer getLeaderQuorumPeer() {
-        for (PeerStruct ps : peers.values()) {
+        for (PeerStruct ps: peers.values()) {
             if (ps.peer.leader != null) {
-                return ps.peer;
+               return ps.peer;
             }
         }
         throw new RuntimeException("Unable to find a leader peer");
     }
 
     public List<QuorumPeer> getFollowerQuorumPeers() {
-        List<QuorumPeer> peerList = new ArrayList<QuorumPeer>(ALL - 1);
+        List<QuorumPeer> peerList = new ArrayList<QuorumPeer>(ALL - 1); 
 
-        for (PeerStruct ps : peers.values()) {
+        for (PeerStruct ps: peers.values()) {
             if (ps.peer.leader == null) {
-                peerList.add(ps.peer);
+               peerList.add(ps.peer);      
             }
         }
 
@@ -309,8 +308,8 @@ public class QuorumUtil {
         LOG.info("TearDown started");
 
         OSMXBean osMbean = new OSMXBean();
-        if (osMbean.getUnix()) {
-            LOG.info("fdcount after test is: {}", osMbean.getOpenFileDescriptorCount());
+        if (osMbean.getUnix() == true) {    
+            LOG.info("fdcount after test is: " + osMbean.getOpenFileDescriptorCount());
         }
 
         shutdownAll();
@@ -326,7 +325,7 @@ public class QuorumUtil {
             }
         }
 
-        assertTrue(index > 0, "Leader server not found.");
+        Assert.assertTrue("Leader server not found.", index > 0);
         return index;
     }
 
@@ -342,5 +341,4 @@ public class QuorumUtil {
     public String getConnectionStringForServer(final int index) {
         return "127.0.0.1:" + getPeer(index).clientPort;
     }
-
 }

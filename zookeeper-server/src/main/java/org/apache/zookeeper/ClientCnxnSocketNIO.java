@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -26,12 +26,11 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
-import java.nio.channels.UnresolvedAddressException;
-import java.nio.channels.UnsupportedAddressTypeException;
 import java.util.Iterator;
-import java.util.Queue;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.LinkedBlockingDeque;
+
 import org.apache.zookeeper.ClientCnxn.EndOfStreamException;
 import org.apache.zookeeper.ClientCnxn.Packet;
 import org.apache.zookeeper.ZooDefs.OpCode;
@@ -40,8 +39,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class ClientCnxnSocketNIO extends ClientCnxnSocket {
-
-    private static final Logger LOG = LoggerFactory.getLogger(ClientCnxnSocketNIO.class);
+    private static final Logger LOG = LoggerFactory
+            .getLogger(ClientCnxnSocketNIO.class);
 
     private final Selector selector = Selector.open();
 
@@ -60,12 +59,14 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
     boolean isConnected() {
         return sockKey != null;
     }
-
+    
     /**
+     * @return true if a packet was received
      * @throws InterruptedException
      * @throws IOException
      */
-    void doIO(Queue<Packet> pendingQueue, ClientCnxn cnxn) throws InterruptedException, IOException {
+    void doIO(List<Packet> pendingQueue, ClientCnxn cnxn)
+      throws InterruptedException, IOException {
         SocketChannel sock = (SocketChannel) sockKey.channel();
         if (sock == null) {
             throw new IOException("Socket is null!");
@@ -73,9 +74,10 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
         if (sockKey.isReadable()) {
             int rc = sock.read(incomingBuffer);
             if (rc < 0) {
-                throw new EndOfStreamException("Unable to read additional data from server sessionid 0x"
-                                               + Long.toHexString(sessionId)
-                                               + ", likely server has closed socket");
+                throw new EndOfStreamException(
+                        "Unable to read additional data from server sessionid 0x"
+                                + Long.toHexString(sessionId)
+                                + ", likely server has closed socket");
             }
             if (!incomingBuffer.hasRemaining()) {
                 incomingBuffer.flip();
@@ -85,7 +87,8 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
                 } else if (!initialized) {
                     readConnectResult();
                     enableRead();
-                    if (findSendablePacket(outgoingQueue, sendThread.tunnelAuthInProgress()) != null) {
+                    if (findSendablePacket(outgoingQueue,
+                            sendThread.tunnelAuthInProgress()) != null) {
                         // Since SASL authentication has completed (if client is configured to do so),
                         // outgoing packets waiting in the outgoingQueue can now be sent.
                         enableWrite();
@@ -103,15 +106,16 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
             }
         }
         if (sockKey.isWritable()) {
-            Packet p = findSendablePacket(outgoingQueue, sendThread.tunnelAuthInProgress());
+            Packet p = findSendablePacket(outgoingQueue,
+                    sendThread.tunnelAuthInProgress());
 
             if (p != null) {
                 updateLastSend();
                 // If we already started writing p, p.bb will already exist
                 if (p.bb == null) {
-                    if ((p.requestHeader != null)
-                        && (p.requestHeader.getType() != OpCode.ping)
-                        && (p.requestHeader.getType() != OpCode.auth)) {
+                    if ((p.requestHeader != null) &&
+                            (p.requestHeader.getType() != OpCode.ping) &&
+                            (p.requestHeader.getType() != OpCode.auth)) {
                         p.requestHeader.setXid(cnxn.getXid());
                     }
                     p.createBB();
@@ -121,8 +125,8 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
                     sentCount.getAndIncrement();
                     outgoingQueue.removeFirstOccurrence(p);
                     if (p.requestHeader != null
-                        && p.requestHeader.getType() != OpCode.ping
-                        && p.requestHeader.getType() != OpCode.auth) {
+                            && p.requestHeader.getType() != OpCode.ping
+                            && p.requestHeader.getType() != OpCode.auth) {
                         synchronized (pendingQueue) {
                             pendingQueue.add(p);
                         }
@@ -154,7 +158,8 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
         }
     }
 
-    private Packet findSendablePacket(LinkedBlockingDeque<Packet> outgoingQueue, boolean tunneledAuthInProgres) {
+    private Packet findSendablePacket(LinkedBlockingDeque<Packet> outgoingQueue,
+                                      boolean tunneledAuthInProgres) {
         if (outgoingQueue.isEmpty()) {
             return null;
         }
@@ -178,7 +183,7 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
             } else {
                 // Non-priming packet: defer it until later, leaving it in the queue
                 // until authentication completes.
-                LOG.debug("Deferring non-priming packet {} until SASL authentication completes.", p);
+                LOG.debug("deferring non-priming packet {} until SASL authentation completes.", p);
             }
         }
         return null;
@@ -192,41 +197,50 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
             try {
                 sock.socket().shutdownInput();
             } catch (IOException e) {
-                LOG.debug("Ignoring exception during shutdown input", e);
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("Ignoring exception during shutdown input", e);
+                }
             }
             try {
                 sock.socket().shutdownOutput();
             } catch (IOException e) {
-                LOG.debug("Ignoring exception during shutdown output", e);
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("Ignoring exception during shutdown output",
+                            e);
+                }
             }
             try {
                 sock.socket().close();
             } catch (IOException e) {
-                LOG.debug("Ignoring exception during socket close", e);
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("Ignoring exception during socket close", e);
+                }
             }
             try {
                 sock.close();
             } catch (IOException e) {
-                LOG.debug("Ignoring exception during channel close", e);
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("Ignoring exception during channel close", e);
+                }
             }
         }
         try {
             Thread.sleep(100);
         } catch (InterruptedException e) {
-            LOG.debug("SendThread interrupted during sleep, ignoring");
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("SendThread interrupted during sleep, ignoring");
+            }
         }
         sockKey = null;
     }
-
+ 
     @Override
     void close() {
         try {
             if (LOG.isTraceEnabled()) {
                 LOG.trace("Doing client selector close");
             }
-
             selector.close();
-
             if (LOG.isTraceEnabled()) {
                 LOG.trace("Closed client selector");
             }
@@ -234,7 +248,7 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
             LOG.warn("Ignoring exception during selector close", e);
         }
     }
-
+    
     /**
      * create a socket channel.
      * @return the created socket channel
@@ -251,25 +265,26 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
 
     /**
      * register with the selection and connect
-     * @param sock the {@link SocketChannel}
+     * @param sock the {@link SocketChannel} 
      * @param addr the address of remote host
      * @throws IOException
      */
-    void registerAndConnect(SocketChannel sock, InetSocketAddress addr) throws IOException {
+    void registerAndConnect(SocketChannel sock, InetSocketAddress addr) 
+    throws IOException {
         sockKey = sock.register(selector, SelectionKey.OP_CONNECT);
         boolean immediateConnect = sock.connect(addr);
         if (immediateConnect) {
             sendThread.primeConnection();
         }
     }
-
+    
     @Override
     void connect(InetSocketAddress addr) throws IOException {
         SocketChannel sock = createSock();
         try {
-            registerAndConnect(sock, addr);
-        } catch (UnresolvedAddressException | UnsupportedAddressTypeException | SecurityException | IOException e) {
-            LOG.error("Unable to open socket to {}", addr);
+           registerAndConnect(sock, addr);
+      } catch (IOException e) {
+            LOG.error("Unable to open socket to " + addr);
             sock.close();
             throw e;
         }
@@ -284,7 +299,7 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
 
     /**
      * Returns the address to which the socket is connected.
-     *
+     * 
      * @return ip address of the remote side of the connection or null if not
      *         connected
      */
@@ -295,7 +310,7 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
 
     /**
      * Returns the local address to which the socket is bound.
-     *
+     * 
      * @return ip address of the remote side of the connection or null if not
      *         connected
      */
@@ -303,7 +318,7 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
     SocketAddress getLocalSocketAddress() {
         return localSocketAddress;
     }
-
+    
     private void updateSocketAddresses() {
         Socket socket = ((SocketChannel) sockKey.channel()).socket();
         localSocketAddress = socket.getLocalSocketAddress();
@@ -323,12 +338,10 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
     private synchronized void wakeupCnxn() {
         selector.wakeup();
     }
-
+    
     @Override
-    void doTransport(
-        int waitTimeOut,
-        Queue<Packet> pendingQueue,
-        ClientCnxn cnxn) throws IOException, InterruptedException {
+    void doTransport(int waitTimeOut, List<Packet> pendingQueue, ClientCnxn cnxn)
+            throws IOException, InterruptedException {
         selector.select(waitTimeOut);
         Set<SelectionKey> selected;
         synchronized (this) {
@@ -351,7 +364,8 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
             }
         }
         if (sendThread.getZkState().isConnected()) {
-            if (findSendablePacket(outgoingQueue, sendThread.tunnelAuthInProgress()) != null) {
+            if (findSendablePacket(outgoingQueue,
+                    sendThread.tunnelAuthInProgress()) != null) {
                 enableWrite();
             }
         }
@@ -365,8 +379,8 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
         // sockKey may be concurrently accessed by multiple
         // threads. We use tmp here to avoid a race condition
         SelectionKey tmp = sockKey;
-        if (tmp != null) {
-            ((SocketChannel) tmp.channel()).socket().close();
+        if (tmp!=null) {
+           ((SocketChannel) tmp.channel()).socket().close();
         }
     }
 
@@ -389,7 +403,7 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
         }
     }
 
-    private synchronized void enableRead() {
+    synchronized private void enableRead() {
         int i = sockKey.interestOps();
         if ((i & SelectionKey.OP_READ) == 0) {
             sockKey.interestOps(i | SelectionKey.OP_READ);
@@ -415,5 +429,4 @@ public class ClientCnxnSocketNIO extends ClientCnxnSocket {
         ByteBuffer pbb = p.bb;
         sock.write(pbb);
     }
-
 }

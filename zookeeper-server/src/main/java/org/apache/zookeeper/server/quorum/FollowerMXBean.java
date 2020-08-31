@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -24,55 +24,23 @@ import org.apache.zookeeper.server.ZooKeeperServerMXBean;
  * Follower MBean
  */
 public interface FollowerMXBean extends ZooKeeperServerMXBean {
-
     /**
      * @return socket address
      */
-    String getQuorumAddress();
-
+    public String getQuorumAddress();
+    
     /**
      * @return last queued zxid
      */
-    String getLastQueuedZxid();
-
+    public String getLastQueuedZxid();
+    
     /**
      * @return count of pending revalidations
      */
-    int getPendingRevalidationCount();
+    public int getPendingRevalidationCount();
 
     /**
      * @return time taken for leader election in milliseconds.
      */
-    long getElectionTimeTaken();
-
-    /**
-     * @return the size limit in bytes for the observer master commit packet queue
-     */
-    int getObserverMasterPacketSizeLimit();
-
-    /**
-     * set the size limit in bytes for the observer master commit packet queue
-     */
-    void setObserverMasterPacketSizeLimit(int sizeLimit);
-
-    /**
-     * @return Number of concurrent snapshots permitted to send to observers
-     */
-    int getMaxConcurrentSnapSyncs();
-
-    /**
-     * @param maxConcurrentSnapSyncs Number of concurrent snapshots permitted to send to observers
-     */
-    void setMaxConcurrentSnapSyncs(int maxConcurrentSnapSyncs);
-
-    /**
-     * @return Number of concurrent diff syncs permitted to send to observers
-     */
-    int getMaxConcurrentDiffSyncs();
-
-    /**
-     * @param maxConcurrentDiffSyncs Number of concurrent diff syncs permitted to send to observers
-     */
-    void setMaxConcurrentDiffSyncs(int maxConcurrentDiffSyncs);
-
+    public long getElectionTimeTaken();
 }

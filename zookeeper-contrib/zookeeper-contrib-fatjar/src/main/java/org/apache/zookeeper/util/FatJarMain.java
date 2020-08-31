@@ -26,8 +26,6 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 /**
  * This is a generic Main class that is completely driven by the
@@ -50,8 +48,8 @@ public class FatJarMain {
         String clazz;
         String desc;
     }
-    static Map<String, Cmd> cmds = new HashMap<String, Cmd>();
-    static List<String> order = new ArrayList<String>();
+    static HashMap<String, Cmd> cmds = new HashMap<String, Cmd>();
+    static ArrayList<String> order = new ArrayList<String>();
     
     /**
      * @param args the first parameter of args will be used as an

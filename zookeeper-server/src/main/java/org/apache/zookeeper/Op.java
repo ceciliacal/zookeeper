@@ -17,25 +17,23 @@
 
 package org.apache.zookeeper;
 
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.List;
 import org.apache.jute.Record;
 import org.apache.zookeeper.common.PathUtils;
 import org.apache.zookeeper.data.ACL;
-import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.proto.CheckVersionRequest;
 import org.apache.zookeeper.proto.CreateRequest;
 import org.apache.zookeeper.proto.CreateTTLRequest;
 import org.apache.zookeeper.proto.DeleteRequest;
-import org.apache.zookeeper.proto.GetChildrenRequest;
-import org.apache.zookeeper.proto.GetDataRequest;
 import org.apache.zookeeper.proto.SetDataRequest;
 import org.apache.zookeeper.server.EphemeralType;
 
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
+
 /**
- * Represents a single operation in a multi-operation transaction.  Each operation can be a create, update,
- * delete, a version check or just read operations like getChildren or getData.
+ * Represents a single operation in a multi-operation transaction.  Each operation can be a create, update
+ * or delete or can just be a version check.
  *
  * Sub-classes of Op each represent each detailed type but should not normally be referenced except via
  * the provided factory methods.
@@ -44,25 +42,15 @@ import org.apache.zookeeper.server.EphemeralType;
  * @see ZooKeeper#create(String, byte[], java.util.List, CreateMode, org.apache.zookeeper.AsyncCallback.StringCallback, Object)
  * @see ZooKeeper#delete(String, int)
  * @see ZooKeeper#setData(String, byte[], int)
- * @see ZooKeeper#getData(String, boolean, Stat)
- * @see ZooKeeper#getChildren(String, boolean)
  */
 public abstract class Op {
-
-    public enum OpKind {
-        TRANSACTION,
-        READ
-    }
-
     private int type;
     private String path;
-    private OpKind opKind;
 
     // prevent untyped construction
-    private Op(int type, String path, OpKind opKind) {
+    private Op(int type, String path) {
         this.type = type;
         this.path = path;
-        this.opKind = opKind;
     }
 
     /**
@@ -180,6 +168,7 @@ public abstract class Op {
         return new SetData(path, data, version);
     }
 
+
     /**
      * Constructs an version check operation.  Arguments are as for the ZooKeeper.setData method except that
      * no data is provided since no update is intended.  The purpose for this is to allow read-modify-write
@@ -196,18 +185,10 @@ public abstract class Op {
         return new Check(path, version);
     }
 
-    public static Op getChildren(String path) {
-        return new GetChildren(path);
-    }
-
-    public static Op getData(String path) {
-        return new GetData(path);
-    }
-
     /**
      * Gets the integer type code for an Op.  This code should be as from ZooDefs.OpCode
      * @see ZooDefs.OpCode
-     * @return The type code.
+     * @return  The type code.
      */
     public int getType() {
         return type;
@@ -215,26 +196,18 @@ public abstract class Op {
 
     /**
      * Gets the path for an Op.
-     * @return The path.
+     * @return  The path.
      */
     public String getPath() {
         return path;
     }
 
     /**
-     * Gets the kind of an Op.
-     * @return The OpKind value.
-     */
-    public OpKind getKind() {
-        return opKind;
-    }
-
-    /**
      * Encodes an op for wire transmission.
      * @return An appropriate Record structure.
      */
-    public abstract Record toRequestRecord();
-
+    public abstract Record toRequestRecord() ;
+    
     /**
      * Reconstructs the transaction with the chroot prefix.
      * @return transaction with chroot.
@@ -243,7 +216,7 @@ public abstract class Op {
 
     /**
      * Performs client path validations.
-     *
+     * 
      * @throws IllegalArgumentException
      *             if an invalid path is specified
      * @throws KeeperException.BadArgumentsException
@@ -257,13 +230,12 @@ public abstract class Op {
     // these internal classes are public, but should not generally be referenced.
     //
     public static class Create extends Op {
-
         protected byte[] data;
         protected List<ACL> acl;
         protected int flags;
 
         private Create(String path, byte[] data, List<ACL> acl, int flags) {
-            super(getOpcode(CreateMode.fromFlag(flags, CreateMode.PERSISTENT)), path, OpKind.TRANSACTION);
+            super(getOpcode(CreateMode.fromFlag(flags, CreateMode.PERSISTENT)), path);
             this.data = data;
             this.acl = acl;
             this.flags = flags;
@@ -277,7 +249,7 @@ public abstract class Op {
         }
 
         private Create(String path, byte[] data, List<ACL> acl, CreateMode createMode) {
-            super(getOpcode(createMode), path, OpKind.TRANSACTION);
+            super(getOpcode(createMode), path);
             this.data = data;
             this.acl = acl;
             this.flags = createMode.toFlag();
@@ -285,12 +257,8 @@ public abstract class Op {
 
         @Override
         public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (!(o instanceof Create)) {
-                return false;
-            }
+            if (this == o) return true;
+            if (!(o instanceof Create)) return false;
 
             Create op = (Create) o;
 
@@ -308,11 +276,7 @@ public abstract class Op {
                     break;
                 }
             }
-            return !i.hasNext()
-                   && getType() == op.getType()
-                   && Arrays.equals(data, op.data)
-                   && flags == op.flags
-                   && aclEquals;
+            return !i.hasNext() && getType() == op.getType() && Arrays.equals(data, op.data) && flags == op.flags && aclEquals;
         }
 
         @Override
@@ -336,11 +300,9 @@ public abstract class Op {
             PathUtils.validatePath(getPath(), createMode.isSequential());
             EphemeralType.validateTTL(createMode, -1);
         }
-
     }
 
     public static class CreateTTL extends Create {
-
         private final long ttl;
 
         private CreateTTL(String path, byte[] data, List<ACL> acl, int flags, long ttl) {
@@ -355,12 +317,12 @@ public abstract class Op {
 
         @Override
         public boolean equals(Object o) {
-            return super.equals(o) && (o instanceof CreateTTL) && (ttl == ((CreateTTL) o).ttl);
+            return super.equals(o) && (o instanceof CreateTTL) && (ttl == ((CreateTTL)o).ttl);
         }
 
         @Override
         public int hashCode() {
-            return super.hashCode() + (int) (ttl ^ (ttl >>> 32));
+            return super.hashCode() + (int)(ttl ^ (ttl >>> 32));
         }
 
         @Override
@@ -379,30 +341,25 @@ public abstract class Op {
             PathUtils.validatePath(getPath(), createMode.isSequential());
             EphemeralType.validateTTL(createMode, ttl);
         }
-
     }
 
     public static class Delete extends Op {
-
         private int version;
 
         private Delete(String path, int version) {
-            super(ZooDefs.OpCode.delete, path, OpKind.TRANSACTION);
+            super(ZooDefs.OpCode.delete, path);
             this.version = version;
         }
 
         @Override
         public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (!(o instanceof Delete)) {
-                return false;
-            }
+            if (this == o) return true;
+            if (!(o instanceof Delete)) return false;
 
             Delete op = (Delete) o;
 
-            return getType() == op.getType() && version == op.version && getPath().equals(op.getPath());
+            return getType() == op.getType() && version == op.version 
+                   && getPath().equals(op.getPath());
         }
 
         @Override
@@ -419,35 +376,27 @@ public abstract class Op {
         Op withChroot(String path) {
             return new Delete(path, version);
         }
-
     }
 
     public static class SetData extends Op {
-
         private byte[] data;
         private int version;
 
         private SetData(String path, byte[] data, int version) {
-            super(ZooDefs.OpCode.setData, path, OpKind.TRANSACTION);
+            super(ZooDefs.OpCode.setData, path);
             this.data = data;
             this.version = version;
         }
 
         @Override
         public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (!(o instanceof SetData)) {
-                return false;
-            }
+            if (this == o) return true;
+            if (!(o instanceof SetData)) return false;
 
             SetData op = (SetData) o;
 
-            return getType() == op.getType()
-                   && version == op.version
-                   && getPath().equals(op.getPath())
-                   && Arrays.equals(data, op.data);
+            return getType() == op.getType() && version == op.version 
+                   && getPath().equals(op.getPath()) && Arrays.equals(data, op.data);
         }
 
         @Override
@@ -464,26 +413,20 @@ public abstract class Op {
         Op withChroot(String path) {
             return new SetData(path, data, version);
         }
-
     }
 
     public static class Check extends Op {
-
         private int version;
 
         private Check(String path, int version) {
-            super(ZooDefs.OpCode.check, path, OpKind.TRANSACTION);
+            super(ZooDefs.OpCode.check, path);
             this.version = version;
         }
 
         @Override
         public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (!(o instanceof Check)) {
-                return false;
-            }
+            if (this == o) return true;
+            if (!(o instanceof Check)) return false;
 
             Check op = (Check) o;
 
@@ -504,81 +447,6 @@ public abstract class Op {
         Op withChroot(String path) {
             return new Check(path, version);
         }
-
-    }
-
-    public static class GetChildren extends Op {
-
-        GetChildren(String path) {
-            super(ZooDefs.OpCode.getChildren, path, OpKind.READ);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (!(o instanceof GetChildren)) {
-                return false;
-            }
-
-            GetChildren op = (GetChildren) o;
-
-            return getType() == op.getType() && getPath().equals(op.getPath());
-        }
-
-        @Override
-        public int hashCode() {
-            return getType() + getPath().hashCode();
-        }
-
-        @Override
-        public Record toRequestRecord() {
-            return new GetChildrenRequest(getPath(), false);
-        }
-
-        @Override
-        Op withChroot(String path) {
-            return new GetChildren(path);
-        }
-
-    }
-
-    public static class GetData extends Op {
-
-        GetData(String path) {
-            super(ZooDefs.OpCode.getData, path, OpKind.READ);
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (!(o instanceof GetData)) {
-                return false;
-            }
-
-            GetData op = (GetData) o;
-
-            return getType() == op.getType() && getPath().equals(op.getPath());
-        }
-
-        @Override
-        public int hashCode() {
-            return getType() + getPath().hashCode();
-        }
-
-        @Override
-        public Record toRequestRecord() {
-            return new GetDataRequest(getPath(), false);
-        }
-
-        @Override
-        Op withChroot(String path) {
-            return new GetData(path);
-        }
-
     }
 
 }

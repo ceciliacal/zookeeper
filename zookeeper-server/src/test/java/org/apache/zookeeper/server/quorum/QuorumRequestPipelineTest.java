@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,16 +18,19 @@
 
 package org.apache.zookeeper.server.quorum;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Stream;
+
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+
 import org.apache.zookeeper.AsyncCallback.VoidCallback;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.TestableZooKeeper;
@@ -35,31 +38,37 @@ import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.server.quorum.QuorumPeer.ServerState;
 import org.apache.zookeeper.test.QuorumBase;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.Arguments;
-import org.junit.jupiter.params.provider.MethodSource;
+import org.apache.zookeeper.ZKParameterized;
 
+@RunWith(Parameterized.class)
+@Parameterized.UseParametersRunnerFactory(ZKParameterized.RunnerFactory.class)
 public class QuorumRequestPipelineTest extends QuorumBase {
-
+    protected ServerState serverState;
     protected final CountDownLatch callComplete = new CountDownLatch(1);
     protected boolean complete = false;
-    protected static final String PARENT_PATH = "/foo";
-    protected static final Set<String> CHILDREN = new HashSet<String>(Arrays.asList("1", "2", "3"));
-    protected static final String AUTH_PROVIDER = "digest";
-    protected static final byte[] AUTH = "hello".getBytes();
-    protected static final byte[] DATA = "Hint Water".getBytes();
+    protected final static String PARENT_PATH = "/foo";
+    protected final static HashSet<String> CHILDREN = new HashSet<String>(Arrays.asList("1", "2", "3"));
+    protected final static String AUTH_PROVIDER = "digest";
+    protected final static byte[] AUTH = "hello".getBytes();
+    protected final static byte[] DATA = "Hint Water".getBytes();
 
     protected TestableZooKeeper zkClient;
 
-    public static Stream<Arguments> data() throws Exception {
-        return Stream.of(
-                Arguments.of(ServerState.LEADING),
-                Arguments.of(ServerState.FOLLOWING),
-                Arguments.of(ServerState.OBSERVING));
+    @Parameterized.Parameters
+    public static Collection<Object[]> data() {
+        return Arrays.asList(
+            new Object[][] {
+                {ServerState.LEADING},
+                {ServerState.FOLLOWING},
+                {ServerState.OBSERVING}});
     }
 
-    public void setUp(ServerState serverState) throws Exception {
+    public QuorumRequestPipelineTest(ServerState state) {
+        this.serverState = state;
+    }
+
+    @Before
+    public void setUp() throws Exception {
         CountdownWatcher clientWatch = new CountdownWatcher();
         super.setUp(true);
         zkClient = createClient(clientWatch, getPeersMatching(serverState));
@@ -67,7 +76,7 @@ public class QuorumRequestPipelineTest extends QuorumBase {
         clientWatch.waitForConnected(CONNECTION_TIMEOUT);
     }
 
-    @AfterEach
+    @After
     public void tearDown() throws Exception {
         zkClient.close();
         super.tearDown();
@@ -79,84 +88,92 @@ public class QuorumRequestPipelineTest extends QuorumBase {
         return stat;
     }
 
-    @ParameterizedTest
-    @MethodSource("data")
-    public void testCreate(ServerState serverState) throws Exception {
-        setUp(serverState);
+    @Test
+    public void testCreate() throws Exception {
         zkClient.create(PARENT_PATH, DATA, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-        assertArrayEquals(DATA, zkClient.getData(PARENT_PATH, false, null), String.format("%s Node created (create) with expected value", serverState));
+        Assert.assertArrayEquals(
+            String.format("%s Node created (create) with expected value", serverState),
+            DATA,
+            zkClient.getData(PARENT_PATH, false, null));
     }
 
-    @ParameterizedTest
-    @MethodSource("data")
-    public void testCreate2(ServerState serverState) throws Exception {
-        setUp(serverState);
+    @Test
+    public void testCreate2() throws Exception {
         zkClient.create(PARENT_PATH, DATA, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT, null);
-        assertArrayEquals(DATA, zkClient.getData(PARENT_PATH, false, null), String.format("%s Node created (create2) with expected value", serverState));
+        Assert.assertArrayEquals(
+            String.format("%s Node created (create2) with expected value", serverState),
+            DATA,
+            zkClient.getData(PARENT_PATH, false, null));
     }
 
-    @ParameterizedTest
-    @MethodSource("data")
-    public void testDelete(ServerState serverState) throws Exception {
-        setUp(serverState);
+    @Test
+    public void testDelete() throws Exception {
         create2EmptyNode(zkClient, PARENT_PATH);
         zkClient.delete(PARENT_PATH, -1);
-        assertNull(zkClient.exists(PARENT_PATH, false), String.format("%s Node no longer exists", serverState));
+        Assert.assertNull(
+            String.format("%s Node no longer exists", serverState),
+            zkClient.exists(PARENT_PATH, false));
     }
 
-    @ParameterizedTest
-    @MethodSource("data")
-    public void testExists(ServerState serverState) throws Exception {
-        setUp(serverState);
+    @Test
+    public void testExists() throws Exception {
         Stat stat = create2EmptyNode(zkClient, PARENT_PATH);
-        assertEquals(stat, zkClient.exists(PARENT_PATH, false), String.format("%s Exists returns correct node stat", serverState));
+        Assert.assertEquals(
+            String.format("%s Exists returns correct node stat", serverState),
+            stat,
+            zkClient.exists(PARENT_PATH, false));
     }
 
-    @ParameterizedTest
-    @MethodSource("data")
-    public void testSetAndGetData(ServerState serverState) throws Exception {
-        setUp(serverState);
+    @Test
+    public void testSetAndGetData() throws Exception {
         create2EmptyNode(zkClient, PARENT_PATH);
         zkClient.setData(PARENT_PATH, DATA, -1);
-        assertArrayEquals(DATA, zkClient.getData(PARENT_PATH, false, null), String.format("%s Node updated with expected value", serverState));
+        Assert.assertArrayEquals(
+            String.format("%s Node updated with expected value", serverState),
+            DATA,
+            zkClient.getData(PARENT_PATH, false, null));
     }
 
-    @ParameterizedTest
-    @MethodSource("data")
-    public void testSetAndGetACL(ServerState serverState) throws Exception {
-        setUp(serverState);
+    @Test
+    public void testSetAndGetACL() throws Exception {
         create2EmptyNode(zkClient, PARENT_PATH);
-        assertEquals(Ids.OPEN_ACL_UNSAFE, zkClient.getACL(PARENT_PATH, new Stat()), String.format("%s Node has open ACL", serverState));
+        Assert.assertEquals(
+            String.format("%s Node has open ACL", serverState),
+            Ids.OPEN_ACL_UNSAFE,
+            zkClient.getACL(PARENT_PATH, new Stat()));
         zkClient.setACL(PARENT_PATH, Ids.READ_ACL_UNSAFE, -1);
-        assertEquals(Ids.READ_ACL_UNSAFE, zkClient.getACL(PARENT_PATH, new Stat()), String.format("%s Node has world read-only ACL", serverState));
+        Assert.assertEquals(
+            String.format("%s Node has world read-only ACL", serverState),
+            Ids.READ_ACL_UNSAFE,
+            zkClient.getACL(PARENT_PATH, new Stat()));
     }
 
-    @ParameterizedTest
-    @MethodSource("data")
-    public void testSetAndGetChildren(ServerState serverState) throws Exception {
-        setUp(serverState);
+    @Test
+    public void testSetAndGetChildren() throws Exception {
         create2EmptyNode(zkClient, PARENT_PATH);
         for (String child : CHILDREN) {
             create2EmptyNode(zkClient, PARENT_PATH + "/" + child);
         }
-        assertEquals(CHILDREN, new HashSet<String>(zkClient.getChildren(PARENT_PATH, false)), String.format("%s Parent has expected children", serverState));
+        Assert.assertEquals(
+            String.format("%s Parent has expected children", serverState),
+            CHILDREN,
+            new HashSet<String>(zkClient.getChildren(PARENT_PATH, false)));
     }
 
-    @ParameterizedTest
-    @MethodSource("data")
-    public void testSetAndGetChildren2(ServerState serverState) throws Exception {
-        setUp(serverState);
+    @Test
+    public void testSetAndGetChildren2() throws Exception {
         create2EmptyNode(zkClient, PARENT_PATH);
         for (String child : CHILDREN) {
             create2EmptyNode(zkClient, PARENT_PATH + "/" + child);
         }
-        assertEquals(CHILDREN, new HashSet<String>(zkClient.getChildren(PARENT_PATH, false, null)), String.format("%s Parent has expected children", serverState));
+        Assert.assertEquals(
+            String.format("%s Parent has expected children", serverState),
+            CHILDREN,
+            new HashSet<String>(zkClient.getChildren(PARENT_PATH, false, null)));
     }
 
-    @ParameterizedTest
-    @MethodSource("data")
-    public void testSync(ServerState serverState) throws Exception {
-        setUp(serverState);
+    @Test
+    public void testSync() throws Exception {
         complete = false;
         create2EmptyNode(zkClient, PARENT_PATH);
         VoidCallback onSync = new VoidCallback() {
@@ -168,7 +185,8 @@ public class QuorumRequestPipelineTest extends QuorumBase {
         };
         zkClient.sync(PARENT_PATH, onSync, null);
         callComplete.await(30, TimeUnit.SECONDS);
-        assertTrue(complete, String.format("%s Sync completed", serverState));
+        Assert.assertTrue(
+            String.format("%s Sync completed", serverState),
+            complete);
     }
-
 }

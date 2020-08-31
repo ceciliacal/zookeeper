@@ -53,7 +53,7 @@ responsibility of implementing coordination services from scratch.
 **ZooKeeper is simple.** ZooKeeper
 allows distributed processes to coordinate with each other through a
 shared hierarchical namespace which is organized similarly to a standard
-file system. The namespace consists of data registers - called znodes,
+file system. The name space consists of data registers - called znodes,
 in ZooKeeper parlance - and these are similar to files and directories.
 Unlike a typical file system, which is designed for storage, ZooKeeper
 data is kept in-memory, which means ZooKeeper can achieve high
@@ -68,7 +68,7 @@ be implemented at the client.
 
 **ZooKeeper is replicated.** Like the
 distributed processes it coordinates, ZooKeeper itself is intended to be
-replicated over a set of hosts called an ensemble.
+replicated over a sets of hosts called an ensemble.
 
 ![ZooKeeper Service](images/zkservice.jpg)
 
@@ -98,9 +98,9 @@ common than writes, at ratios of around 10:1.
 
 ### Data model and the hierarchical namespace
 
-The namespace provided by ZooKeeper is much like that of a
+The name space provided by ZooKeeper is much like that of a
 standard file system. A name is a sequence of path elements separated by
-a slash (/). Every node in ZooKeeper's namespace is identified by a
+a slash (/). Every node in ZooKeeper's name space is identified by a
 path.
 
 #### ZooKeeper's Hierarchical Namespace
@@ -146,11 +146,6 @@ receives a packet saying that the znode has changed. If the
 connection between the client and one of the ZooKeeper servers is
 broken, the client will receive a local notification.
 
-**New in 3.6.0:** Clients can also set
-permanent, recursive watches on a znode that are not removed when triggered
-and that trigger for changes on the registered znode as well as any children
-znodes recursively.
-       
 <a name="Guarantees"></a>
 
 ### Guarantees
@@ -164,9 +159,7 @@ synchronization, it provides a set of guarantees. These are:
 * Atomicity - Updates either succeed or fail. No partial
   results.
 * Single System Image - A client will see the same view of the
-  service regardless of the server that it connects to. i.e., a
-  client will never see an older view of the system even if the
-  client fails over to a different server with the same session.
+  service regardless of the server that it connects to.
 * Reliability - Once an update has been applied, it will persist
   from that time forward until a client overwrites the update.
 * Timeliness - The clients view of the system is guaranteed to

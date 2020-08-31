@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -33,11 +33,12 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.Map;
 import java.util.Queue;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,27 +63,45 @@ import org.slf4j.LoggerFactory;
  * 1 connection expiration thread, 4 selector threads, and 64 worker threads.
  */
 public class NIOServerCnxnFactory extends ServerCnxnFactory {
-
     private static final Logger LOG = LoggerFactory.getLogger(NIOServerCnxnFactory.class);
 
     /** Default sessionless connection timeout in ms: 10000 (10s) */
-    public static final String ZOOKEEPER_NIO_SESSIONLESS_CNXN_TIMEOUT = "zookeeper.nio.sessionlessCnxnTimeout";
+    public static final String ZOOKEEPER_NIO_SESSIONLESS_CNXN_TIMEOUT =
+        "zookeeper.nio.sessionlessCnxnTimeout";
     /**
      * With 500 connections to an observer with watchers firing on each, is
      * unable to exceed 1GigE rates with only 1 selector.
      * Defaults to using 2 selector threads with 8 cores and 4 with 32 cores.
      * Expressed as sqrt(numCores/2). Must have at least 1 selector thread.
      */
-    public static final String ZOOKEEPER_NIO_NUM_SELECTOR_THREADS = "zookeeper.nio.numSelectorThreads";
+    public static final String ZOOKEEPER_NIO_NUM_SELECTOR_THREADS =
+        "zookeeper.nio.numSelectorThreads";
     /** Default: 2 * numCores */
-    public static final String ZOOKEEPER_NIO_NUM_WORKER_THREADS = "zookeeper.nio.numWorkerThreads";
+    public static final String ZOOKEEPER_NIO_NUM_WORKER_THREADS =
+        "zookeeper.nio.numWorkerThreads";
     /** Default: 64kB */
-    public static final String ZOOKEEPER_NIO_DIRECT_BUFFER_BYTES = "zookeeper.nio.directBufferBytes";
+    public static final String ZOOKEEPER_NIO_DIRECT_BUFFER_BYTES =
+        "zookeeper.nio.directBufferBytes";
     /** Default worker pool shutdown timeout in ms: 5000 (5s) */
-    public static final String ZOOKEEPER_NIO_SHUTDOWN_TIMEOUT = "zookeeper.nio.shutdownTimeout";
+    public static final String ZOOKEEPER_NIO_SHUTDOWN_TIMEOUT =
+        "zookeeper.nio.shutdownTimeout";
 
     static {
-        Thread.setDefaultUncaughtExceptionHandler((t, e) -> LOG.error("Thread {} died", t, e));
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+                public void uncaughtException(Thread t, Throwable e) {
+                    LOG.error("Thread " + t + " died", e);
+                }
+            });
+        /**
+         * this is to avoid the jvm bug:
+         * NullPointerException in Selector.open()
+         * http://bugs.sun.com/view_bug.do?bug_id=6427854
+         */
+        try {
+            Selector.open().close();
+        } catch(IOException ie) {
+            LOG.error("Selector failed to open", ie);
+        }
 
         /**
          * Value of 0 disables use of direct buffers and instead uses
@@ -90,7 +109,8 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
          *
          * Default to using 64k direct buffers.
          */
-        directBufferBytes = Integer.getInteger(ZOOKEEPER_NIO_DIRECT_BUFFER_BYTES, 64 * 1024);
+        directBufferBytes = Integer.getInteger(
+            ZOOKEEPER_NIO_DIRECT_BUFFER_BYTES, 64 * 1024);
     }
 
     /**
@@ -99,7 +119,6 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
      * and SelectorThread (which selects on client connections) classes.
      */
     private abstract class AbstractSelectThread extends ZooKeeperThread {
-
         protected final Selector selector;
 
         public AbstractSelectThread(String name) throws IOException {
@@ -122,7 +141,8 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
             try {
                 selector.close();
             } catch (IOException e) {
-                LOG.warn("ignored exception during selector close.", e);
+                LOG.warn("ignored exception during selector close "
+                        + e.getMessage());
             }
         }
 
@@ -131,7 +151,9 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
                 try {
                     key.cancel();
                 } catch (Exception ex) {
-                    LOG.debug("ignoring exception during selectionkey cancel", ex);
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("ignoring exception during selectionkey cancel", ex);
+                    }
                 }
             }
         }
@@ -142,12 +164,12 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
                     // Hard close immediately, discarding buffers
                     sc.socket().setSoLinger(true, 0);
                 } catch (SocketException e) {
-                    LOG.warn("Unable to set socket linger to 0, socket close may stall in CLOSE_WAIT", e);
+                    LOG.warn("Unable to set socket linger to 0, socket close"
+                             + " may stall in CLOSE_WAIT", e);
                 }
                 NIOServerCnxn.closeSock(sc);
             }
         }
-
     }
 
     /**
@@ -158,19 +180,21 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
      * descriptors by briefly sleeping before retrying.
      */
     private class AcceptThread extends AbstractSelectThread {
-
         private final ServerSocketChannel acceptSocket;
         private final SelectionKey acceptKey;
         private final RateLogger acceptErrorLogger = new RateLogger(LOG);
         private final Collection<SelectorThread> selectorThreads;
         private Iterator<SelectorThread> selectorIterator;
         private volatile boolean reconfiguring = false;
-
-        public AcceptThread(ServerSocketChannel ss, InetSocketAddress addr, Set<SelectorThread> selectorThreads) throws IOException {
+        
+        public AcceptThread(ServerSocketChannel ss, InetSocketAddress addr,
+                Set<SelectorThread> selectorThreads) throws IOException {
             super("NIOServerCxnFactory.AcceptThread:" + addr);
             this.acceptSocket = ss;
-            this.acceptKey = acceptSocket.register(selector, SelectionKey.OP_ACCEPT);
-            this.selectorThreads = Collections.unmodifiableList(new ArrayList<SelectorThread>(selectorThreads));
+            this.acceptKey =
+                acceptSocket.register(selector, SelectionKey.OP_ACCEPT);
+            this.selectorThreads = Collections.unmodifiableList(
+                new ArrayList<SelectorThread>(selectorThreads));
             selectorIterator = this.selectorThreads.iterator();
         }
 
@@ -189,22 +213,23 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
                 closeSelector();
                 // This will wake up the selector threads, and tell the
                 // worker thread pool to begin shutdown.
-                if (!reconfiguring) {
+            	if (!reconfiguring) {                    
                     NIOServerCnxnFactory.this.stop();
                 }
                 LOG.info("accept thread exitted run method");
             }
         }
-
+        
         public void setReconfiguring() {
-            reconfiguring = true;
+        	reconfiguring = true;
         }
 
         private void select() {
             try {
                 selector.select();
 
-                Iterator<SelectionKey> selectedKeys = selector.selectedKeys().iterator();
+                Iterator<SelectionKey> selectedKeys =
+                    selector.selectedKeys().iterator();
                 while (!stopped && selectedKeys.hasNext()) {
                     SelectionKey key = selectedKeys.next();
                     selectedKeys.remove();
@@ -221,7 +246,8 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
                             pauseAccept(10);
                         }
                     } else {
-                        LOG.warn("Unexpected ops in accept select {}", key.readyOps());
+                        LOG.warn("Unexpected ops in accept select "
+                                 + key.readyOps());
                     }
                 }
             } catch (IOException e) {
@@ -259,18 +285,16 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
             try {
                 sc = acceptSocket.accept();
                 accepted = true;
-                if (limitTotalNumberOfCnxns()) {
-                    throw new IOException("Too many connections max allowed is " + maxCnxns);
-                }
                 InetAddress ia = sc.socket().getInetAddress();
                 int cnxncount = getClientCnxnCount(ia);
 
-                if (maxClientCnxns > 0 && cnxncount >= maxClientCnxns) {
-                    throw new IOException("Too many connections from " + ia + " - max is " + maxClientCnxns);
+                if (maxClientCnxns > 0 && cnxncount >= maxClientCnxns){
+                    throw new IOException("Too many connections from " + ia
+                                          + " - max is " + maxClientCnxns );
                 }
 
-                LOG.debug("Accepted socket connection from {}", sc.socket().getRemoteSocketAddress());
-
+                LOG.debug("Accepted socket connection from "
+                         + sc.socket().getRemoteSocketAddress());
                 sc.configureBlocking(false);
 
                 // Round-robin assign this connection to a selector thread
@@ -279,19 +303,19 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
                 }
                 SelectorThread selectorThread = selectorIterator.next();
                 if (!selectorThread.addAcceptedConnection(sc)) {
-                    throw new IOException("Unable to add connection to selector queue"
-                                          + (stopped ? " (shutdown in progress)" : ""));
+                    throw new IOException(
+                        "Unable to add connection to selector queue"
+                        + (stopped ? " (shutdown in progress)" : ""));
                 }
                 acceptErrorLogger.flush();
             } catch (IOException e) {
                 // accept, maxClientCnxns, configureBlocking
-                ServerMetrics.getMetrics().CONNECTION_REJECTED.add(1);
-                acceptErrorLogger.rateLimitLog("Error accepting new connection: " + e.getMessage());
+                acceptErrorLogger.rateLimitLog(
+                    "Error accepting new connection: " + e.getMessage());
                 fastCloseSock(sc);
             }
             return accepted;
         }
-
     }
 
     /**
@@ -316,7 +340,6 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
      * directly.
      */
     class SelectorThread extends AbstractSelectThread {
-
         private final int id;
         private final Queue<SocketChannel> acceptedQueue;
         private final Queue<SelectionKey> updateQueue;
@@ -380,7 +403,7 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
                 for (SelectionKey key : selector.keys()) {
                     NIOServerCnxn cnxn = (NIOServerCnxn) key.attachment();
                     if (cnxn.isSelectable()) {
-                        cnxn.close(ServerCnxn.DisconnectReason.SERVER_SHUTDOWN);
+                        cnxn.close();
                     }
                     cleanupSelectionKey(key);
                 }
@@ -403,10 +426,11 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
                 selector.select();
 
                 Set<SelectionKey> selected = selector.selectedKeys();
-                ArrayList<SelectionKey> selectedList = new ArrayList<SelectionKey>(selected);
+                ArrayList<SelectionKey> selectedList =
+                    new ArrayList<SelectionKey>(selected);
                 Collections.shuffle(selectedList);
                 Iterator<SelectionKey> selectedKeys = selectedList.iterator();
-                while (!stopped && selectedKeys.hasNext()) {
+                while(!stopped && selectedKeys.hasNext()) {
                     SelectionKey key = selectedKeys.next();
                     selected.remove(key);
 
@@ -417,7 +441,7 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
                     if (key.isReadable() || key.isWritable()) {
                         handleIO(key);
                     } else {
-                        LOG.warn("Unexpected ops in select {}", key.readyOps());
+                        LOG.warn("Unexpected ops in select " + key.readyOps());
                     }
                 }
             } catch (IOException e) {
@@ -479,7 +503,6 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
                 }
             }
         }
-
     }
 
     /**
@@ -487,7 +510,6 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
      * run on a connection using a WorkerService.
      */
     private class IOWorkRequest extends WorkerService.WorkRequest {
-
         private final SelectorThread selectorThread;
         private final SelectionKey key;
         private final NIOServerCnxn cnxn;
@@ -509,7 +531,7 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
 
                 // Check if we shutdown or doIO() closed this connection
                 if (stopped) {
-                    cnxn.close(ServerCnxn.DisconnectReason.SERVER_SHUTDOWN);
+                    cnxn.close();
                     return;
                 }
                 if (!key.isValid()) {
@@ -525,15 +547,14 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
             // on the current set of interest ops, which may have changed
             // as a result of the I/O operations we just performed.
             if (!selectorThread.addInterestOpsUpdateRequest(key)) {
-                cnxn.close(ServerCnxn.DisconnectReason.CONNECTION_MODE_CHANGED);
+                cnxn.close();
             }
         }
 
         @Override
         public void cleanup() {
-            cnxn.close(ServerCnxn.DisconnectReason.CLEAN_UP);
+            cnxn.close();
         }
-
     }
 
     /**
@@ -541,7 +562,6 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
      * connections on which no session is established are properly expired.
      */
     private class ConnectionExpirerThread extends ZooKeeperThread {
-
         ConnectionExpirerThread() {
             super("ConnnectionExpirer");
         }
@@ -555,16 +575,14 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
                         continue;
                     }
                     for (NIOServerCnxn conn : cnxnExpiryQueue.poll()) {
-                        ServerMetrics.getMetrics().SESSIONLESS_CONNECTIONS_EXPIRED.add(1);
-                        conn.close(ServerCnxn.DisconnectReason.CONNECTION_EXPIRED);
+                        conn.close();
                     }
                 }
 
             } catch (InterruptedException e) {
-                LOG.info("ConnnectionExpirerThread interrupted");
+                  LOG.info("ConnnectionExpirerThread interrupted");
             }
         }
-
     }
 
     ServerSocketChannel ss;
@@ -575,25 +593,29 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
      * thread pool is created), we can create a fixed set of these to be
      * shared by connections.
      */
-    private static final ThreadLocal<ByteBuffer> directBuffer = new ThreadLocal<ByteBuffer>() {
-        @Override
-        protected ByteBuffer initialValue() {
-            return ByteBuffer.allocateDirect(directBufferBytes);
-        }
-    };
+    private static final ThreadLocal<ByteBuffer> directBuffer =
+        new ThreadLocal<ByteBuffer>() {
+            @Override protected ByteBuffer initialValue() {
+                return ByteBuffer.allocateDirect(directBufferBytes);
+            }
+        };
 
     public static ByteBuffer getDirectBuffer() {
         return directBufferBytes > 0 ? directBuffer.get() : null;
     }
 
+    // sessionMap is used by closeSession()
+    private final ConcurrentHashMap<Long, NIOServerCnxn> sessionMap =
+        new ConcurrentHashMap<Long, NIOServerCnxn>();
     // ipMap is used to limit connections per IP
-    private final ConcurrentHashMap<InetAddress, Set<NIOServerCnxn>> ipMap = new ConcurrentHashMap<InetAddress, Set<NIOServerCnxn>>();
+    private final ConcurrentHashMap<InetAddress, Set<NIOServerCnxn>> ipMap =
+        new ConcurrentHashMap<InetAddress, Set<NIOServerCnxn>>( );
 
     protected int maxClientCnxns = 60;
-    int listenBacklog = -1;
 
     int sessionlessCnxnTimeout;
     private ExpiryQueue<NIOServerCnxn> cnxnExpiryQueue;
+
 
     protected WorkerService workerPool;
 
@@ -613,56 +635,56 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
     private volatile boolean stopped = true;
     private ConnectionExpirerThread expirerThread;
     private AcceptThread acceptThread;
-    private final Set<SelectorThread> selectorThreads = new HashSet<SelectorThread>();
+    private final Set<SelectorThread> selectorThreads =
+        new HashSet<SelectorThread>();
 
     @Override
-    public void configure(InetSocketAddress addr, int maxcc, int backlog, boolean secure) throws IOException {
+    public void configure(InetSocketAddress addr, int maxcc, boolean secure) throws IOException {
         if (secure) {
             throw new UnsupportedOperationException("SSL isn't supported in NIOServerCnxn");
         }
         configureSaslLogin();
 
         maxClientCnxns = maxcc;
-        initMaxCnxns();
-        sessionlessCnxnTimeout = Integer.getInteger(ZOOKEEPER_NIO_SESSIONLESS_CNXN_TIMEOUT, 10000);
+        sessionlessCnxnTimeout = Integer.getInteger(
+            ZOOKEEPER_NIO_SESSIONLESS_CNXN_TIMEOUT, 10000);
         // We also use the sessionlessCnxnTimeout as expiring interval for
         // cnxnExpiryQueue. These don't need to be the same, but the expiring
         // interval passed into the ExpiryQueue() constructor below should be
         // less than or equal to the timeout.
-        cnxnExpiryQueue = new ExpiryQueue<NIOServerCnxn>(sessionlessCnxnTimeout);
+        cnxnExpiryQueue =
+            new ExpiryQueue<NIOServerCnxn>(sessionlessCnxnTimeout);
         expirerThread = new ConnectionExpirerThread();
 
         int numCores = Runtime.getRuntime().availableProcessors();
         // 32 cores sweet spot seems to be 4 selector threads
         numSelectorThreads = Integer.getInteger(
             ZOOKEEPER_NIO_NUM_SELECTOR_THREADS,
-            Math.max((int) Math.sqrt((float) numCores / 2), 1));
+            Math.max((int) Math.sqrt((float) numCores/2), 1));
         if (numSelectorThreads < 1) {
             throw new IOException("numSelectorThreads must be at least 1");
         }
 
-        numWorkerThreads = Integer.getInteger(ZOOKEEPER_NIO_NUM_WORKER_THREADS, 2 * numCores);
-        workerShutdownTimeoutMS = Long.getLong(ZOOKEEPER_NIO_SHUTDOWN_TIMEOUT, 5000);
+        numWorkerThreads = Integer.getInteger(
+            ZOOKEEPER_NIO_NUM_WORKER_THREADS, 2 * numCores);
+        workerShutdownTimeoutMS = Long.getLong(
+            ZOOKEEPER_NIO_SHUTDOWN_TIMEOUT, 5000);
 
-        String logMsg = "Configuring NIO connection handler with "
-            + (sessionlessCnxnTimeout / 1000) + "s sessionless connection timeout, "
-            + numSelectorThreads + " selector thread(s), "
-            + (numWorkerThreads > 0 ? numWorkerThreads : "no") + " worker threads, and "
-            + (directBufferBytes == 0 ? "gathered writes." : ("" + (directBufferBytes / 1024) + " kB direct buffers."));
-        LOG.info(logMsg);
-        for (int i = 0; i < numSelectorThreads; ++i) {
+        LOG.info("Configuring NIO connection handler with "
+                 + (sessionlessCnxnTimeout/1000) + "s sessionless connection"
+                 + " timeout, " + numSelectorThreads + " selector thread(s), "
+                 + (numWorkerThreads > 0 ? numWorkerThreads : "no")
+                 + " worker threads, and "
+                 + (directBufferBytes == 0 ? "gathered writes." :
+                    ("" + (directBufferBytes/1024) + " kB direct buffers.")));
+        for(int i=0; i<numSelectorThreads; ++i) {
             selectorThreads.add(new SelectorThread(i));
         }
 
-        listenBacklog = backlog;
         this.ss = ServerSocketChannel.open();
         ss.socket().setReuseAddress(true);
-        LOG.info("binding to port {}", addr);
-        if (listenBacklog == -1) {
-            ss.socket().bind(addr);
-        } else {
-            ss.socket().bind(addr, listenBacklog);
-        }
+        LOG.info("binding to port " + addr);
+        ss.socket().bind(addr);
         ss.configureBlocking(false);
         acceptThread = new AcceptThread(ss, addr, selectorThreads);
     }
@@ -677,7 +699,7 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
 
     @Override
     public void reconfigure(InetSocketAddress addr) {
-        ServerSocketChannel oldSS = ss;
+        ServerSocketChannel oldSS = ss;        
         try {
             acceptThread.setReconfiguring();
             tryClose(oldSS);
@@ -685,18 +707,19 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
             try {
                 acceptThread.join();
             } catch (InterruptedException e) {
-                LOG.error("Error joining old acceptThread when reconfiguring client port.", e);
+                LOG.error("Error joining old acceptThread when reconfiguring client port {}",
+                            e.getMessage());
                 Thread.currentThread().interrupt();
             }
             this.ss = ServerSocketChannel.open();
             ss.socket().setReuseAddress(true);
-            LOG.info("binding to port {}", addr);
+            LOG.info("binding to port " + addr);
             ss.socket().bind(addr);
             ss.configureBlocking(false);
             acceptThread = new AcceptThread(ss, addr, selectorThreads);
             acceptThread.start();
-        } catch (IOException e) {
-            LOG.error("Error reconfiguring client port to {}", addr, e);
+        } catch(IOException e) {
+            LOG.error("Error reconfiguring client port to {} {}", addr, e.getMessage());
             tryClose(oldSS);
         }
     }
@@ -711,18 +734,14 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
         maxClientCnxns = max;
     }
 
-    /** {@inheritDoc} */
-    public int getSocketListenBacklog() {
-        return listenBacklog;
-    }
-
     @Override
     public void start() {
         stopped = false;
         if (workerPool == null) {
-            workerPool = new WorkerService("NIOWorker", numWorkerThreads, false);
+            workerPool = new WorkerService(
+                "NIOWorker", numWorkerThreads, false);
         }
-        for (SelectorThread thread : selectorThreads) {
+        for(SelectorThread thread : selectorThreads) {
             if (thread.getState() == Thread.State.NEW) {
                 thread.start();
             }
@@ -737,7 +756,8 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
     }
 
     @Override
-    public void startup(ZooKeeperServer zks, boolean startServer) throws IOException, InterruptedException {
+    public void startup(ZooKeeperServer zks, boolean startServer)
+            throws IOException, InterruptedException {
         start();
         setZooKeeperServer(zks);
         if (startServer) {
@@ -747,12 +767,12 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
     }
 
     @Override
-    public InetSocketAddress getLocalAddress() {
-        return (InetSocketAddress) ss.socket().getLocalSocketAddress();
+    public InetSocketAddress getLocalAddress(){
+        return (InetSocketAddress)ss.socket().getLocalSocketAddress();
     }
 
     @Override
-    public int getLocalPort() {
+    public int getLocalPort(){
         return ss.socket().getLocalPort();
     }
 
@@ -767,7 +787,10 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
         }
         cnxnExpiryQueue.remove(cnxn);
 
-        removeCnxnFromSessionMap(cnxn);
+        long sessionId = cnxn.getSessionId();
+        if (sessionId != 0) {
+            sessionMap.remove(sessionId);
+        }
 
         InetAddress addr = cnxn.getSocketAddress();
         if (addr != null) {
@@ -805,7 +828,8 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
             // of 1 entry --  we need to set the initial cap
             // to 2 to avoid rehash when the first entry is added
             // Construct a ConcurrentHashSet using a ConcurrentHashMap
-            set = Collections.newSetFromMap(new ConcurrentHashMap<NIOServerCnxn, Boolean>(2));
+            set = Collections.newSetFromMap(
+                new ConcurrentHashMap<NIOServerCnxn, Boolean>(2));
             // Put the new set in the map, but only if another thread
             // hasn't beaten us to it
             Set<NIOServerCnxn> existingSet = ipMap.putIfAbsent(addr, set);
@@ -819,15 +843,14 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
         touchCnxn(cnxn);
     }
 
-    protected NIOServerCnxn createConnection(SocketChannel sock, SelectionKey sk, SelectorThread selectorThread) throws IOException {
+    protected NIOServerCnxn createConnection(SocketChannel sock,
+            SelectionKey sk, SelectorThread selectorThread) throws IOException {
         return new NIOServerCnxn(zkServer, sock, sk, this, selectorThread);
     }
 
     private int getClientCnxnCount(InetAddress cl) {
         Set<NIOServerCnxn> s = ipMap.get(cl);
-        if (s == null) {
-            return 0;
-        }
+        if (s == null) return 0;
         return s.size();
     }
 
@@ -837,17 +860,15 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
      */
     @Override
     @SuppressWarnings("unchecked")
-    public void closeAll(ServerCnxn.DisconnectReason reason) {
+    public void closeAll() {
         // clear all the connections on which we are selecting
         for (ServerCnxn cnxn : cnxns) {
             try {
                 // This will remove the cnxn from cnxns
-                cnxn.close(reason);
+                cnxn.close();
             } catch (Exception e) {
-                LOG.warn(
-                    "Ignoring exception closing cnxn session id 0x{}",
-                    Long.toHexString(cnxn.getSessionId()),
-                    e);
+                LOG.warn("Ignoring exception closing cnxn sessionid 0x"
+                         + Long.toHexString(cnxn.getSessionId()), e);
             }
         }
     }
@@ -893,7 +914,7 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
             join();
 
             // close all open connections
-            closeAll(ServerCnxn.DisconnectReason.SERVER_SHUTDOWN);
+            closeAll();
 
             if (login != null) {
                 login.shutdown();
@@ -907,6 +928,20 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
         if (zkServer != null) {
             zkServer.shutdown();
         }
+    }
+
+    public void addSession(long sessionId, NIOServerCnxn cnxn) {
+        sessionMap.put(sessionId, cnxn);
+    }
+
+    @Override
+    public boolean closeSession(long sessionId) {
+        NIOServerCnxn cnxn = sessionMap.remove(sessionId);
+        if (cnxn != null) {
+            cnxn.close();
+            return true;
+        }
+        return false;
     }
 
     @Override
@@ -935,19 +970,18 @@ public class NIOServerCnxnFactory extends ServerCnxnFactory {
     @Override
     public void resetAllConnectionStats() {
         // No need to synchronize since cnxns is backed by a ConcurrentHashMap
-        for (ServerCnxn c : cnxns) {
+        for(ServerCnxn c : cnxns){
             c.resetStats();
         }
     }
 
     @Override
     public Iterable<Map<String, Object>> getAllConnectionInfo(boolean brief) {
-        HashSet<Map<String, Object>> info = new HashSet<Map<String, Object>>();
+        HashSet<Map<String,Object>> info = new HashSet<Map<String,Object>>();
         // No need to synchronize since cnxns is backed by a ConcurrentHashMap
         for (ServerCnxn c : cnxns) {
             info.add(c.getConnectionInfo(brief));
         }
         return info;
     }
-
 }

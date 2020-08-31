@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,11 +15,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.zookeeper.cli;
 
 import org.apache.commons.cli.CommandLine;
-import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.Parser;
@@ -34,23 +32,19 @@ public class DeleteAllCommand extends CliCommand {
 
     private static Options options = new Options();
     private String[] args;
-    private CommandLine cl;
-
-    static {
-        options.addOption(new Option("b", true, "batch size"));
-    }
 
     public DeleteAllCommand() {
         this("deleteall");
     }
 
     public DeleteAllCommand(String cmdStr) {
-        super(cmdStr, "path [-b batch size]");
+        super(cmdStr, "path");
     }
-
+    
     @Override
     public CliCommand parse(String[] cmdArgs) throws CliParseException {
         Parser parser = new PosixParser();
+        CommandLine cl;
         try {
             cl = parser.parse(options, cmdArgs);
         } catch (ParseException ex) {
@@ -66,25 +60,23 @@ public class DeleteAllCommand extends CliCommand {
 
     @Override
     public boolean exec() throws CliException {
-        int batchSize;
-        try {
-            batchSize = cl.hasOption("b") ? Integer.parseInt(cl.getOptionValue("b")) : 1000;
-        } catch (NumberFormatException e) {
-            throw new MalformedCommandException("-b argument must be an int value");
-        }
-
+        printDeprecatedWarning();
+        
         String path = args[1];
         try {
-            boolean success = ZKUtil.deleteRecursive(zk, path, batchSize);
-            if (!success) {
-                err.println("Failed to delete some node(s) in the subtree!");
-            }
+            ZKUtil.deleteRecursive(zk, path);
         } catch (IllegalArgumentException ex) {
             throw new MalformedPathException(ex.getMessage());
-        } catch (KeeperException | InterruptedException ex) {
+        } catch (KeeperException|InterruptedException ex) {
             throw new CliWrapperException(ex);
         }
         return false;
     }
-
+    
+    private void printDeprecatedWarning() {
+        if("rmr".equals(args[0])) {
+            err.println("The command 'rmr' has been deprecated. " +
+                  "Please use 'deleteall' instead.");
+        }
+    }
 }

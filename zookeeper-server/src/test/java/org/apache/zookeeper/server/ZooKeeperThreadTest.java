@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,18 +15,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.zookeeper.server;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+
+
 import org.apache.zookeeper.ZKTestCase;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import org.junit.Assert;
+import org.junit.Test;
 
 public class ZooKeeperThreadTest extends ZKTestCase {
-
     private CountDownLatch runningLatch = new CountDownLatch(1);
 
     public class MyThread extends ZooKeeperThread {
@@ -43,7 +42,6 @@ public class ZooKeeperThreadTest extends ZKTestCase {
         protected void handleException(String thName, Throwable e) {
             runningLatch.countDown();
         }
-
     }
 
     public class MyCriticalThread extends ZooKeeperCriticalThread {
@@ -66,23 +64,22 @@ public class ZooKeeperThreadTest extends ZKTestCase {
         protected void handleException(String thName, Throwable e) {
             runningLatch.countDown();
         }
-
     }
 
     /**
      * Test verifies uncaught exception handling of ZooKeeperThread
      */
-    @Test
-    @Timeout(value = 30)
+    @Test(timeout = 30000)
     public void testUncaughtException() throws Exception {
         MyThread t1 = new MyThread("Test-Thread");
         t1.start();
-        assertTrue(runningLatch.await(10000, TimeUnit.MILLISECONDS), "Uncaught exception is not properly handled.");
+        Assert.assertTrue("Uncaught exception is not properly handled.",
+                runningLatch.await(10000, TimeUnit.MILLISECONDS));
 
         runningLatch = new CountDownLatch(1);
         MyCriticalThread t2 = new MyCriticalThread("Test-Critical-Thread");
         t2.start();
-        assertTrue(runningLatch.await(10000, TimeUnit.MILLISECONDS), "Uncaught exception is not properly handled.");
+        Assert.assertTrue("Uncaught exception is not properly handled.",
+                runningLatch.await(10000, TimeUnit.MILLISECONDS));
     }
-
 }

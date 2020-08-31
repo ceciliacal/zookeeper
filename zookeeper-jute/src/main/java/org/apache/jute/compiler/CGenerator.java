@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,31 +18,31 @@
 
 package org.apache.jute.compiler;
 
+import java.util.ArrayList;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.Iterator;
-import java.util.List;
 
 /**
  * C++ Code generator front-end for Hadoop record I/O.
  */
 class CGenerator {
     private String mName;
-    private List<JFile> mInclFiles;
-    private List<JRecord> mRecList;
+    private ArrayList<JFile> mInclFiles;
+    private ArrayList<JRecord> mRecList;
     private final File outputDirectory;
 
-    /**
-     * Creates a new instance of CppGenerator.
+    /** Creates a new instance of CppGenerator
      *
-     * @param name            possibly full pathname to the file
-     * @param ilist           included files (as JFile)
-     * @param rlist           List of records defined within this file
+     * @param name possibly full pathname to the file
+     * @param ilist included files (as JFile)
+     * @param rlist List of records defined within this file
      * @param outputDirectory
      */
-    CGenerator(String name, List<JFile> ilist, List<JRecord> rlist,
-               File outputDirectory) {
+    CGenerator(String name, ArrayList<JFile> ilist, ArrayList<JRecord> rlist,
+            File outputDirectory)
+    {
         this.outputDirectory = outputDirectory;
         mName = (new File(name)).getName();
         mInclFiles = ilist;

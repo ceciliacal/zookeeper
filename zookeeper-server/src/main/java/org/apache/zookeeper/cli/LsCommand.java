@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements. See the NOTICE file distributed with this
  * work for additional information regarding copyright ownership. The ASF
@@ -14,17 +14,12 @@
  * License for the specific language governing permissions and limitations under
  * the License.
  */
-
 package org.apache.zookeeper.cli;
 
 import java.util.Collections;
 import java.util.List;
-import org.apache.commons.cli.CommandLine;
-import org.apache.commons.cli.HelpFormatter;
-import org.apache.commons.cli.Options;
-import org.apache.commons.cli.ParseException;
-import org.apache.commons.cli.Parser;
-import org.apache.commons.cli.PosixParser;
+import org.apache.commons.cli.*;
+import org.apache.zookeeper.AsyncCallback.StringCallback;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZKUtil;
 import org.apache.zookeeper.data.Stat;
@@ -35,7 +30,7 @@ import org.apache.zookeeper.data.Stat;
 public class LsCommand extends CliCommand {
 
     private static Options options = new Options();
-    private String[] args;
+    private String args[];
     private CommandLine cl;
 
     static {
@@ -78,7 +73,8 @@ public class LsCommand extends CliCommand {
         if (args.length > 2) {
             // rewrite to option
             cmdArgs[2] = "-w";
-            err.println("'ls path [watch]' has been deprecated. " + "Please use 'ls [-w] path' instead.");
+            err.println("'ls path [watch]' has been deprecated. "
+                    + "Please use 'ls [-w] path' instead.");
             Parser parser = new PosixParser();
             try {
                 cl = parser.parse(options, cmdArgs);
@@ -101,7 +97,12 @@ public class LsCommand extends CliCommand {
         boolean recursive = cl.hasOption("R");
         try {
             if (recursive) {
-                ZKUtil.visitSubTreeDFS(zk, path, watch, (rc, path1, ctx, name) -> out.println(path1));
+                ZKUtil.visitSubTreeDFS(zk, path, watch, new StringCallback() {
+                    @Override
+                    public void processResult(int rc, String path, Object ctx, String name) {
+                        out.println(path);
+                    }
+                });
             } else {
                 Stat stat = withStat ? new Stat() : null;
                 List<String> children = zk.getChildren(path, watch, stat);
@@ -109,7 +110,7 @@ public class LsCommand extends CliCommand {
             }
         } catch (IllegalArgumentException ex) {
             throw new MalformedPathException(ex.getMessage());
-        } catch (KeeperException | InterruptedException ex) {
+        } catch (KeeperException|InterruptedException ex) {
             throw new CliWrapperException(ex);
         }
         return watch;
@@ -127,10 +128,10 @@ public class LsCommand extends CliCommand {
             }
             out.append(child);
         }
-        out.append("]\n");
+        out.append("]");
         if (stat != null) {
             new StatPrinter(out).print(stat);
         }
+        out.append("\n");
     }
-
 }

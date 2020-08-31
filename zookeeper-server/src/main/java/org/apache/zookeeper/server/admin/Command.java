@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,6 +20,7 @@ package org.apache.zookeeper.server.admin;
 
 import java.util.Map;
 import java.util.Set;
+
 import org.apache.zookeeper.server.ZooKeeperServer;
 
 /**
@@ -30,7 +31,6 @@ import org.apache.zookeeper.server.ZooKeeperServer;
  * @see JettyAdminServer
  */
 public interface Command {
-
     /**
      * The set of all names that can be used to refer to this command (e.g.,
      * "configuration", "config", and "conf").
@@ -45,16 +45,10 @@ public interface Command {
     String getPrimaryName();
 
     /**
-     * A string documenting this command (e.g., what it does, any arguments it
+     * A string documentating this command (e.g., what it does, any arguments it
      * takes).
      */
     String getDoc();
-
-    /**
-     * @return true if the command requires an active ZooKeeperServer or a
-     *     synced peer in order to resolve
-     */
-    boolean isServerRequired();
 
     /**
      * Run this command. Commands take a ZooKeeperServer and String-valued
@@ -65,11 +59,10 @@ public interface Command {
      * map with an appropriate message rather than throwing an exception.
      *
      * @param zkServer
-     * @param kwargs keyword -&gt; argument value mapping
+     * @param kwargs keyword -> argument value mapping
      * @return Map representing response to command containing at minimum:
      *    - "command" key containing the command's primary name
      *    - "error" key containing a String error message or null if no error
      */
     CommandResponse run(ZooKeeperServer zkServer, Map<String, String> kwargs);
-
 }

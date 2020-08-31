@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,14 +19,13 @@
 package org.apache.zookeeper.server.quorum;
 
 import org.apache.zookeeper.jmx.ZKMBeanInfo;
-import org.apache.zookeeper.server.ZooKeeperServer;
+import org.apache.zookeeper.server.quorum.QuorumPeer;
 
 public class QuorumBean implements QuorumMXBean, ZKMBeanInfo {
-
     private final QuorumPeer peer;
     private final String name;
-
-    public QuorumBean(QuorumPeer peer) {
+    
+    public QuorumBean(QuorumPeer peer){
         this.peer = peer;
         name = "ReplicatedServer_id" + peer.getId();
     }
@@ -46,22 +45,6 @@ public class QuorumBean implements QuorumMXBean, ZKMBeanInfo {
         return peer.getQuorumSize();
     }
 
-    public int getSyncLimit() {
-        return peer.getSyncLimit();
-    }
-
-    public int getInitLimit() {
-        return peer.getInitLimit();
-    }
-
-    public void setInitLimit(int initLimit) {
-        peer.setInitLimit(initLimit);
-    }
-
-    public void setSyncLimit(int syncLimit) {
-        peer.setSyncLimit(syncLimit);
-    }
-
     @Override
     public boolean isSslQuorum() {
         return peer.isSslQuorum();
@@ -70,25 +53,5 @@ public class QuorumBean implements QuorumMXBean, ZKMBeanInfo {
     @Override
     public boolean isPortUnification() {
         return peer.shouldUsePortUnification();
-    }
-
-    @Override
-    public long getObserverElectionDelayMS() {
-        return Observer.getObserverElectionDelayMs();
-    }
-
-    @Override
-    public void setObserverElectionDelayMS(long delayMS) {
-        Observer.setObserverElectionDelayMs(delayMS);
-    }
-
-    @Override
-    public boolean getDigestEnabled() {
-        return ZooKeeperServer.isDigestEnabled();
-    }
-
-    @Override
-    public void disableDigest() {
-        ZooKeeperServer.setDigestEnabled(false);
     }
 }

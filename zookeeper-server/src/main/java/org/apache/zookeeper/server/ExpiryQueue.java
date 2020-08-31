@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,10 +21,12 @@ package org.apache.zookeeper.server;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.apache.zookeeper.common.Time;
 
 /**
@@ -33,14 +35,15 @@ import org.apache.zookeeper.common.Time;
  * to expire connections.
  */
 public class ExpiryQueue<E> {
-
-    private final ConcurrentHashMap<E, Long> elemMap = new ConcurrentHashMap<E, Long>();
+    private final ConcurrentHashMap<E, Long> elemMap =
+        new ConcurrentHashMap<E, Long>();
     /**
      * The maximum number of buckets is equal to max timeout/expirationInterval,
      * so the expirationInterval should not be too small compared to the
      * max timeout that this expiry queue needs to maintain.
      */
-    private final ConcurrentHashMap<Long, Set<E>> expiryMap = new ConcurrentHashMap<Long, Set<E>>();
+    private final ConcurrentHashMap<Long, Set<E>> expiryMap =
+        new ConcurrentHashMap<Long, Set<E>>();
 
     private final AtomicLong nextExpirationTime = new AtomicLong();
     private final int expirationInterval;
@@ -57,7 +60,7 @@ public class ExpiryQueue<E> {
     /**
      * Removes element from the queue.
      * @param elem  element to remove
-     * @return time at which the element was set to expire, or null if
+     * @return      time at which the element was set to expire, or null if
      *              it wasn't present
      */
     public Long remove(E elem) {
@@ -78,7 +81,7 @@ public class ExpiryQueue<E> {
      * timeout to the expiry interval bucketed used by this queue.
      * @param elem     element to add/update
      * @param timeout  timout in milliseconds
-     * @return time at which the element is now set to expire if
+     * @return         time at which the element is now set to expire if
      *                 changed, or null if unchanged
      */
     public Long update(E elem, int timeout) {
@@ -95,7 +98,8 @@ public class ExpiryQueue<E> {
         Set<E> set = expiryMap.get(newExpiryTime);
         if (set == null) {
             // Construct a ConcurrentHashSet using a ConcurrentHashMap
-            set = Collections.newSetFromMap(new ConcurrentHashMap<E, Boolean>());
+            set = Collections.newSetFromMap(
+                new ConcurrentHashMap<E, Boolean>());
             // Put the new set in the map, but only if another thread
             // hasn't beaten us to it
             Set<E> existingSet = expiryMap.putIfAbsent(newExpiryTime, set);
@@ -143,7 +147,8 @@ public class ExpiryQueue<E> {
 
         Set<E> set = null;
         long newExpirationTime = expirationTime + expirationInterval;
-        if (nextExpirationTime.compareAndSet(expirationTime, newExpirationTime)) {
+        if (nextExpirationTime.compareAndSet(
+              expirationTime, newExpirationTime)) {
             set = expiryMap.remove(expirationTime);
         }
         if (set == null) {
@@ -176,11 +181,10 @@ public class ExpiryQueue<E> {
     }
 
     /**
-     * Returns an unmodifiable view of the expiration time -&gt; elements mapping.
+     * Returns an unmodifiable view of the expiration time -> elements mapping.
      */
     public Map<Long, Set<E>> getExpiryMap() {
         return Collections.unmodifiableMap(expiryMap);
     }
-
 }
 

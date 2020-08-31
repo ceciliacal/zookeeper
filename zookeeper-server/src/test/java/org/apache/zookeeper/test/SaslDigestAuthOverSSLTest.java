@@ -19,7 +19,7 @@
 package org.apache.zookeeper.test;
 
 import static org.apache.zookeeper.client.ZKClientConfig.LOGIN_CONTEXT_NAME_KEY;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.fail;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -36,9 +36,9 @@ import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.client.ZKClientConfig;
 import org.apache.zookeeper.common.ClientX509Util;
 import org.apache.zookeeper.server.ServerCnxnFactory;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 
 public class SaslDigestAuthOverSSLTest extends ClientBase {
@@ -46,7 +46,7 @@ public class SaslDigestAuthOverSSLTest extends ClientBase {
     private ClientX509Util clientX509Util;
     private File saslConfFile;
 
-    @BeforeEach
+    @Before
     @Override
     public void setUp() throws Exception {
         initSaslConfig();
@@ -57,13 +57,13 @@ public class SaslDigestAuthOverSSLTest extends ClientBase {
         hostPort = host + ":" + port;
 
         serverFactory = ServerCnxnFactory.createFactory();
-        serverFactory.configure(new InetSocketAddress(host, port), maxCnxns, -1, true);
+        serverFactory.configure(new InetSocketAddress(host, port), maxCnxns, true);
 
         super.setUp();
     }
 
 
-    @AfterEach
+    @After
     @Override
     public void tearDown() throws Exception {
         super.tearDown();

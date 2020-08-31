@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,15 +19,13 @@
 package org.apache.zookeeper.test;
 
 import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.fail;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.HashMap;
-import java.util.Map;
+
 import org.apache.jute.Record;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
@@ -47,31 +45,31 @@ import org.apache.zookeeper.server.quorum.QuorumPeer;
 import org.apache.zookeeper.server.quorum.QuorumPeer.QuorumServer;
 import org.apache.zookeeper.txn.SetDataTxn;
 import org.apache.zookeeper.txn.TxnHeader;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class TruncateTest extends ZKTestCase {
-
-    private static final Logger LOG = LoggerFactory.getLogger(TruncateTest.class);
+	private static final Logger LOG = LoggerFactory.getLogger(TruncateTest.class);
     File dataDir1, dataDir2, dataDir3;
-
-    @BeforeEach
+    
+    @Before
     public void setUp() throws IOException {
         dataDir1 = ClientBase.createTmpDir();
         dataDir2 = ClientBase.createTmpDir();
         dataDir3 = ClientBase.createTmpDir();
     }
-
-    @AfterEach
+    
+    @After
     public void tearDown() {
         ClientBase.recursiveDelete(dataDir1);
         ClientBase.recursiveDelete(dataDir2);
         ClientBase.recursiveDelete(dataDir3);
     }
-
+    
     @Test
     public void testTruncationStreamReset() throws Exception {
         File tmpdir = ClientBase.createTmpDir();
@@ -79,7 +77,7 @@ public class TruncateTest extends ZKTestCase {
         ZKDatabase zkdb = new ZKDatabase(snaplog);
         // make sure to snapshot, so that we have something there when
         // truncateLog reloads the db
-        snaplog.save(zkdb.getDataTree(), zkdb.getSessionWithTimeOuts(), false);
+        snaplog.save(zkdb.getDataTree(), zkdb.getSessionWithTimeOuts());
 
         for (int i = 1; i <= 100; i++) {
             append(zkdb, i);
@@ -98,19 +96,19 @@ public class TruncateTest extends ZKTestCase {
 
         TxnHeader hdr = iter.getHeader();
         Record txn = iter.getTxn();
-        assertEquals(1, hdr.getZxid());
-        assertTrue(txn instanceof SetDataTxn);
+        Assert.assertEquals(1, hdr.getZxid());
+        Assert.assertTrue(txn instanceof SetDataTxn);
 
         iter.next();
 
         hdr = iter.getHeader();
         txn = iter.getTxn();
-        assertEquals(200, hdr.getZxid());
-        assertTrue(txn instanceof SetDataTxn);
+        Assert.assertEquals(200, hdr.getZxid());
+        Assert.assertTrue(txn instanceof SetDataTxn);
         iter.close();
         ClientBase.recursiveDelete(tmpdir);
     }
-
+    
     @Test
     public void testTruncationNullLog() throws Exception {
         File tmpdir = ClientBase.createTmpDir();
@@ -122,16 +120,16 @@ public class TruncateTest extends ZKTestCase {
         }
         zkdb.close();
         File[] logs = snaplog.getDataDir().listFiles();
-        for (int i = 0; i < logs.length; i++) {
+        for(int i = 0; i < logs.length; i++) {
             LOG.debug("Deleting: {}", logs[i].getName());
-            assertTrue(logs[i].delete(), "Failed to delete log file: " + logs[i].getName());
+            Assert.assertTrue("Failed to delete log file: " + logs[i].getName(), logs[i].delete());
         }
         try {
             assertThat("truncateLog() should return false if truncation fails instead of throwing exception", zkdb.truncateLog(1), is(false));
         } catch (NullPointerException npe) {
             fail("This should not throw NPE!");
         }
-
+ 
         ClientBase.recursiveDelete(tmpdir);
     }
 
@@ -149,7 +147,8 @@ public class TruncateTest extends ZKTestCase {
         // Prime the server that is going to come in late with 50 txns
         String hostPort = "127.0.0.1:" + PortAssignment.unique();
         int maxCnxns = 100;
-        ServerCnxnFactory factory = ClientBase.createNewServerInstance(null, hostPort, maxCnxns);
+        ServerCnxnFactory factory = ClientBase.createNewServerInstance(null,
+                hostPort, maxCnxns);
         ClientBase.startServerInstance(dataDir1, factory, hostPort, 1);
         ClientBase.shutdownServerInstance(factory, hostPort);
 
@@ -162,15 +161,15 @@ public class TruncateTest extends ZKTestCase {
         ClientBase.startServerInstance(dataDir1, factory, hostPort, 1);
 
         ZooKeeper zk = ClientBase.createZKClient(hostPort, 15000);
-        for (int i = 0; i < 50; i++) {
+        for(int i = 0; i < 50; i++) {
             zk.create("/" + i, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
         }
         zk.close();
-
+        
         ZKDatabase zkDb;
         {
-            ZooKeeperServer zs = factory.getZooKeeperServer();
-
+            ZooKeeperServer zs = ClientBase.getServer(factory);
+    
             zkDb = zs.getZKDatabase();
         }
         factory.shutdown();
@@ -182,25 +181,33 @@ public class TruncateTest extends ZKTestCase {
         int tickTime = 2000;
         int initLimit = 3;
         int syncLimit = 3;
-        int connectToLearnerMasterLimit = 3;
 
         int port1 = PortAssignment.unique();
         int port2 = PortAssignment.unique();
         int port3 = PortAssignment.unique();
-
+        
         // Start up two of the quorum and add 10 txns
-        Map<Long, QuorumServer> peers = new HashMap<Long, QuorumServer>();
-        peers.put(Long.valueOf(1), new QuorumServer(1, new InetSocketAddress("127.0.0.1", PortAssignment.unique()), new InetSocketAddress("127.0.0.1", PortAssignment.unique()), new InetSocketAddress("127.0.0.1", port1)));
-        peers.put(Long.valueOf(2), new QuorumServer(2, new InetSocketAddress("127.0.0.1", PortAssignment.unique()), new InetSocketAddress("127.0.0.1", PortAssignment.unique()), new InetSocketAddress("127.0.0.1", port2)));
-        peers.put(Long.valueOf(3), new QuorumServer(3, new InetSocketAddress("127.0.0.1", PortAssignment.unique()), new InetSocketAddress("127.0.0.1", PortAssignment.unique()), new InetSocketAddress("127.0.0.1", port3)));
+        HashMap<Long,QuorumServer> peers = new HashMap<Long,QuorumServer>();
+        peers.put(Long.valueOf(1), new QuorumServer(1,
+                       new InetSocketAddress("127.0.0.1", PortAssignment.unique()),
+                       new InetSocketAddress("127.0.0.1", PortAssignment.unique()),
+                       new InetSocketAddress("127.0.0.1", port1)));
+        peers.put(Long.valueOf(2), new QuorumServer(2,
+                       new InetSocketAddress("127.0.0.1", PortAssignment.unique()),
+                       new InetSocketAddress("127.0.0.1", PortAssignment.unique()),
+                       new InetSocketAddress("127.0.0.1", port2)));
+        peers.put(Long.valueOf(3), new QuorumServer(3,
+                       new InetSocketAddress("127.0.0.1", PortAssignment.unique()),
+                       new InetSocketAddress("127.0.0.1", PortAssignment.unique()),
+                       new InetSocketAddress("127.0.0.1", port3)));
 
-        QuorumPeer s2 = new QuorumPeer(peers, dataDir2, dataDir2, port2, 3, 2, tickTime, initLimit, syncLimit, connectToLearnerMasterLimit);
+        QuorumPeer s2 = new QuorumPeer(peers, dataDir2, dataDir2, port2, 0, 2, tickTime, initLimit, syncLimit);
         s2.start();
-        QuorumPeer s3 = new QuorumPeer(peers, dataDir3, dataDir3, port3, 3, 3, tickTime, initLimit, syncLimit, connectToLearnerMasterLimit);
+        QuorumPeer s3 = new QuorumPeer(peers, dataDir3, dataDir3, port3, 0, 3, tickTime, initLimit, syncLimit);
         s3.start();
         zk = ClientBase.createZKClient("127.0.0.1:" + port2, 15000);
 
-        for (int i = 0; i < 10; i++) {
+        for(int i = 0; i < 10; i++) {
             zk.create("/" + i, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
         }
         zk.close();
@@ -208,11 +215,11 @@ public class TruncateTest extends ZKTestCase {
         zk2.getData("/9", false, new Stat());
         try {
             zk2.getData("/10", false, new Stat());
-            fail("Should have gotten an error");
-        } catch (KeeperException.NoNodeException e) {
+            Assert.fail("Should have gotten an error");
+        } catch(KeeperException.NoNodeException e) {
             // this is what we want
         }
-        QuorumPeer s1 = new QuorumPeer(peers, dataDir1, dataDir1, port1, 3, 1, tickTime, initLimit, syncLimit, connectToLearnerMasterLimit);
+        QuorumPeer s1 = new QuorumPeer(peers, dataDir1, dataDir1, port1, 0, 1, tickTime, initLimit, syncLimit);
         s1.start();
         ZooKeeper zk1 = ClientBase.createZKClient("127.0.0.1:" + port1, 15000);
         zk1.getData("/9", false, new Stat());
@@ -224,8 +231,8 @@ public class TruncateTest extends ZKTestCase {
             // /11 is the last entry in the log for the xid
             // as a result /12 is the first of the truncated znodes to check for
             zk1.getData("/12", false, new Stat());
-            fail("Should have gotten an error");
-        } catch (KeeperException.NoNodeException e) {
+            Assert.fail("Should have gotten an error");
+        } catch(KeeperException.NoNodeException e) {
             // this is what we want
         }
         zk1.close();
@@ -233,5 +240,4 @@ public class TruncateTest extends ZKTestCase {
         QuorumBase.shutdown(s2);
         QuorumBase.shutdown(s3);
     }
-
 }

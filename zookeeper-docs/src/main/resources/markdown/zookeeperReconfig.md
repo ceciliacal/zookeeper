@@ -19,7 +19,6 @@ limitations under the License.
 * [Overview](#ch_reconfig_intro)
 * [Changes to Configuration Format](#ch_reconfig_format)
     * [Specifying the client port](#sc_reconfig_clientport)
-    * [Specifying multiple server addresses](#sc_multiaddress)
     * [The standaloneEnabled flag](#sc_reconfig_standaloneEnabled)
     * [The reconfigEnabled flag](#sc_reconfig_reconfigEnabled)
     * [Dynamic configuration file](#sc_reconfig_file)
@@ -109,26 +108,6 @@ Examples of legal server statements:
     server.5 = 125.23.63.23:1234:1235:observer;1236
     server.5 = 125.23.63.23:1234:1235;125.23.63.24:1236
     server.5 = 125.23.63.23:1234:1235:participant;125.23.63.23:1236
-
-
-<a name="sc_multiaddress"></a>
-
-### Specifying multiple server addresses
-
-Since ZooKeeper 3.6.0 it is possible to specify multiple addresses for each
-ZooKeeper server (see [ZOOKEEPER-3188](https://issues.apache.org/jira/projects/ZOOKEEPER/issues/ZOOKEEPER-3188)).
-This helps to increase availability and adds network level 
-resiliency to ZooKeeper. When multiple physical network interfaces are used 
-for the servers, ZooKeeper is able to bind on all interfaces and runtime switching 
-to a working interface in case a network error. The different addresses can be 
-specified in the config using a pipe ('|') character. 
-
-Examples for a valid configurations using multiple addresses:
-
-    server.2=zoo2-net1:2888:3888|zoo2-net2:2889:3889;2188
-    server.2=zoo2-net1:2888:3888|zoo2-net2:2889:3889|zoo2-net3:2890:3890;2188
-    server.2=zoo2-net1:2888:3888|zoo2-net2:2889:3889;zoo2-net1:2188
-    server.2=zoo2-net1:2888:3888:observer|zoo2-net2:2889:3889:observer;2188
 
 <a name="sc_reconfig_standaloneEnabled"></a>
 
@@ -352,7 +331,7 @@ starting from **3.5.3** such that only a specific set of users
 can use reconfig commands or APIs, and these users need be configured explicitly. In addition,
 the setup of ZooKeeper cluster must enable authentication so ZooKeeper clients can be authenticated.
 
-We also provide an escape hatch for users who operate and interact with a ZooKeeper ensemble in a secured
+We also provides an escape hatch for users who operate and interact with a ZooKeeper ensemble in a secured
 environment (i.e. behind company firewall). For those users who want to use reconfiguration feature but
 don't want the overhead of configuring an explicit list of authorized user for reconfig access checks,
 they can set ["skipACL"](zookeeperAdmin.html#sc_authOptions) to "yes" which will
@@ -489,7 +468,7 @@ participants in order to be considered legal. If the proposed change
 would leave the cluster with less than 2 participants and standalone
 mode is enabled (standaloneEnabled=true, see the section [The _standaloneEnabled_ flag](#sc_reconfig_standaloneEnabled)), the reconfig will not be
 processed (BadArgumentsException). If standalone mode is disabled
-(standaloneEnabled=false) then it's legal to remain with 1 or more
+(standaloneEnabled=false) then its legal to remain with 1 or more
 participants.
 
 **Adding servers:** Before a
@@ -555,7 +534,7 @@ independently from your main ensemble. It is OK to list multiple
 joiners as observers in an initial config.
 
 If the configuration of existing servers changes or they become unavailable
-before the joiner succeeds to connect and learn about configuration changes, the
+before the joiner succeeds to connect and learn obout configuration changes, the
 joiner may need to be restarted with an updated configuration file in order to be
 able to connect.
 
@@ -657,7 +636,7 @@ can just say "5=". In the example above, if server 5 is already in the
 system, but has different ports or is not an observer, it is updated
 and once the configuration commits becomes an observer and starts
 using these new ports. This is an easy way to turn participants into
-observers and vice versa or change any of their ports, without
+observers and vise versa or change any of their ports, without
 rebooting the server.
 
 ZooKeeper supports two types of Quorum Systems – the simple
@@ -827,7 +806,7 @@ achieve the same task by two reconfig commands: first invoke a
 reconfig to remove D from the configuration and then invoke a second
 command to add it back as a participant (follower). During the
 intermediate state D is a non-voting follower and can ACK the state
-transfer performed during the second reconfig command.
+transfer performed during the second reconfig comand.
 
 <a name="ch_reconfig_rebalancing"></a>
 
@@ -881,7 +860,7 @@ explain the general idea):
                 hostList = config[1];
                 try {
                     // the following command is not blocking but may cause the client to close the socket and
-                    // migrate to a different server. In practice it's better to wait a short period of time, chosen
+                    // migrate to a different server. In practice its better to wait a short period of time, chosen
                     // randomly, so that different clients migrate at different times
                     zk.updateServerList(hostList);
                 } catch (IOException e) {

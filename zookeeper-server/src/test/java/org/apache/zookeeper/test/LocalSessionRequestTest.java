@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,17 +18,17 @@
 
 package org.apache.zookeeper.test;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import org.apache.zookeeper.ZKTestCase;
 import org.apache.zookeeper.ZooKeeper;
-import org.apache.zookeeper.server.Request;
+import org.apache.zookeeper.server.TraceFormatter;
 import org.apache.zookeeper.server.ZKDatabase;
 import org.apache.zookeeper.server.quorum.Leader.Proposal;
 import org.apache.zookeeper.server.quorum.QuorumPeer;
 import org.apache.zookeeper.test.ClientBase.CountdownWatcher;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,25 +38,25 @@ import org.slf4j.LoggerFactory;
  * these request doesn't show up in committedLog on other machines.
  */
 public class LocalSessionRequestTest extends ZKTestCase {
-
-    protected static final Logger LOG = LoggerFactory.getLogger(LocalSessionRequestTest.class);
+    protected static final Logger LOG = LoggerFactory
+            .getLogger(LocalSessionRequestTest.class);
     // Need to be short since we need to wait for session to expire
     public static final int CONNECTION_TIMEOUT = 4000;
 
     private final QuorumBase qb = new QuorumBase();
 
-    @BeforeEach
+    @Before
     public void setUp() throws Exception {
-        LOG.info("STARTING quorum {}", getClass().getName());
+        LOG.info("STARTING quorum " + getClass().getName());
         qb.localSessionsEnabled = true;
         qb.localSessionsUpgradingEnabled = true;
         qb.setUp();
         ClientBase.waitForServerUp(qb.hostPort, 10000);
     }
 
-    @AfterEach
+    @After
     public void tearDown() throws Exception {
-        LOG.info("STOPPING quorum {}", getClass().getName());
+        LOG.info("STOPPING quorum " + getClass().getName());
         qb.tearDown();
     }
 
@@ -77,14 +77,17 @@ public class LocalSessionRequestTest extends ZKTestCase {
      */
     private void validateRequestLog(long sessionId, int peerId) {
         String session = Long.toHexString(sessionId);
-        LOG.info("Searching for txn of session 0x " + session + " on peer " + peerId);
+        LOG.info("Searching for txn of session 0x " + session +
+                " on peer " + peerId);
         String peerType = peerId == qb.getLeaderIndex() ? "leader" : "follower";
         QuorumPeer peer = qb.getPeerList().get(peerId);
         ZKDatabase db = peer.getActiveServer().getZKDatabase();
         for (Proposal p : db.getCommittedLog()) {
-            assertFalse(p.request.sessionId == sessionId,
-                    "Should not see " + Request.op2String(p.request.type)
-                            + " request from local session 0x" + session + " on the " + peerType);
+            Assert.assertFalse("Should not see " +
+                               TraceFormatter.op2String(p.request.type) +
+                               " request from local session 0x" + session +
+                               " on the " + peerType,
+                               p.request.sessionId == sessionId);
         }
     }
 
@@ -95,15 +98,16 @@ public class LocalSessionRequestTest extends ZKTestCase {
      */
     public void testOpenCloseSession(boolean onLeader) throws Exception {
         int leaderIdx = qb.getLeaderIndex();
-        assertFalse(leaderIdx == -1, "No leader in quorum?");
+        Assert.assertFalse("No leader in quorum?", leaderIdx == -1);
         int followerIdx = (leaderIdx + 1) % 5;
         int testPeerIdx = onLeader ? leaderIdx : followerIdx;
         int verifyPeerIdx = onLeader ? followerIdx : leaderIdx;
 
-        String[] hostPorts = qb.hostPort.split(",");
+        String hostPorts[] = qb.hostPort.split(",");
 
         CountdownWatcher watcher = new CountdownWatcher();
-        DisconnectableZooKeeper client = new DisconnectableZooKeeper(hostPorts[testPeerIdx], CONNECTION_TIMEOUT, watcher);
+        DisconnectableZooKeeper client = new DisconnectableZooKeeper(
+                hostPorts[testPeerIdx], CONNECTION_TIMEOUT, watcher);
         watcher.waitForConnected(CONNECTION_TIMEOUT);
 
         long localSessionId1 = client.getSessionId();
@@ -116,7 +120,8 @@ public class LocalSessionRequestTest extends ZKTestCase {
 
         // We don't validate right away, will do another session create first
 
-        ZooKeeper zk = qb.createClient(watcher, hostPorts[testPeerIdx], CONNECTION_TIMEOUT);
+        ZooKeeper zk = qb.createClient(watcher, hostPorts[testPeerIdx],
+                CONNECTION_TIMEOUT);
         watcher.waitForConnected(CONNECTION_TIMEOUT);
 
         long localSessionId2 = zk.getSessionId();
@@ -140,5 +145,4 @@ public class LocalSessionRequestTest extends ZKTestCase {
         qb.shutdownServers();
 
     }
-
 }

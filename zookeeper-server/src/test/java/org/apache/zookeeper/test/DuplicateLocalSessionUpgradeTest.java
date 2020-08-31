@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,18 +18,16 @@
 
 package org.apache.zookeeper.test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.ZKTestCase;
 import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.test.ClientBase.CountdownWatcher;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,25 +38,25 @@ import org.slf4j.LoggerFactory;
  * necessary.
  */
 public class DuplicateLocalSessionUpgradeTest extends ZKTestCase {
-
-    protected static final Logger LOG = LoggerFactory.getLogger(DuplicateLocalSessionUpgradeTest.class);
+    protected static final Logger LOG = LoggerFactory
+            .getLogger(DuplicateLocalSessionUpgradeTest.class);
 
     private final QuorumBase qb = new QuorumBase();
 
     private static final int CONNECTION_TIMEOUT = ClientBase.CONNECTION_TIMEOUT;
 
-    @BeforeEach
+    @Before
     public void setUp() throws Exception {
-        LOG.info("STARTING quorum {}", getClass().getName());
+        LOG.info("STARTING quorum " + getClass().getName());
         qb.localSessionsEnabled = true;
         qb.localSessionsUpgradingEnabled = true;
         qb.setUp();
         ClientBase.waitForServerUp(qb.hostPort, 10000);
     }
 
-    @AfterEach
+    @After
     public void tearDown() throws Exception {
-        LOG.info("STOPPING quorum {}", getClass().getName());
+        LOG.info("STOPPING quorum " + getClass().getName());
         qb.tearDown();
     }
 
@@ -75,39 +73,41 @@ public class DuplicateLocalSessionUpgradeTest extends ZKTestCase {
     private void testLocalSessionUpgrade(boolean testLeader) throws Exception {
 
         int leaderIdx = qb.getLeaderIndex();
-        assertFalse(leaderIdx == -1, "No leader in quorum?");
+        Assert.assertFalse("No leader in quorum?", leaderIdx == -1);
         int followerIdx = (leaderIdx + 1) % 5;
         int testPeerIdx = testLeader ? leaderIdx : followerIdx;
-        String[] hostPorts = qb.hostPort.split(",");
+        String hostPorts[] = qb.hostPort.split(",");
 
         CountdownWatcher watcher = new CountdownWatcher();
-        ZooKeeper zk = qb.createClient(watcher, hostPorts[testPeerIdx], CONNECTION_TIMEOUT);
+        ZooKeeper zk = qb.createClient(watcher, hostPorts[testPeerIdx],
+                CONNECTION_TIMEOUT);
         watcher.waitForConnected(CONNECTION_TIMEOUT);
 
         final String firstPath = "/first";
         final String secondPath = "/ephemeral";
 
         // Just create some node so that we know the current zxid
-        zk.create(firstPath, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+        zk.create(firstPath, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE,
+                CreateMode.PERSISTENT);
 
         // Now, try an ephemeral node. This will trigger session upgrade
         // so there will be createSession request inject into the pipeline
         // prior to this request
-        zk.create(secondPath, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+        zk.create(secondPath, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE,
+                CreateMode.EPHEMERAL);
 
         Stat firstStat = zk.exists(firstPath, null);
-        assertNotNull(firstStat);
+        Assert.assertNotNull(firstStat);
 
         Stat secondStat = zk.exists(secondPath, null);
-        assertNotNull(secondStat);
+        Assert.assertNotNull(secondStat);
 
         long zxidDiff = secondStat.getCzxid() - firstStat.getCzxid();
 
         // If there is only one createSession request in between, zxid diff
         // will be exactly 2. The alternative way of checking is to actually
         // read txnlog but this should be sufficient
-        assertEquals(2L, zxidDiff);
+        Assert.assertEquals(2L, zxidDiff);
 
     }
-
 }

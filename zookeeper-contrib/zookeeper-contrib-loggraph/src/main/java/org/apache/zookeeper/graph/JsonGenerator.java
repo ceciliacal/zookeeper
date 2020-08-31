@@ -31,11 +31,10 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.ListIterator;
-import java.util.Set;
 
 public class JsonGenerator {
     private JSONObject root;
-    private Set<Integer> servers;
+    private HashSet<Integer> servers;
 
     private class Message {
 	private int from;

@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,12 +18,11 @@
 
 package org.apache.zookeeper.test;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
+
 import org.apache.jute.Record;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.PortAssignment;
@@ -34,20 +33,19 @@ import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.server.ServerCnxnFactory;
 import org.apache.zookeeper.server.SyncRequestProcessor;
-import org.apache.zookeeper.server.TxnLogEntry;
 import org.apache.zookeeper.server.ZKDatabase;
 import org.apache.zookeeper.server.ZooKeeperServer;
 import org.apache.zookeeper.server.quorum.Leader.Proposal;
 import org.apache.zookeeper.server.util.SerializeUtils;
 import org.apache.zookeeper.txn.TxnHeader;
-import org.junit.jupiter.api.Test;
+import org.junit.Assert;
+import org.junit.Test;
 
 /**
  * Test loading committed proposal from txnlog. Learner uses these proposals to
  * catch-up with leader
  */
-public class GetProposalFromTxnTest extends ZKTestCase {
-
+public class GetProposalFromTxnTest extends ZKTestCase{
     private static String HOSTPORT = "127.0.0.1:" + PortAssignment.unique();
     private static final int CONNECTION_TIMEOUT = 3000;
 
@@ -68,7 +66,8 @@ public class GetProposalFromTxnTest extends ZKTestCase {
         final int PORT = Integer.parseInt(HOSTPORT.split(":")[1]);
         ServerCnxnFactory f = ServerCnxnFactory.createFactory(PORT, -1);
         f.startup(zks);
-        assertTrue(ClientBase.waitForServerUp(HOSTPORT, CONNECTION_TIMEOUT), "waiting for server being up ");
+        Assert.assertTrue("waiting for server being up ",
+                ClientBase.waitForServerUp(HOSTPORT, CONNECTION_TIMEOUT));
         ZooKeeper zk = ClientBase.createZKClient(HOSTPORT);
 
         // Generate transaction so we will have some txnlog
@@ -78,7 +77,8 @@ public class GetProposalFromTxnTest extends ZKTestCase {
             byte[] bytes = data.getBytes();
             for (int i = 0; i < MSG_COUNT; i++) {
                 Stat stat = new Stat();
-                zk.create("/invalidsnap-" + i, bytes, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+                zk.create("/invalidsnap-" + i, bytes, Ids.OPEN_ACL_UNSAFE,
+                        CreateMode.PERSISTENT);
                 zk.getData("/invalidsnap-" + i, null, stat);
                 zxids[i] = stat.getCzxid();
             }
@@ -90,7 +90,8 @@ public class GetProposalFromTxnTest extends ZKTestCase {
         // shutdown and start zookeeper again
         f.shutdown();
         zks.shutdown();
-        assertTrue(ClientBase.waitForServerDown(HOSTPORT, CONNECTION_TIMEOUT), "waiting for server to shutdown");
+        Assert.assertTrue("waiting for server to shutdown",
+                ClientBase.waitForServerDown(HOSTPORT, CONNECTION_TIMEOUT));
         zks = new ZooKeeperServer(tmpDir, tmpDir, 3000);
         zks.startdata();
 
@@ -106,10 +107,9 @@ public class GetProposalFromTxnTest extends ZKTestCase {
         // Get zxid of create requests
         while (itr.hasNext()) {
             Proposal proposal = itr.next();
-            TxnLogEntry logEntry = SerializeUtils.deserializeTxn(
-                    proposal.packet.getData());
-            TxnHeader hdr = logEntry.getHeader();
-            Record rec = logEntry.getTxn();
+            TxnHeader hdr = new TxnHeader();
+            Record rec = SerializeUtils.deserializeTxn(
+                    proposal.packet.getData(), hdr);
             if (hdr.getType() == OpCode.create) {
                 retrievedZxids.add(hdr.getZxid());
                 createCount++;
@@ -117,10 +117,12 @@ public class GetProposalFromTxnTest extends ZKTestCase {
         }
 
         // All zxid should match what we created
-        assertTrue(Arrays.equals(zxids, retrievedZxids.toArray(new Long[0])), "Zxids missmatches");
+        Assert.assertTrue("Zxids missmatches",
+                Arrays.equals(zxids, retrievedZxids.toArray(new Long[0])));
 
         // There should be 2000 create requests
-        assertTrue((createCount == MSG_COUNT), "create proposal count == " + MSG_COUNT);
+        Assert.assertTrue("create proposal count == " + MSG_COUNT,
+                (createCount == MSG_COUNT));
 
         // We are requesting half the number of transaction from the snapshot
         // this should exceed threshold (ZKDatabase.snapshotSizeFactor)
@@ -128,9 +130,8 @@ public class GetProposalFromTxnTest extends ZKTestCase {
         long sizeLimit = db.calculateTxnLogSizeLimit();
 
         itr = db.getProposalsFromTxnLog(zxids[MSG_COUNT / 2], sizeLimit);
-        assertFalse((itr.hasNext()), "Expect empty proposal");
+        Assert.assertFalse("Expect empty proposal", (itr.hasNext()));
         f.shutdown();
         zks.shutdown();
     }
-
 }

@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,23 +20,24 @@ package org.apache.zookeeper.server.quorum;
 
 import java.io.IOException;
 import java.util.concurrent.LinkedBlockingQueue;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs.OpCode;
-import org.apache.zookeeper.server.Request;
 import org.apache.zookeeper.server.RequestProcessor;
-import org.apache.zookeeper.server.ServerMetrics;
+import org.apache.zookeeper.server.Request;
 import org.apache.zookeeper.server.ZooKeeperCriticalThread;
 import org.apache.zookeeper.server.ZooTrace;
 import org.apache.zookeeper.txn.ErrorTxn;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * This RequestProcessor forwards any requests that modify the state of the
  * system to the Leader.
  */
-public class ObserverRequestProcessor extends ZooKeeperCriticalThread implements RequestProcessor {
-
+public class ObserverRequestProcessor extends ZooKeeperCriticalThread implements
+        RequestProcessor {
     private static final Logger LOG = LoggerFactory.getLogger(ObserverRequestProcessor.class);
 
     ObserverZooKeeperServer zks;
@@ -55,8 +56,10 @@ public class ObserverRequestProcessor extends ZooKeeperCriticalThread implements
      * @param zks
      * @param nextProcessor
      */
-    public ObserverRequestProcessor(ObserverZooKeeperServer zks, RequestProcessor nextProcessor) {
-        super("ObserverRequestProcessor:" + zks.getServerId(), zks.getZooKeeperServerListener());
+    public ObserverRequestProcessor(ObserverZooKeeperServer zks,
+            RequestProcessor nextProcessor) {
+        super("ObserverRequestProcessor:" + zks.getServerId(), zks
+                .getZooKeeperServerListener());
         this.zks = zks;
         this.nextProcessor = nextProcessor;
     }
@@ -65,29 +68,18 @@ public class ObserverRequestProcessor extends ZooKeeperCriticalThread implements
     public void run() {
         try {
             while (!finished) {
-                ServerMetrics.getMetrics().LEARNER_REQUEST_PROCESSOR_QUEUE_SIZE.add(queuedRequests.size());
-
                 Request request = queuedRequests.take();
                 if (LOG.isTraceEnabled()) {
-                    ZooTrace.logRequest(LOG, ZooTrace.CLIENT_REQUEST_TRACE_MASK, 'F', request, "");
+                    ZooTrace.logRequest(LOG, ZooTrace.CLIENT_REQUEST_TRACE_MASK,
+                            'F', request, "");
                 }
                 if (request == Request.requestOfDeath) {
                     break;
                 }
-
-                // Screen quorum requests against ACLs first
-                if (!zks.authWriteRequest(request)) {
-                    continue;
-                }
-
                 // We want to queue the request to be processed before we submit
                 // the request to the leader so that we are ready to receive
                 // the response
                 nextProcessor.processRequest(request);
-
-                if (request.isThrottled()) {
-                    continue;
-                }
 
                 // We now ship the request to the leader. As with all
                 // other quorum operations, sync also follows this code
@@ -121,8 +113,6 @@ public class ObserverRequestProcessor extends ZooKeeperCriticalThread implements
                     break;
                 }
             }
-        } catch (RuntimeException e) { // spotbugs require explicit catch of RuntimeException
-            handleException(this.getName(), e);
         } catch (Exception e) {
             handleException(this.getName(), e);
         }
@@ -143,7 +133,7 @@ public class ObserverRequestProcessor extends ZooKeeperCriticalThread implements
                     request.setTxn(new ErrorTxn(ke.code().intValue()));
                 }
                 request.setException(ke);
-                LOG.info("Error creating upgrade request", ke);
+                LOG.info("Error creating upgrade request",  ke);
             } catch (IOException ie) {
                 LOG.error("Unexpected error in upgrade", ie);
             }

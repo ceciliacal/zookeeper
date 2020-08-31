@@ -18,7 +18,7 @@
 
 package org.apache.zookeeper.server.quorum;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertTrue;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -26,19 +26,20 @@ import java.net.SocketAddress;
 import java.net.SocketTimeoutException;
 import org.apache.zookeeper.ZKTestCase;
 import org.apache.zookeeper.test.ClientBase;
+import org.apache.zookeeper.test.QuorumRestartTest;
 import org.apache.zookeeper.test.QuorumUtil;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class QuorumCnxManagerSocketConnectionTimeoutTest extends ZKTestCase {
 
-    private static final Logger LOG = LoggerFactory.getLogger(QuorumCnxManagerSocketConnectionTimeoutTest.class);
+    private static final Logger LOG = LoggerFactory.getLogger(QuorumRestartTest.class);
     private QuorumUtil qu;
 
-    @BeforeEach
+    @Before
     public void setUp() throws Exception {
         // starting a 3 node ensemble without observers
         qu = new QuorumUtil(1, 2);
@@ -67,13 +68,14 @@ public class QuorumCnxManagerSocketConnectionTimeoutTest extends ZKTestCase {
         // use a custom socket factory that will cause timeout instead of connecting to the
         // leader election port of the current leader
         final InetSocketAddress leaderElectionAddress =
-            qu.getLeaderQuorumPeer().getElectionAddress().getOne();
+            qu.getLeaderQuorumPeer().getElectionAddress();
         QuorumCnxManager.setSocketFactory(() -> new SocketStub(leaderElectionAddress));
 
         qu.shutdown(leaderId);
 
-        assertTrue(ClientBase.waitForServerDown("127.0.0.1:" + qu.getPeer(leaderId).clientPort, ClientBase.CONNECTION_TIMEOUT),
-                "Timeout during waiting for current leader to go down");
+        assertTrue("Timeout during waiting for current leader to go down",
+                   ClientBase.waitForServerDown("127.0.0.1:" + qu.getPeer(leaderId).clientPort,
+                                                ClientBase.CONNECTION_TIMEOUT));
 
         String errorMessage = "No new leader was elected";
         waitFor(errorMessage, () -> qu.leaderExists() && qu.getLeaderServer() != leaderId, 15);
@@ -102,7 +104,7 @@ public class QuorumCnxManagerSocketConnectionTimeoutTest extends ZKTestCase {
         }
     }
 
-    @AfterEach
+    @After
     public void tearDown() throws Exception {
         qu.shutdownAll();
         QuorumCnxManager.setSocketFactory(QuorumCnxManager.DEFAULT_SOCKET_FACTORY);

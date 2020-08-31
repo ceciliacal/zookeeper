@@ -17,48 +17,51 @@
 
 package org.apache.zookeeper.server.quorum;
 
-import static org.junit.jupiter.api.Assertions.fail;
 import java.io.File;
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
-import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.zookeeper.PortAssignment;
 import org.apache.zookeeper.ZKTestCase;
+import org.apache.zookeeper.server.quorum.QuorumCnxManager;
+import org.apache.zookeeper.server.quorum.QuorumPeer;
+import org.apache.zookeeper.server.quorum.Vote;
 import org.apache.zookeeper.server.quorum.QuorumPeer.QuorumServer;
 import org.apache.zookeeper.server.quorum.QuorumPeer.ServerState;
 import org.apache.zookeeper.test.ClientBase;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
 
 public class FLEBackwardElectionRoundTest extends ZKTestCase {
-
     protected static final Logger LOG = LoggerFactory.getLogger(FLELostMessageTest.class);
 
     int count;
-    Map<Long, QuorumServer> peers;
-    File[] tmpdir;
-    int[] port;
+    HashMap<Long,QuorumServer> peers;
+    File tmpdir[];
+    int port[];
 
-    QuorumCnxManager[] cnxManagers;
+    QuorumCnxManager cnxManagers[];
 
-    @BeforeEach
+    @Before
     public void setUp() throws Exception {
         count = 3;
 
-        peers = new HashMap<Long, QuorumServer>(count);
+        peers = new HashMap<Long,QuorumServer>(count);
         tmpdir = new File[count];
         port = new int[count];
         cnxManagers = new QuorumCnxManager[count - 1];
     }
 
-    @AfterEach
+    @After
     public void tearDown() throws Exception {
-        for (int i = 0; i < (count - 1); i++) {
-            if (cnxManagers[i] != null) {
+        for(int i = 0; i < (count - 1); i++){
+            if(cnxManagers[i] != null){
                 cnxManagers[i].halt();
             }
         }
@@ -77,7 +80,7 @@ public class FLEBackwardElectionRoundTest extends ZKTestCase {
      * they can't get a consistent set of notifications from a
      * quorum.
      *
-     * https://issues.apache.org/jira/browse/ZOOKEEPER-1514
+     * {@link https://issues.apache.org/jira/browse/ZOOKEEPER-1514}
      *
      *
      * @throws Exception
@@ -86,9 +89,12 @@ public class FLEBackwardElectionRoundTest extends ZKTestCase {
     @Test
     public void testBackwardElectionRound() throws Exception {
         LOG.info("TestLE: {}, {}", getTestName(), count);
-        for (int i = 0; i < count; i++) {
+        for(int i = 0; i < count; i++) {
             int clientport = PortAssignment.unique();
-            peers.put(Long.valueOf(i), new QuorumServer(i, new InetSocketAddress(clientport), new InetSocketAddress(PortAssignment.unique())));
+            peers.put(Long.valueOf(i),
+                    new QuorumServer(i,
+                            new InetSocketAddress(clientport),
+                            new InetSocketAddress(PortAssignment.unique())));
             tmpdir[i] = ClientBase.createTmpDir();
             port[i] = clientport;
         }
@@ -99,7 +105,7 @@ public class FLEBackwardElectionRoundTest extends ZKTestCase {
         /*
          * Start server 0
          */
-        QuorumPeer peer = new QuorumPeer(peers, tmpdir[0], tmpdir[0], port[0], 3, 0, 1000, 2, 2, 2);
+        QuorumPeer peer = new QuorumPeer(peers, tmpdir[0], tmpdir[0], port[0], 3, 0, 1000, 2, 2);
         peer.startLeaderElection();
         FLETestUtils.LEThread thread = new FLETestUtils.LEThread(peer, 0);
         thread.start();
@@ -107,20 +113,20 @@ public class FLEBackwardElectionRoundTest extends ZKTestCase {
         /*
          * Start mock server 1
          */
-        QuorumPeer mockPeer = new QuorumPeer(peers, tmpdir[1], tmpdir[1], port[1], 3, 1, 1000, 2, 2, 2);
+        QuorumPeer mockPeer = new QuorumPeer(peers, tmpdir[1], tmpdir[1], port[1], 3, 1, 1000, 2, 2);
         cnxManagers[0] = mockPeer.createCnxnManager();
         cnxManagers[0].listener.start();
 
-        cnxManagers[0].toSend(0L, initialMsg0);
+        cnxManagers[0].toSend(0l, initialMsg0);
 
         /*
          * Start mock server 2
          */
-        mockPeer = new QuorumPeer(peers, tmpdir[2], tmpdir[2], port[2], 3, 2, 1000, 2, 2, 2);
+        mockPeer = new QuorumPeer(peers, tmpdir[2], tmpdir[2], port[2], 3, 2, 1000, 2, 2);
         cnxManagers[1] = mockPeer.createCnxnManager();
         cnxManagers[1].listener.start();
 
-        cnxManagers[1].toSend(0L, initialMsg1);
+        cnxManagers[1].toSend(0l, initialMsg1);
 
         /*
          * Run another instance of leader election.
@@ -132,13 +138,13 @@ public class FLEBackwardElectionRoundTest extends ZKTestCase {
         /*
          * Send the same messages, this time should not make 0 the leader.
          */
-        cnxManagers[0].toSend(0L, initialMsg0);
-        cnxManagers[1].toSend(0L, initialMsg1);
+        cnxManagers[0].toSend(0l, initialMsg0);
+        cnxManagers[1].toSend(0l, initialMsg1);
 
         thread.join(5000);
 
         if (!thread.isAlive()) {
-            fail("Should not have joined");
+            Assert.fail("Should not have joined");
         }
 
     }
@@ -146,5 +152,4 @@ public class FLEBackwardElectionRoundTest extends ZKTestCase {
     private ByteBuffer getMsg() {
         return FLETestUtils.createMsg(ServerState.FOLLOWING.ordinal(), 0, 0, 1);
     }
-
 }

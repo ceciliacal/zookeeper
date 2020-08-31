@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,9 +18,8 @@
 
 package org.apache.zookeeper.common;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import org.apache.zookeeper.ZKTestCase;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 public class PathUtilsTest extends ZKTestCase {
 
@@ -29,131 +28,102 @@ public class PathUtilsTest extends ZKTestCase {
         PathUtils.validatePath("/this is / a valid/path");
     }
 
-    @Test
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_Null() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath(null);
-        });
+        PathUtils.validatePath(null);
     }
+    
 
-    @Test
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_EmptyString() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("");
-        });
+        PathUtils.validatePath("");
     }
 
-    @Test
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_NotAbsolutePath() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("not/valid");
-        });
+        PathUtils.validatePath("not/valid");
     }
 
-    @Test
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_EndsWithSlash() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/ends/with/slash/");
-        });
+        PathUtils.validatePath("/ends/with/slash/");
     }
-
-    @Test
+    
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_ContainsNullCharacter() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/test\u0000");
-        });
+        PathUtils.validatePath("/test\u0000");
     }
-
-    @Test
+    
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_DoubleSlash() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/double//slash");
-        });
+        PathUtils.validatePath("/double//slash");
     }
-
-    @Test
+    
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_SinglePeriod() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/single/./period");
-        });
+        PathUtils.validatePath("/single/./period");
     }
-
-    @Test
+    
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_DoublePeriod() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/double/../period");
-        });
+        PathUtils.validatePath("/double/../period");
     }
-
+    
     @Test
     public void testValidatePath_NameContainingPeriod() {
         // A period that isn't on its own is ok
         PathUtils.validatePath("/name/with.period.");
     }
-
-    @Test
+    
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_0x01() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/test\u0001");
-        });
+        PathUtils.validatePath("/test\u0001");
     }
-
-    @Test
+    
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_0x1F() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/test\u001F");
-        });
+        PathUtils.validatePath("/test\u001F");
     }
-
+    
     @Test // The first allowable character
     public void testValidatePath_0x20() {
         PathUtils.validatePath("/test\u0020");
     }
-
-    @Test
+    
+    @Test 
     public void testValidatePath_0x7e() {
         // The last valid ASCII character
         PathUtils.validatePath("/test\u007e");
     }
-
-    @Test
+    
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_0x7f() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/test\u007f");
-        });
+        PathUtils.validatePath("/test\u007f");
     }
-
-    @Test
+    
+    @Test(expected=IllegalArgumentException.class) 
     public void testValidatePath_0x9f() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/test\u009f");
-        });
+        PathUtils.validatePath("/test\u009f");
     }
-
-    @Test
+    
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_ud800() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/test\ud800");
-        });
+        PathUtils.validatePath("/test\ud800");
     }
 
-    @Test
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_uf8ff() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/test\uf8ff");
-        });
+        PathUtils.validatePath("/test\uf8ff");
     }
-
+    
     @Test
     public void testValidatePath_HighestAllowableChar() {
         PathUtils.validatePath("/test\uffef");
     }
-
-    @Test
+    
+    @Test(expected=IllegalArgumentException.class)
     public void testValidatePath_SupplementaryChar() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            PathUtils.validatePath("/test\ufff0");
-        });
+        PathUtils.validatePath("/test\ufff0");
     }
 
 }

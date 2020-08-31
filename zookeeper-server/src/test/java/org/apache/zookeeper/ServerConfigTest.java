@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,33 +18,29 @@
 
 package org.apache.zookeeper;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-import java.io.File;
 import org.apache.zookeeper.server.ServerConfig;
-import org.apache.zookeeper.server.quorum.QuorumPeerConfig;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
+import java.io.File;
 
 public class ServerConfigTest {
 
     private ServerConfig serverConfig;
 
-    @BeforeEach
+    @Before
     public void setUp() {
         serverConfig = new ServerConfig();
     }
 
-    @Test
+    @Test(expected=IllegalArgumentException.class)
     public void testFewArguments() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            String[] args = {"2181"};
-            serverConfig.parse(args);
-        });
+        String[] args = {"2181"};
+        serverConfig.parse(args);
     }
 
     @Test
@@ -58,32 +54,10 @@ public class ServerConfigTest {
         assertEquals(10000, serverConfig.getMaxClientCnxns());
     }
 
-    @Test
+    @Test(expected=IllegalArgumentException.class)
     public void testTooManyArguments() {
-        assertThrows(IllegalArgumentException.class, () -> {
-            String[] args = {"2181", "/data/dir", "60000", "10000", "9999"};
-            serverConfig.parse(args);
-        });
-    }
-
-    @Test
-    public void testJvmPauseMonitorConfigured() {
-        final Long sleepTime = 444L;
-        final Long warnTH = 5555L;
-        final Long infoTH = 555L;
-
-        QuorumPeerConfig qpConfig = mock(QuorumPeerConfig.class);
-        when(qpConfig.isJvmPauseMonitorToRun()).thenReturn(true);
-        when(qpConfig.getJvmPauseSleepTimeMs()).thenReturn(sleepTime);
-        when(qpConfig.getJvmPauseWarnThresholdMs()).thenReturn(warnTH);
-        when(qpConfig.getJvmPauseInfoThresholdMs()).thenReturn(infoTH);
-
-        serverConfig.readFrom(qpConfig);
-
-        assertEquals(sleepTime, Long.valueOf(serverConfig.getJvmPauseSleepTimeMs()));
-        assertEquals(warnTH, Long.valueOf(serverConfig.getJvmPauseWarnThresholdMs()));
-        assertEquals(infoTH, Long.valueOf(serverConfig.getJvmPauseInfoThresholdMs()));
-        assertTrue(serverConfig.isJvmPauseMonitorToRun());
+        String[] args = {"2181", "/data/dir", "60000", "10000", "9999"};
+        serverConfig.parse(args);
     }
 
     boolean checkEquality(String a, String b) {
@@ -97,5 +71,4 @@ public class ServerConfigTest {
         assertNotNull(b);
         return new File(a).equals(b);
     }
-
 }

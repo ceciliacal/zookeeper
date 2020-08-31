@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,58 +22,23 @@ package org.apache.zookeeper.server.quorum;
  * An MBean representing a zookeeper cluster nodes (aka quorum peers)
  */
 public interface QuorumMXBean {
-
     /**
      * @return the name of the quorum
      */
-    String getName();
-
+    public String getName();
+    
     /**
      * @return configured number of peers in the quorum
      */
-    int getQuorumSize();
-
-    /**
-     * @return the number of ticks that the initial synchronization phase can take
-     */
-    int getInitLimit();
-
-    /**
-     * @return the number of ticks that can pass between sending a request and getting an acknowledgment
-     */
-    int getSyncLimit();
-
-    /**
-     * @param initLimit the number of ticks that the initial synchronization phase can take
-     */
-    void setInitLimit(int initLimit);
-
-    /**
-     * @param syncLimit the number of ticks that can pass between sending a request and getting an acknowledgment
-     */
-    void setSyncLimit(int syncLimit);
+    public int getQuorumSize();
 
     /**
      * @return SSL communication between quorum members required
      */
-    boolean isSslQuorum();
+    public boolean isSslQuorum();
 
     /**
      * @return SSL communication between quorum members enabled
      */
-    boolean isPortUnification();
-
-    /**
-     * @return Observer Leader Election Reconnect Delay time in MS
-     */
-    long getObserverElectionDelayMS();
-
-    /**
-     * Set the Observer Leader Election Reconnect Delay time in MS
-     */
-    void setObserverElectionDelayMS(long delayMS);
-
-    boolean getDigestEnabled();
-
-    void disableDigest();
+    public boolean isPortUnification();
 }

@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,48 +18,43 @@
 
 package org.apache.zookeeper.server;
 
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import org.apache.zookeeper.PortAssignment;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.SocketException;
-import org.apache.zookeeper.PortAssignment;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 
 public class NIOServerCnxnFactoryTest {
-
     private InetSocketAddress listenAddress;
     private NIOServerCnxnFactory factory;
 
-    @BeforeEach
+    @Before
     public void setUp() throws IOException {
         listenAddress = new InetSocketAddress(PortAssignment.unique());
         factory = new NIOServerCnxnFactory();
         factory.configure(listenAddress, 100);
     }
 
-    @AfterEach
+    @After
     public void tearDown() {
         if (factory != null) {
             factory.shutdown();
         }
     }
 
-    @Test
+    @Test(expected = SocketException.class)
     public void testStartupWithoutStart_SocketAlreadyBound() throws IOException {
-        assertThrows(SocketException.class, () -> {
-            ServerSocket ss = new ServerSocket(listenAddress.getPort());
-        });
+        ServerSocket ss = new ServerSocket(listenAddress.getPort());
     }
 
-    @Test
+    @Test(expected = SocketException.class)
     public void testStartupWithStart_SocketAlreadyBound() throws IOException {
-        assertThrows(SocketException.class, () -> {
-            factory.start();
-            ServerSocket ss = new ServerSocket(listenAddress.getPort());
-        });
+        factory.start();
+        ServerSocket ss = new ServerSocket(listenAddress.getPort());
     }
 
     @Test
@@ -70,5 +65,4 @@ public class NIOServerCnxnFactoryTest {
         ServerSocket ss = new ServerSocket(listenAddress.getPort());
         ss.close();
     }
-
 }

@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,29 +18,30 @@
 
 package org.apache.zookeeper.server.quorum;
 
-import static org.apache.zookeeper.server.command.AbstractFourLetterCommand.ZK_NOT_SERVING;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import org.apache.zookeeper.server.ServerCnxn;
 import org.apache.zookeeper.server.ServerStats;
 import org.apache.zookeeper.server.ZooKeeperServer;
 import org.apache.zookeeper.server.command.StatResetCommand;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
+
+import static org.apache.zookeeper.server.command.AbstractFourLetterCommand.ZK_NOT_SERVING;
+import static org.junit.Assert.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 public class StatResetCommandTest {
-
     private StatResetCommand statResetCommand;
     private StringWriter outputWriter;
     private ZooKeeperServer zks;
     private ServerStats serverStats;
 
-    @BeforeEach
+    @Before
     public void setUp() {
         outputWriter = new StringWriter();
         ServerCnxn serverCnxnMock = mock(ServerCnxn.class);
@@ -107,5 +108,4 @@ public class StatResetCommandTest {
         verify(serverStats, times(1)).reset();
         verify(bufferStats, times(1)).reset();
     }
-
 }

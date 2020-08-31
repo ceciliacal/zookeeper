@@ -23,7 +23,6 @@ limitations under the License.
     * [Active Messaging](#sc_activeMessaging)
     * [Summary](#sc_summary)
     * [Comparisons](#sc_comparisons)
-* [Consistency Guarantees](#sc_consistency)
 * [Quorums](#sc_quorum)
 * [Logging](#sc_logging)
     * [Developer Guidelines](#sc_developerGuidelines)
@@ -35,11 +34,9 @@ limitations under the License.
 ## Introduction
 
 This document contains information on the inner workings of ZooKeeper.
-It discusses the following topics:
+So far, it discusses these topics:
 
 * [Atomic Broadcast](#sc_atomicBroadcast)
-* [Consistency Guarantees](#sc_consistency)
-* [Quorums](#sc_quorum)
 * [Logging](#sc_logging)
 
 <a name="sc_atomicBroadcast"></a>
@@ -55,17 +52,18 @@ At the heart of ZooKeeper is an atomic messaging system that keeps all of the se
 The specific guarantees provided by the messaging system used by ZooKeeper are the following:
 
 * *_Reliable delivery_* :
-    If a message `m`, is delivered
-    by one server, message `m` will be eventually delivered by all servers.
+    If a message, m, is delivered
+    by one server, it will be eventually delivered by all servers.
 
 * *_Total order_* :
-    If a message `a` is
-    delivered before message `b` by one server, message `a` will be delivered before `b` by all
-    servers.
+    If a message is
+    delivered before message b by one server, a will be delivered before b by all
+    servers. If a and b are delivered messages, either a will be delivered before b
+    or b will be delivered before a.
 
 * *_Causal order_* :
-    If a message `b` is sent after a message `a` has been delivered by the sender of `b`,
-    message `a` must be ordered before `b`. If a sender sends `c` after sending `b`, `c` must be ordered after `b`.
+    If a message b is sent after a message a has been delivered by the sender of b,
+    a must be ordered before b. If a sender sends c after sending b, c must be ordered after b.
 
 The ZooKeeper messaging system also needs to be efficient, reliable, and easy to
 implement and maintain. We make heavy use of messaging, so we need the system to
@@ -82,29 +80,29 @@ lose or reorder messages, our assumption of FIFO channels is very practical
 given that we use TCP for communication. Specifically we rely on the following property of TCP:
 
 * *_Ordered delivery_* :
-    Data is delivered in the same order it is sent and a message `m` is
-    delivered only after all messages sent before `m` have been delivered.
-    (The corollary to this is that if message `m` is lost all messages after `m` will be lost.)
+    Data is delivered in the same order it is sent and a message m is
+    delivered only after all messages sent before m have been delivered.
+    (The corollary to this is that if message m is lost all messages after m will be lost.)
 
 * *_No message after close_* :
     Once a FIFO channel is closed, no messages will be received from it.
 
 FLP proved that consensus cannot be achieved in asynchronous distributed systems
-if failures are possible. To ensure that we achieve consensus in the presence of failures
-we use timeouts. However, we rely on time for liveness not for correctness. So,
-if timeouts stop working (e.g., skewed clocks) the messaging system may
+if failures are possible. To ensure we achieve consensus in the presence of failures
+we use timeouts. However, we rely on times for liveness not for correctness. So,
+if timeouts stop working (clocks malfunction for example) the messaging system may
 hang, but it will not violate its guarantees.
 
 When describing the ZooKeeper messaging protocol we will talk of packets,
 proposals, and messages:
 
 * *_Packet_* :
-    a sequence of bytes sent through a FIFO channel.
+    a sequence of bytes sent through a FIFO channel
 
 * *_Proposal_* :
     a unit of agreement. Proposals are agreed upon by exchanging packets
     with a quorum of ZooKeeper servers. Most proposals contain messages, however the
-    NEW_LEADER proposal is an example of a proposal that does not contain to a message.
+    NEW_LEADER proposal is an example of a proposal that does not correspond to a message.
 
 * *_Message_* :
     a sequence of bytes to be atomically broadcast to all ZooKeeper
@@ -123,7 +121,7 @@ n is the number of servers that make up a ZooKeeper service.
 
 The zxid has two parts: the epoch and a counter. In our implementation the zxid
 is a 64-bit number. We use the high order 32-bits for the epoch and the low order
-32-bits for the counter. Because zxid consists of two parts, zxid can be represented both as a
+32-bits for the counter. Because it has two parts represent the zxid both as a
 number and as a pair of integers, (_epoch, count_). The epoch number represents a
 change in leadership. Each time a new leader comes into power it will have its
 own epoch number. We have a simple algorithm to assign a unique zxid to a proposal:
@@ -148,20 +146,23 @@ up with the leader, they have the same state. This state consists of all of the
 proposals that the leader believes have been committed and the proposal to follow
 the leader, the NEW_LEADER proposal. (Hopefully you are thinking to
 yourself, _Does the set of proposals that the leader believes has been committed
-include all the proposals that really have been committed?_ The answer is _yes_.
+included all the proposals that really have been committed?_ The answer is _yes_.
 Below, we make clear why.)
 
 <a name="sc_leaderElection"></a>
 
 ### Leader Activation
 
-Leader activation includes leader election (`FastLeaderElection`).
-ZooKeeper messaging doesn't care about the exact method of electing a leader as long as the following holds:
+Leader activation includes leader election. We currently have two leader election
+algorithms in ZooKeeper: LeaderElection and FastLeaderElection (AuthFastLeaderElection
+is a variant of FastLeaderElection that uses UDP and allows servers to perform a simple
+form of authentication to avoid IP spoofing). ZooKeeper messaging doesn't care about the
+exact method of electing a leader as long as the following holds:
 
 * The leader has seen the highest zxid of all the followers.
 * A quorum of servers have committed to following the leader.
 
-Of these two requirements only the first, the highest zxid among the followers
+Of these two requirements only the first, the highest zxid amoung the followers
 needs to hold for correct operation. The second requirement, a quorum of followers,
 just needs to hold with high probability. We are going to recheck the second requirement,
 so if a failure happens during or after the leader election and quorum is lost,
@@ -169,18 +170,18 @@ we will recover by abandoning leader activation and running another election.
 
 After leader election a single server will be designated as a leader and start
 waiting for followers to connect. The rest of the servers will try to connect to
-the leader. The leader will sync up with the followers by sending any proposals they
+the leader. The leader will sync up with followers by sending any proposals they
 are missing, or if a follower is missing too many proposals, it will send a full
 snapshot of the state to the follower.
 
-There is a corner case in which a follower that has proposals, `U`, not seen
-by a leader arrives. Proposals are seen in order, so the proposals of `U` will have a zxids
+There is a corner case in which a follower that has proposals, U, not seen
+by a leader arrives. Proposals are seen in order, so the proposals of U will have a zxids
 higher than zxids seen by the leader. The follower must have arrived after the
 leader election, otherwise the follower would have been elected leader given that
 it has seen a higher zxid. Since committed proposals must be seen by a quorum of
-servers, and a quorum of servers that elected the leader did not see `U`, the proposals
-of `U` have not been committed, so they can be discarded. When the follower connects
-to the leader, the leader will tell the follower to discard `U`.
+servers, and a quorum of servers that elected the leader did not see U, the proposals
+of you have not been committed, so they can be discarded. When the follower connects
+to the leader, the leader will tell the follower to discard U.
 
 A new leader establishes a zxid to start using for new proposals by getting the
 epoch, e, of the highest zxid it has seen and setting the next zxid to use to be
@@ -193,9 +194,9 @@ activation:
 
 * A follower will ACK the NEW_LEADER proposal after it has synced with the leader.
 * A follower will only ACK a NEW_LEADER proposal with a given zxid from a single server.
-* A new leader will COMMIT the NEW_LEADER proposal when a quorum of followers has ACKed it.
+* A new leader will COMMIT the NEW_LEADER proposal when a quorum of followers have ACKed it.
 * A follower will commit any state it received from the leader when the NEW_LEADER proposal is COMMIT.
-* A new leader will not accept new proposals until the NEW_LEADER proposal has been COMMITTED.
+* A new leader will not accept new proposals until the NEW_LEADER proposal has been COMMITED.
 
 If leader election terminates erroneously, we don't have a problem since the
 NEW_LEADER proposal will not be committed since the leader will not have quorum.
@@ -225,13 +226,13 @@ the following operating constraints are observed:
   received. Because we use FIFO channels this means that followers also receive proposals in order.
 * Followers process messages in the order they are received. This
   means that messages will be ACKed in order and the leader will receive ACKs from
-  followers in order, due to the FIFO channels. It also means that if message `m`
+  followers in order, due to the FIFO channels. It also means that if message $m$
   has been written to non-volatile storage, all messages that were proposed before
-  `m` have been written to non-volatile storage.
+  $m$ have been written to non-volatile storage.
 * The leader will issue a COMMIT to all followers as soon as a
   quorum of followers have ACKed a message. Since messages are ACKed in order,
   COMMITs will be sent by the leader as received by the followers in order.
-* COMMITs are processed in order. Followers deliver a proposal
+* COMMITs are processed in order. Followers deliver a proposals
   message when that proposal is committed.
 
 <a name="sc_summary"></a>
@@ -246,7 +247,7 @@ to worry about two different values being proposed for the same zxid; followers
 committed in order; there is only one active leader at a time since followers only
 follow a single leader at a time; a new leader has seen all committed proposals
 from the previous epoch since it has seen the highest zxid from a quorum of servers;
-any uncommitted proposals from a previous epoch seen by a new leader will be committed
+any uncommited proposals from a previous epoch seen by a new leader will be committed
 by that leader before it becomes active.
 
 <a name="sc_comparisons"></a>
@@ -265,19 +266,6 @@ cross proposal ordering requirements. If we do not maintain strict FIFO ordering
 all packets, it all falls apart. Also, our leader activation phase is different from
 both of them. In particular, our use of epochs allows us to skip blocks of uncommitted
 proposals and to not worry about duplicate proposals for a given zxid.
-
-<a name="sc_consistency"></a>
-
-
-## Consistency Guarantees
-
-The [consistency](https://jepsen.io/consistency) guarantees of ZooKeeper lie between sequential consistency and linearizability. In this section, we explain the exact consistency guarantees that ZooKeeper provides.
-
-Write operations in ZooKeeper are *linearizable*. In other words, each `write` will appear to take effect atomically at some point between when the client issues the request and receives the corresponding response. This means that the writes performed by all the clients in ZooKeeper can be totally ordered in such a way that respects the real-time ordering of these writes. However, merely stating that write operations are linearizable is meaningless unless we also talk about read operations.
-
-Read operations in ZooKeeper are *not linearizable* since they can return potentially stale data. This is because a `read` in ZooKeeper is not a quorum operation and a server will respond immediately to a client that is performing a `read`. ZooKeeper does this because it prioritizes performance over consistency for the read use case. However, reads in ZooKeeper are *sequentially consistent*, because `read` operations will appear to take effect in some sequential order that furthermore respects the order of each client's operations. A common pattern to work around this is to issue a `sync` before issuing a `read`. This too does **not** strictly guarantee up-to-date data because `sync` is [not currently a quorum operation](https://issues.apache.org/jira/browse/ZOOKEEPER-1675). To illustrate, consider a scenario where two servers simultaneously think they are the leader, something that could occur if the TCP connection timeout is smaller than `syncLimit * tickTime`. Note that this is [unlikely](https://www.amazon.com/ZooKeeper-Distributed-Coordination-Flavio-Junqueira/dp/1449361307) to occur in practice, but should be kept in mind nevertheless when discussing strict theoretical guarantees. Under this scenario, it is possible that the `sync` is served by the “leader” with stale data, thereby allowing the following `read` to be stale as well. The stronger guarantee of linearizability is provided if an actual quorum operation (e.g., a `write`) is performed before a `read`.
-
-Overall, the consistency guarantees of ZooKeeper are formally captured by the notion of [ordered sequential consistency](http://webee.technion.ac.il/people/idish/ftp/OSC-IPL17.pdf) or `OSC(U)` to be exact, which lies between sequential consistency and linearizability.
 
 <a name="sc_quorum"></a>
 
@@ -325,7 +313,8 @@ of the [ZooKeeper Administrator's Guide.](zookeeperAdmin.html)
 ### Developer Guidelines
 
 Please follow the  [slf4j manual](http://www.slf4j.org/manual.html) when creating log statements within code.
-Also read the [FAQ on performance](http://www.slf4j.org/faq.html#logging\_performance), when creating log statements. Patch reviewers will look for the following:
+Also read the[FAQ on performance](http://www.slf4j.org/faq.html#logging\_performance)
+, when creating log statements. Patch reviewers will look for the following:
 
 <a name="sc_rightLevel"></a>
 

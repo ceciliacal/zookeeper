@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,65 +18,67 @@
 
 package org.apache.zookeeper.server;
 
-import java.util.concurrent.atomic.AtomicLong;
+
+
 import org.apache.zookeeper.common.Time;
-import org.apache.zookeeper.server.metric.AvgMinMaxCounter;
 import org.apache.zookeeper.server.quorum.BufferStats;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Basic Server Statistics
  */
 public class ServerStats {
-
     private static final Logger LOG = LoggerFactory.getLogger(ServerStats.class);
 
-    private final AtomicLong packetsSent = new AtomicLong();
-    private final AtomicLong packetsReceived = new AtomicLong();
-
-    private final AvgMinMaxCounter requestLatency = new AvgMinMaxCounter("request_latency");
-
-    private final AtomicLong fsyncThresholdExceedCount = new AtomicLong(0);
+    private long packetsSent;
+    private long packetsReceived;
+    private long maxLatency;
+    private long minLatency = Long.MAX_VALUE;
+    private long totalLatency = 0;
+    private long count = 0;
+    private AtomicLong fsyncThresholdExceedCount = new AtomicLong(0);
 
     private final BufferStats clientResponseStats = new BufferStats();
 
     private final Provider provider;
-    private final long startTime = Time.currentElapsedTime();
 
     public interface Provider {
-
-        long getOutstandingRequests();
-        long getLastProcessedZxid();
-        String getState();
-        int getNumAliveConnections();
-        long getDataDirSize();
-        long getLogDirSize();
-
+        public long getOutstandingRequests();
+        public long getLastProcessedZxid();
+        public String getState();
+        public int getNumAliveConnections();
+        public long getDataDirSize();
+        public long getLogDirSize();
     }
-
+    
     public ServerStats(Provider provider) {
         this.provider = provider;
     }
-
+    
     // getters
-    public long getMinLatency() {
-        return requestLatency.getMin();
+    synchronized public long getMinLatency() {
+        return minLatency == Long.MAX_VALUE ? 0 : minLatency;
     }
 
-    public double getAvgLatency() {
-        return requestLatency.getAvg();
+    synchronized public long getAvgLatency() {
+        if (count != 0) {
+            return totalLatency / count;
+        }
+        return 0;
     }
 
-    public long getMaxLatency() {
-        return requestLatency.getMax();
+    synchronized public long getMaxLatency() {
+        return maxLatency;
     }
 
     public long getOutstandingRequests() {
         return provider.getOutstandingRequests();
     }
-
-    public long getLastProcessedZxid() {
+    
+    public long getLastProcessedZxid(){
         return provider.getLastProcessedZxid();
     }
 
@@ -87,26 +89,22 @@ public class ServerStats {
     public long getLogDirSize() {
         return provider.getLogDirSize();
     }
-
-    public long getPacketsReceived() {
-        return packetsReceived.get();
+    
+    synchronized public long getPacketsReceived() {
+        return packetsReceived;
     }
 
-    public long getPacketsSent() {
-        return packetsSent.get();
+    synchronized public long getPacketsSent() {
+        return packetsSent;
     }
 
     public String getServerState() {
         return provider.getState();
     }
-
+    
     /** The number of client connections alive to this server */
     public int getNumAliveClientConnections() {
-        return provider.getNumAliveConnections();
-    }
-
-    public long getUptime() {
-        return Time.currentElapsedTime() - startTime;
+    	return provider.getNumAliveConnections();
     }
 
     public boolean isProviderNull() {
@@ -114,59 +112,51 @@ public class ServerStats {
     }
 
     @Override
-    public String toString() {
+    public String toString(){
         StringBuilder sb = new StringBuilder();
-        sb.append("Latency min/avg/max: " + getMinLatency() + "/" + getAvgLatency() + "/" + getMaxLatency() + "\n");
+        sb.append("Latency min/avg/max: " + getMinLatency() + "/"
+                + getAvgLatency() + "/" + getMaxLatency() + "\n");
         sb.append("Received: " + getPacketsReceived() + "\n");
         sb.append("Sent: " + getPacketsSent() + "\n");
         sb.append("Connections: " + getNumAliveClientConnections() + "\n");
 
         if (provider != null) {
             sb.append("Outstanding: " + getOutstandingRequests() + "\n");
-            sb.append("Zxid: 0x" + Long.toHexString(getLastProcessedZxid()) + "\n");
+            sb.append("Zxid: 0x"+ Long.toHexString(getLastProcessedZxid())+ "\n");
         }
         sb.append("Mode: " + getServerState() + "\n");
         return sb.toString();
     }
-
-    /**
-     * Update request statistic. This should only be called from a request
-     * that originated from that machine.
-     */
-    public void updateLatency(Request request, long currentTime) {
-        long latency = currentTime - request.createTime;
-        if (latency < 0) {
-            return;
+    // mutators
+    synchronized void updateLatency(long requestCreateTime) {
+        long latency = Time.currentElapsedTime() - requestCreateTime;
+        totalLatency += latency;
+        count++;
+        if (latency < minLatency) {
+            minLatency = latency;
         }
-        requestLatency.addDataPoint(latency);
-        if (request.getHdr() != null) {
-            // Only quorum request should have header
-            ServerMetrics.getMetrics().UPDATE_LATENCY.add(latency);
-        } else {
-            // All read request should goes here
-            ServerMetrics.getMetrics().READ_LATENCY.add(latency);
+        if (latency > maxLatency) {
+            maxLatency = latency;
         }
     }
-
-    public void resetLatency() {
-        requestLatency.reset();
+    synchronized public void resetLatency(){
+        totalLatency = 0;
+        count = 0;
+        maxLatency = 0;
+        minLatency = Long.MAX_VALUE;
     }
-
-    public void resetMaxLatency() {
-        requestLatency.resetMax();
+    synchronized public void resetMaxLatency(){
+        maxLatency = getMinLatency();
     }
-
-    public void incrementPacketsReceived() {
-        packetsReceived.incrementAndGet();
+    synchronized public void incrementPacketsReceived() {
+        packetsReceived++;
     }
-
-    public void incrementPacketsSent() {
-        packetsSent.incrementAndGet();
+    synchronized public void incrementPacketsSent() {
+        packetsSent++;
     }
-
-    public void resetRequestCounters() {
-        packetsReceived.set(0);
-        packetsSent.set(0);
+    synchronized public void resetRequestCounters(){
+        packetsReceived = 0;
+        packetsSent = 0;
     }
 
     public long getFsyncThresholdExceedCount() {
@@ -181,11 +171,10 @@ public class ServerStats {
         fsyncThresholdExceedCount.set(0);
     }
 
-    public void reset() {
+    synchronized public void reset() {
         resetLatency();
         resetRequestCounters();
         clientResponseStats.reset();
-        ServerMetrics.getMetrics().resetAll();
     }
 
     public void updateClientResponseSize(int size) {
@@ -195,5 +184,4 @@ public class ServerStats {
     public BufferStats getClientResponseStats() {
         return clientResponseStats;
     }
-
 }

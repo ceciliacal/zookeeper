@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,25 +18,25 @@
 
 package org.apache.zookeeper.client;
 
-import static org.apache.zookeeper.common.StringUtils.split;
+import org.apache.zookeeper.common.PathUtils;
+
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
-import org.apache.zookeeper.common.NetUtils;
-import org.apache.zookeeper.common.PathUtils;
+
+import static org.apache.zookeeper.common.StringUtils.split;
 
 /**
  * A parser for ZooKeeper Client connect strings.
- *
+ * 
  * This class is not meant to be seen or used outside of ZooKeeper itself.
- *
+ * 
  * The chrootPath member should be replaced by a Path object in issue
  * ZOOKEEPER-849.
- *
+ * 
  * @see org.apache.zookeeper.ZooKeeper
  */
 public final class ConnectStringParser {
-
     private static final int DEFAULT_PORT = 2181;
 
     private final String chrootPath;
@@ -44,8 +44,7 @@ public final class ConnectStringParser {
     private final ArrayList<InetSocketAddress> serverAddresses = new ArrayList<InetSocketAddress>();
 
     /**
-     * Parse host and port by spliting client connectString
-     * with support for IPv6 literals
+     * 
      * @throws IllegalArgumentException
      *             for an invalid chroot path.
      */
@@ -66,24 +65,16 @@ public final class ConnectStringParser {
             this.chrootPath = null;
         }
 
-        List<String> hostsList = split(connectString, ",");
+        List<String> hostsList = split(connectString,",");
         for (String host : hostsList) {
             int port = DEFAULT_PORT;
-            String[] hostAndPort = NetUtils.getIPV6HostAndPort(host);
-            if (hostAndPort.length != 0) {
-                host = hostAndPort[0];
-                if (hostAndPort.length == 2) {
-                    port = Integer.parseInt(hostAndPort[1]);
+            int pidx = host.lastIndexOf(':');
+            if (pidx >= 0) {
+                // otherwise : is at the end of the string, ignore
+                if (pidx < host.length() - 1) {
+                    port = Integer.parseInt(host.substring(pidx + 1));
                 }
-            } else {
-                int pidx = host.lastIndexOf(':');
-                if (pidx >= 0) {
-                    // otherwise : is at the end of the string, ignore
-                    if (pidx < host.length() - 1) {
-                        port = Integer.parseInt(host.substring(pidx + 1));
-                    }
-                    host = host.substring(0, pidx);
-                }
+                host = host.substring(0, pidx);
             }
             serverAddresses.add(InetSocketAddress.createUnresolved(host, port));
         }
@@ -96,5 +87,4 @@ public final class ConnectStringParser {
     public ArrayList<InetSocketAddress> getServerAddresses() {
         return serverAddresses;
     }
-
 }

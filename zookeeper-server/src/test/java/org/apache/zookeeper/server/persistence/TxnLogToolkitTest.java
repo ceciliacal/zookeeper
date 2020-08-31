@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,11 +18,12 @@
 
 package org.apache.zookeeper.server.persistence;
 
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.core.IsNot.not;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.apache.commons.io.FileUtils;
+import org.apache.zookeeper.test.ClientBase;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -31,21 +32,22 @@ import java.io.PrintStream;
 import java.util.Scanner;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import org.apache.commons.io.FileUtils;
-import org.apache.zookeeper.test.ClientBase;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+
+import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.core.IsNot.not;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
+
 
 public class TxnLogToolkitTest {
-
-    private static final File testData = new File(System.getProperty("test.data.dir", "src/test/resources/data"));
+    private static final File testData = new File(
+            System.getProperty("test.data.dir", "src/test/resources/data"));
 
     private final ByteArrayOutputStream outContent = new ByteArrayOutputStream();
     private final ByteArrayOutputStream errContent = new ByteArrayOutputStream();
     private File mySnapDir;
 
-    @BeforeEach
+    @Before
     public void setUp() throws IOException {
         System.setOut(new PrintStream(outContent));
         System.setErr(new PrintStream(errContent));
@@ -54,7 +56,7 @@ public class TxnLogToolkitTest {
         FileUtils.copyDirectory(snapDir, mySnapDir);
     }
 
-    @AfterEach
+    @After
     public void tearDown() throws IOException {
         System.setOut(System.out);
         System.setErr(System.err);
@@ -75,24 +77,20 @@ public class TxnLogToolkitTest {
         // no exception thrown
     }
 
-    @Test
+    @Test(expected = TxnLogToolkit.TxnLogToolkitException.class)
     public void testInitMissingFile() throws FileNotFoundException, TxnLogToolkit.TxnLogToolkitException {
-        assertThrows(TxnLogToolkit.TxnLogToolkitException.class, () -> {
-            // Arrange & Act
-            File logfile = new File("this_file_should_not_exists");
-            TxnLogToolkit lt = new TxnLogToolkit(false, false, logfile.toString(), true);
-        });
+        // Arrange & Act
+        File logfile = new File("this_file_should_not_exists");
+        TxnLogToolkit lt = new TxnLogToolkit(false, false, logfile.toString(), true);
     }
 
-    @Test
-    public void testInitWithRecoveryFileExists() {
-        assertThrows(TxnLogToolkit.TxnLogToolkitException.class, () -> {
-            // Arrange & Act
-            File logfile = new File(new File(mySnapDir, "version-2"), "log.274");
-            File recoveryFile = new File(new File(mySnapDir, "version-2"), "log.274.fixed");
-            recoveryFile.createNewFile();
-            TxnLogToolkit lt = new TxnLogToolkit(true, false, logfile.toString(), true);
-        });
+    @Test(expected = TxnLogToolkit.TxnLogToolkitException.class)
+    public void testInitWithRecoveryFileExists() throws IOException, TxnLogToolkit.TxnLogToolkitException {
+        // Arrange & Act
+        File logfile = new File(new File(mySnapDir, "version-2"), "log.274");
+        File recoveryFile = new File(new File(mySnapDir, "version-2"), "log.274.fixed");
+        recoveryFile.createNewFile();
+        TxnLogToolkit lt = new TxnLogToolkit(true, false, logfile.toString(), true);
     }
 
     @Test
@@ -108,7 +106,7 @@ public class TxnLogToolkitTest {
         String output = outContent.toString();
         Pattern p = Pattern.compile("^CRC ERROR.*session 0x8061fac5ddeb0000 cxid 0x0 zxid 0x8800000002 createSession 30000$", Pattern.MULTILINE);
         Matcher m = p.matcher(output);
-        assertTrue(m.find(), "Output doesn't indicate CRC error for the broken session id: " + output);
+        assertTrue("Output doesn't indicate CRC error for the broken session id: " + output, m.find());
     }
 
     @Test
@@ -154,5 +152,4 @@ public class TxnLogToolkitTest {
         output = outContent.toString();
         assertThat(output, not(containsString("CRC ERROR")));
     }
-
 }

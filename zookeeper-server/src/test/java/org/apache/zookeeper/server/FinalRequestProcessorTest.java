@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,21 +18,6 @@
 
 package org.apache.zookeeper.server;
 
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.equalTo;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
 import org.apache.jute.BinaryOutputArchive;
 import org.apache.jute.Record;
 import org.apache.zookeeper.KeeperException;
@@ -43,13 +28,29 @@ import org.apache.zookeeper.data.Stat;
 import org.apache.zookeeper.proto.GetACLRequest;
 import org.apache.zookeeper.proto.GetACLResponse;
 import org.apache.zookeeper.proto.ReplyHeader;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-public class FinalRequestProcessorTest {
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 
+import static org.hamcrest.Matchers.equalTo;
+import static org.junit.Assert.assertThat;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+public class FinalRequestProcessorTest {
     private List<ACL> testACLs = new ArrayList<ACL>();
     private final Record[] responseRecord = new Record[1];
     private final ReplyHeader[] replyHeaders = new ReplyHeader[1];
@@ -58,10 +59,14 @@ public class FinalRequestProcessorTest {
     private ByteBuffer bb;
     private FinalRequestProcessor processor;
 
-    @BeforeEach
+    @Before
     public void setUp() throws KeeperException.NoNodeException, IOException {
         testACLs.clear();
-        testACLs.addAll(Arrays.asList(new ACL(ZooDefs.Perms.ALL, new Id("digest", "user:secrethash")), new ACL(ZooDefs.Perms.ADMIN, new Id("digest", "adminuser:adminsecret")), new ACL(ZooDefs.Perms.READ, new Id("world", "anyone"))));
+        testACLs.addAll(Arrays.asList(
+                new ACL(ZooDefs.Perms.ALL, new Id("digest", "user:secrethash")),
+                new ACL(ZooDefs.Perms.ADMIN, new Id("digest", "adminuser:adminsecret")),
+                new ACL(ZooDefs.Perms.READ, new Id("world", "anyone"))
+        ));
 
         ZooKeeperServer zks = new ZooKeeperServer();
         ZKDatabase db = mock(ZKDatabase.class);
@@ -162,7 +167,10 @@ public class FinalRequestProcessorTest {
     public void testACLDigestHashHiding_OnlyAdmin() {
         // Arrange
         testACLs.clear();
-        testACLs.addAll(Arrays.asList(new ACL(ZooDefs.Perms.READ, new Id("digest", "user:secrethash")), new ACL(ZooDefs.Perms.ADMIN, new Id("digest", "adminuser:adminsecret"))));
+        testACLs.addAll(Arrays.asList(
+                new ACL(ZooDefs.Perms.READ, new Id("digest", "user:secrethash")),
+                new ACL(ZooDefs.Perms.ADMIN, new Id("digest", "adminuser:adminsecret"))
+        ));
         List<Id> authInfo = new ArrayList<Id>();
         authInfo.add(new Id("digest", "adminuser:adminsecret"));
 
@@ -171,8 +179,8 @@ public class FinalRequestProcessorTest {
         processor.processRequest(r);
 
         // Assert
-        assertTrue(responseRecord[0] instanceof GetACLResponse, "Not a GetACL response. Auth failed?");
-        GetACLResponse rsp = (GetACLResponse) responseRecord[0];
+        assertTrue("Not a GetACL response. Auth failed?", responseRecord[0] instanceof GetACLResponse);
+        GetACLResponse rsp = (GetACLResponse)responseRecord[0];
         assertThat("Number of ACLs in the response are different", rsp.getAcl().size(), equalTo(2));
 
         // Verify ACLs in the response
@@ -181,8 +189,8 @@ public class FinalRequestProcessorTest {
     }
 
     private void assertMasked(boolean masked) {
-        assertTrue(responseRecord[0] instanceof GetACLResponse, "Not a GetACL response. Auth failed?");
-        GetACLResponse rsp = (GetACLResponse) responseRecord[0];
+        assertTrue("Not a GetACL response. Auth failed?", responseRecord[0] instanceof GetACLResponse);
+        GetACLResponse rsp = (GetACLResponse)responseRecord[0];
         assertThat("Number of ACLs in the response are different", rsp.getAcl().size(), equalTo(3));
 
         // Verify ACLs in the response
@@ -219,5 +227,4 @@ public class FinalRequestProcessorTest {
         assertThat("Original ACL list has been modified", testACLs.get(2).getId().getScheme(), equalTo("world"));
         assertThat("Original ACL list has been modified", testACLs.get(2).getId().getId(), equalTo("anyone"));
     }
-
 }

@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,32 +18,35 @@
 
 package org.apache.zookeeper.test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.fail;
+
 import java.io.File;
 import java.io.IOException;
+
 import org.apache.jute.BinaryInputArchive;
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.zookeeper.ZooKeeper;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.Before;
+import org.junit.Test;
 
 public class BufferSizeTest extends ClientBase {
-
     public static final int TEST_MAXBUFFER = 100;
-    private static final File TEST_DATA = new File(System.getProperty("test.data.dir", "src/test/resources/data"), "buffersize");
-
+    private static final File TEST_DATA = new File(
+            System.getProperty("test.data.dir", "src/test/resources/data"),
+            "buffersize");
+    
     private ZooKeeper zk;
 
-    @BeforeEach
+    @Before
     public void setMaxBuffer() throws IOException, InterruptedException {
         System.setProperty("jute.maxbuffer", "" + TEST_MAXBUFFER);
-        assertEquals(TEST_MAXBUFFER, BinaryInputArchive.maxBuffer, "Can't set jute.maxbuffer!");
+        assertEquals("Can't set jute.maxbuffer!", TEST_MAXBUFFER, BinaryInputArchive.maxBuffer);
         zk = createClient();
     }
-
+    
     @Test
     public void testCreatesReqs() throws Exception {
         testRequests(new ClientOp() {
@@ -53,7 +56,7 @@ public class BufferSizeTest extends ClientBase {
             }
         });
     }
-
+    
     @Test
     public void testSetReqs() throws Exception {
         final String path = "/set_test";
@@ -65,7 +68,7 @@ public class BufferSizeTest extends ClientBase {
             }
         });
     }
-
+    
     /** Issues requests containing data smaller, equal, and greater than TEST_MAXBUFFER. */
     private void testRequests(ClientOp clientOp) throws Exception {
         clientOp.execute(new byte[TEST_MAXBUFFER - 60]);
@@ -73,19 +76,15 @@ public class BufferSizeTest extends ClientBase {
             // This should fail since the buffer size > the data size due to extra fields
             clientOp.execute(new byte[TEST_MAXBUFFER]);
             fail("Request exceeding jute.maxbuffer succeeded!");
-        } catch (KeeperException.ConnectionLossException e) {
-        }
+        } catch (KeeperException.ConnectionLossException e) {}
         try {
             clientOp.execute(new byte[TEST_MAXBUFFER + 10]);
             fail("Request exceeding jute.maxbuffer succeeded!");
-        } catch (KeeperException.ConnectionLossException e) {
-        }
+        } catch (KeeperException.ConnectionLossException e) {}
     }
 
     private interface ClientOp {
-
         void execute(byte[] data) throws Exception;
-
     }
 
     @Test
@@ -97,25 +96,28 @@ public class BufferSizeTest extends ClientBase {
         stopServer();
         startServer();
     }
-
+    
     @Test
     public void testStartupFailureCreate() throws Exception {
         // Empty snapshot and logfile containing a 5000-byte create
-        testStartupFailure(new File(TEST_DATA, "create"), "Server started despite create exceeding jute.maxbuffer!");
+        testStartupFailure(new File(TEST_DATA, "create"),
+                "Server started despite create exceeding jute.maxbuffer!");
     }
-
+    
     @Test
     public void testStartupFailureSet() throws Exception {
         // Empty snapshot and logfile containing a 1-byte create and 5000-byte set
-        testStartupFailure(new File(TEST_DATA, "set"), "Server started despite set exceeding jute.maxbuffer!");
+        testStartupFailure(new File(TEST_DATA, "set"),
+                "Server started despite set exceeding jute.maxbuffer!");
     }
-
+    
     @Test
     public void testStartupFailureSnapshot() throws Exception {
         // Snapshot containing 5000-byte znode and logfile containing create txn
-        testStartupFailure(new File(TEST_DATA, "snapshot"), "Server started despite znode exceeding jute.maxbuffer!");
+        testStartupFailure(new File(TEST_DATA, "snapshot"),
+                "Server started despite znode exceeding jute.maxbuffer!");
     }
-
+    
     private void testStartupFailure(File testDir, String failureMsg) throws Exception {
         stopServer();
         // Point server at testDir
@@ -125,10 +127,9 @@ public class BufferSizeTest extends ClientBase {
             startServer();
             fail(failureMsg);
         } catch (IOException e) {
-            LOG.debug("Successfully caught IOException", e);
+            LOG.info("Successfully caught IOException: " + e);
         } finally {
             tmpDir = oldTmpDir;
         }
     }
-
 }

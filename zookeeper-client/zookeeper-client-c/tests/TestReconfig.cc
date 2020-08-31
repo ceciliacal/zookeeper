@@ -106,18 +106,11 @@ public:
     string getServerNoPort()
     {
         string addrstring = getServer();
-        size_t found = addrstring.find_last_of(":");
+
+        size_t found = addrstring.find(":");
         CPPUNIT_ASSERT(found != string::npos);
 
-        // ipv6 address case (to remove leading and trailing bracket)
-        if (addrstring.find("[") != string::npos)
-        {
-            return addrstring.substr(1, found-2);
-        }
-        else
-        {
-            return addrstring.substr(0, found);
-        }
+        return addrstring.substr(0, found);
     }
 
     /**
@@ -127,7 +120,7 @@ public:
     {
         string addrstring = getServer();
 
-        size_t found = addrstring.find_last_of(":");
+        size_t found = addrstring.find(":");
         CPPUNIT_ASSERT(found != string::npos);
 
         string portStr = addrstring.substr(found+1);
@@ -273,7 +266,7 @@ public:
 
     void tearDown()
     {
-        for (unsigned int i = 0; i < clients.size(); i++)
+        for (int i = 0; i < clients.size(); i++)
         {
             clients.at(i).close();
         }
@@ -324,7 +317,7 @@ public:
 
         stringstream ss;
 
-        for (uint32_t i = start; i >= stop; i--, octet--)
+        for (int i = start; i >= stop; i--, octet--)
         {
             ss << "10.10.10." << octet << ":" << portOffset + octet;
 
@@ -486,18 +479,16 @@ public:
         // We should try all the new servers *BEFORE* trying any old servers
         string seen;
         for (int i = 0; i < num_coming; i++) {
-            client.cycleNextServer();
+            string next = client.cycleNextServer();
 
             // Assert next server is in the 'new' list
-            stringstream next;
-            next << client.getServerNoPort() << ":" << client.getServerPort();
-            size_t found = newComing.find(next.str());
-            CPPUNIT_ASSERT_MESSAGE(next.str() + " not in newComing list",
+            size_t found = newComing.find(next);
+            CPPUNIT_ASSERT_MESSAGE(next + " not in newComing list",
                                    found != string::npos);
 
             // Assert not in seen list then append
-            found = seen.find(next.str());
-            CPPUNIT_ASSERT_MESSAGE(next.str() + " in seen list",
+            found = seen.find(next);
+            CPPUNIT_ASSERT_MESSAGE(next + " in seen list",
                                    found == string::npos);
             seen += found + ", ";
         }
@@ -505,16 +496,14 @@ public:
         // Now it should start connecting to the old servers
         seen.clear();
         for (int i = 0; i < num_staying; i++) {
-            client.cycleNextServer();
+            string next = client.cycleNextServer();
 
             // Assert it's in the old list
-            stringstream next;
-            next << client.getServerNoPort() << ":" << client.getServerPort();
-            size_t found = oldStaying.find(next.str());
+            size_t found = oldStaying.find(next);
             CPPUNIT_ASSERT(found != string::npos);
 
             // Assert not in seen list then append
-            found = seen.find(next.str());
+            found = seen.find(next);
             CPPUNIT_ASSERT(found == string::npos);
             seen += found + ", ";
         }
@@ -581,6 +570,8 @@ public:
     {
         zoo_deterministic_conn_order(0);
 
+        int rc = ZOK;
+
         uint32_t numServers = 9;
         const string initial_hosts = createHostList(numServers); // 10.10.10.9:2009...10.10.10.1:2001
 
@@ -590,7 +581,7 @@ public:
             numClientsPerHost.at(client.getServerPort() - portOffset - 1)++;
         }
 
-        for (uint32_t i = 0; i < numServers; i++) {
+        for (int i = 0; i < numServers; i++) {
             CPPUNIT_ASSERT(numClientsPerHost.at(i) <= upperboundClientsPerServer(numClients, numServers));
             CPPUNIT_ASSERT(numClientsPerHost.at(i) >= lowerboundClientsPerServer(numClients, numServers));
             numClientsPerHost.at(i) = 0; // prepare for next test

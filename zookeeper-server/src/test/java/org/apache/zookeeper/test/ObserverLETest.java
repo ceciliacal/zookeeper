@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,25 +15,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.zookeeper.test;
 
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.*;
+
 import java.util.Arrays;
+
 import org.apache.zookeeper.ZKTestCase;
 import org.apache.zookeeper.server.quorum.QuorumPeer;
 import org.apache.zookeeper.server.quorum.QuorumStats;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 public class ObserverLETest extends ZKTestCase {
-
     final QuorumBase qb = new QuorumBase();
     final ClientTest ct = new ClientTest();
 
-    @BeforeEach
+    @Before
     public void establishThreeParticipantOneObserverEnsemble() throws Exception {
         qb.setUp(true);
         ct.hostPort = qb.hostPort;
@@ -41,7 +40,7 @@ public class ObserverLETest extends ZKTestCase {
         qb.s5.shutdown();
     }
 
-    @AfterEach
+    @After
     public void shutdownQuorum() throws Exception {
         ct.tearDownAll();
         qb.tearDown();
@@ -57,17 +56,21 @@ public class ObserverLETest extends ZKTestCase {
     public void testLEWithObserver() throws Exception {
         QuorumPeer leader = null;
         for (QuorumPeer server : Arrays.asList(qb.s1, qb.s2, qb.s3)) {
-            if (server.getServerState().equals(QuorumStats.Provider.FOLLOWING_STATE)) {
+            if (server.getServerState().equals(
+                    QuorumStats.Provider.FOLLOWING_STATE)) {
                 server.shutdown();
-                assertTrue(ClientBase.waitForServerDown("127.0.0.1:" + server.getClientPort(), ClientBase.CONNECTION_TIMEOUT),
-                        "Waiting for server down");
+                assertTrue("Waiting for server down", ClientBase
+                        .waitForServerDown("127.0.0.1:"
+                                + server.getClientPort(),
+                                ClientBase.CONNECTION_TIMEOUT));
             } else {
-                assertNull(leader, "More than one leader found");
+                assertNull("More than one leader found", leader);
                 leader = server;
             }
         }
-        assertTrue(ClientBase.waitForServerState(leader, ClientBase.CONNECTION_TIMEOUT, QuorumStats.Provider.LOOKING_STATE),
-                "Leader is not in Looking state");
+        assertTrue("Leader is not in Looking state", ClientBase
+                .waitForServerState(leader, ClientBase.CONNECTION_TIMEOUT,
+                        QuorumStats.Provider.LOOKING_STATE));
     }
 
 }

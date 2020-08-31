@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,14 +18,6 @@
 
 package org.apache.zookeeper.server;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
 import org.apache.jute.Index;
 import org.apache.jute.InputArchive;
 import org.apache.jute.OutputArchive;
@@ -34,15 +26,26 @@ import org.apache.zookeeper.data.ACL;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class ReferenceCountedACLCache {
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
 
+public class ReferenceCountedACLCache {
     private static final Logger LOG = LoggerFactory.getLogger(ReferenceCountedACLCache.class);
 
-    final Map<Long, List<ACL>> longKeyMap = new HashMap<Long, List<ACL>>();
+    final Map<Long, List<ACL>> longKeyMap =
+            new HashMap<Long, List<ACL>>();
 
-    final Map<List<ACL>, Long> aclKeyMap = new HashMap<List<ACL>, Long>();
+    final Map<List<ACL>, Long> aclKeyMap =
+            new HashMap<List<ACL>, Long>();
 
-    final Map<Long, AtomicLongWithEquals> referenceCounter = new HashMap<Long, AtomicLongWithEquals>();
+    final Map<Long, AtomicLongWithEquals> referenceCounter =
+            new HashMap<Long, AtomicLongWithEquals>();
     private static final long OPEN_UNSAFE_ACL_ID = -1L;
 
     /**
@@ -57,9 +60,8 @@ public class ReferenceCountedACLCache {
      * @return a long that map to the acls
      */
     public synchronized Long convertAcls(List<ACL> acls) {
-        if (acls == null) {
+        if (acls == null)
             return OPEN_UNSAFE_ACL_ID;
-        }
 
         // get the value from the map
         Long ret = aclKeyMap.get(acls);
@@ -81,15 +83,13 @@ public class ReferenceCountedACLCache {
      * @return a list of ACLs that map to the long
      */
     public synchronized List<ACL> convertLong(Long longVal) {
-        if (longVal == null) {
+        if (longVal == null)
             return null;
-        }
-        if (longVal == OPEN_UNSAFE_ACL_ID) {
+        if (longVal == OPEN_UNSAFE_ACL_ID)
             return ZooDefs.Ids.OPEN_ACL_UNSAFE;
-        }
         List<ACL> acls = longKeyMap.get(longVal);
         if (acls == null) {
-            LOG.error("ERROR: ACL not available for long {}", longVal);
+            LOG.error("ERROR: ACL not available for long " + longVal);
             throw new RuntimeException("Failed to fetch acls for " + longVal);
         }
         return acls;
@@ -99,14 +99,14 @@ public class ReferenceCountedACLCache {
         return ++aclIndex;
     }
 
-    public void deserialize(InputArchive ia) throws IOException {
+    public synchronized void deserialize(InputArchive ia) throws IOException {
         clear();
         int i = ia.readInt("map");
-
-        LinkedHashMap<Long, List<ACL>> deserializedMap = new LinkedHashMap<>();
-        // keep read operations out of synchronization block
         while (i > 0) {
             Long val = ia.readLong("long");
+            if (aclIndex < val) {
+                aclIndex = val;
+            }
             List<ACL> aclList = new ArrayList<ACL>();
             Index j = ia.startVector("acls");
             if (j == null) {
@@ -118,33 +118,17 @@ public class ReferenceCountedACLCache {
                 aclList.add(acl);
                 j.incr();
             }
-
-            deserializedMap.put(val, aclList);
+            longKeyMap.put(val, aclList);
+            aclKeyMap.put(aclList, val);
+            referenceCounter.put(val, new AtomicLongWithEquals(0));
             i--;
-        }
-
-        synchronized (this) {
-            for (Map.Entry<Long, List<ACL>> entry : deserializedMap.entrySet()) {
-                Long val = entry.getKey();
-                List<ACL> aclList = entry.getValue();
-                if (aclIndex < val) {
-                    aclIndex = val;
-                }
-
-                longKeyMap.put(val, aclList);
-                aclKeyMap.put(aclList, val);
-                referenceCounter.put(val, new AtomicLongWithEquals(0));
-            }
         }
     }
 
-    public void serialize(OutputArchive oa) throws IOException {
-        Map<Long, List<ACL>> clonedLongKeyMap;
-        synchronized (this) {
-            clonedLongKeyMap = new HashMap<>(longKeyMap);
-        }
-        oa.writeInt(clonedLongKeyMap.size(), "map");
-        for (Map.Entry<Long, List<ACL>> val : clonedLongKeyMap.entrySet()) {
+    public synchronized void serialize(OutputArchive oa) throws IOException {
+        oa.writeInt(longKeyMap.size(), "map");
+        Set<Map.Entry<Long, List<ACL>>> set = longKeyMap.entrySet();
+        for (Map.Entry<Long, List<ACL>> val : set) {
             oa.writeLong(val.getKey(), "long");
             List<ACL> aclList = val.getValue();
             oa.startVector(aclList, "acls");
@@ -171,7 +155,7 @@ public class ReferenceCountedACLCache {
         }
 
         if (!longKeyMap.containsKey(acl)) {
-            LOG.info("Ignoring acl {} as it does not exist in the cache", acl);
+            LOG.info("Ignoring acl " + acl + " as it does not exist in the cache");
             return;
         }
 
@@ -189,7 +173,7 @@ public class ReferenceCountedACLCache {
         }
 
         if (!longKeyMap.containsKey(acl)) {
-            LOG.info("Ignoring acl {} as it does not exist in the cache", acl);
+            LOG.info("Ignoring acl " + acl + " as it does not exist in the cache");
             return;
         }
 
@@ -224,12 +208,8 @@ public class ReferenceCountedACLCache {
 
         @Override
         public boolean equals(Object o) {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
 
             return equals((AtomicLongWithEquals) o);
         }
@@ -242,7 +222,5 @@ public class ReferenceCountedACLCache {
         public int hashCode() {
             return 31 * Long.valueOf(get()).hashCode();
         }
-
     }
-
 }

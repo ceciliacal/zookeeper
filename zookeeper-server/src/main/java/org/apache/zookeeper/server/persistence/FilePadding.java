@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,14 +18,14 @@
 
 package org.apache.zookeeper.server.persistence;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class FilePadding {
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 
+public class FilePadding {
     private static final Logger LOG;
     private static long preAllocSize = 65536 * 1024;
     private static final ByteBuffer fill = ByteBuffer.allocateDirect(1);
@@ -38,7 +38,7 @@ public class FilePadding {
             try {
                 preAllocSize = Long.parseLong(size) * 1024;
             } catch (NumberFormatException e) {
-                LOG.warn("{} is not a valid value for preAllocSize", size);
+                LOG.warn(size + " is not a valid value for preAllocSize");
             }
         }
     }
@@ -84,13 +84,14 @@ public class FilePadding {
     /**
      * Calculates a new file size with padding. We only return a new size if
      * the current file position is sufficiently close (less than 4K) to end of
-     * file and preAllocSize is &gt; 0.
+     * file and preAllocSize is > 0.
      *
      * @param position     the point in the file we have written to
      * @param fileSize     application keeps track of the current file size
      * @param preAllocSize how many bytes to pad
      * @return the new file size. It can be the same as fileSize if no
      * padding was done.
+     * @throws IOException
      */
     // VisibleForTesting
     public static long calculateFileSizeWithPadding(long position, long fileSize, long preAllocSize) {
@@ -108,5 +109,4 @@ public class FilePadding {
 
         return fileSize;
     }
-
 }

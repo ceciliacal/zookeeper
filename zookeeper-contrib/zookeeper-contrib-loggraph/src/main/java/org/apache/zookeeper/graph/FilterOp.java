@@ -18,12 +18,11 @@
 package org.apache.zookeeper.graph;
 
 import java.util.ArrayList;
-import java.util.List;
 import org.apache.zookeeper.graph.filterops.*;
 
 public abstract class FilterOp {
-    protected List<FilterOp> subOps;
-    protected List<Arg> args;
+    protected ArrayList<FilterOp> subOps;
+    protected ArrayList<Arg> args;
 
     public enum ArgType {
 	STRING, NUMBER, SYMBOL

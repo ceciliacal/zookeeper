@@ -52,6 +52,7 @@ using namespace std;
         int interest;
         int events;
         struct timeval tv;
+        int rc;
         time_t expires = time(0) + seconds;
         time_t timeLeft = seconds;
         fd_set rfds, wfds, efds;
@@ -79,7 +80,7 @@ using namespace std;
             if (tv.tv_sec > timeLeft) {
                 tv.tv_sec = timeLeft;
             }
-            select(fd+1, &rfds, &wfds, &efds, &tv);
+            rc = select(fd+1, &rfds, &wfds, &efds, &tv);
             timeLeft = expires - time(0);
             events = 0;
             if (FD_ISSET(fd, &rfds)) {
@@ -486,6 +487,8 @@ public:
         watchctx_t ctx;
         zhandle_t *zk = createClient(&ctx);
         int sz = 512;
+        char buf[sz];
+        int blen;
         char p1[sz];
         p1[0] = '\0';
         struct Stat stat;
@@ -571,6 +574,7 @@ public:
         int sz = 512;
         char p1[sz];
         p1[0] = '\0';
+        struct Stat s1;
 
         rc = zoo_create(zk, "/multi0", "", 0, &ZOO_OPEN_ACL_UNSAFE, 0, p1, sz);
         CPPUNIT_ASSERT_EQUAL((int)ZOK, rc);

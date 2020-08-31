@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,20 +18,20 @@
 
 package org.apache.zookeeper.server.quorum;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.*;
+
 import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.Map;
+
 import org.apache.zookeeper.PortAssignment;
 import org.apache.zookeeper.server.quorum.QuorumPeer.LearnerType;
 import org.apache.zookeeper.server.quorum.QuorumPeer.QuorumServer;
 import org.apache.zookeeper.test.ClientBase;
-import org.junit.jupiter.api.Test;
+import org.junit.Test;
 
 public class QuorumPeerTest {
 
@@ -39,7 +39,6 @@ public class QuorumPeerTest {
     private int tickTime = 2000;
     private int initLimit = 3;
     private int syncLimit = 3;
-    private int connectToLearnerMasterLimit = 3;
 
     /**
      * Test case for https://issues.apache.org/jira/browse/ZOOKEEPER-2301
@@ -52,12 +51,16 @@ public class QuorumPeerTest {
         Map<Long, QuorumServer> peersView = new HashMap<Long, QuorumServer>();
         InetAddress clientIP = InetAddress.getLoopbackAddress();
 
-        peersView.put(Long.valueOf(myId), new QuorumServer(myId, new InetSocketAddress(clientIP, PortAssignment.unique()), new InetSocketAddress(clientIP, PortAssignment.unique()), new InetSocketAddress(clientIP, clientPort), LearnerType.PARTICIPANT));
+        peersView.put(Long.valueOf(myId),
+                new QuorumServer(myId, new InetSocketAddress(clientIP, PortAssignment.unique()),
+                        new InetSocketAddress(clientIP, PortAssignment.unique()),
+                        new InetSocketAddress(clientIP, clientPort), LearnerType.PARTICIPANT));
 
         /**
          * QuorumPeer constructor without QuorumVerifier
          */
-        QuorumPeer peer1 = new QuorumPeer(peersView, dataDir, dataDir, clientPort, electionAlg, myId, tickTime, initLimit, syncLimit, connectToLearnerMasterLimit);
+        QuorumPeer peer1 = new QuorumPeer(peersView, dataDir, dataDir, clientPort, electionAlg, myId, tickTime,
+                initLimit, syncLimit);
         String hostString1 = peer1.cnxnFactory.getLocalAddress().getHostString();
         assertEquals(clientIP.getHostAddress(), hostString1);
 
@@ -69,8 +72,12 @@ public class QuorumPeerTest {
          */
         peersView.clear();
         clientPort = PortAssignment.unique();
-        peersView.put(Long.valueOf(myId), new QuorumServer(myId, new InetSocketAddress(clientIP, PortAssignment.unique()), new InetSocketAddress(clientIP, PortAssignment.unique()), new InetSocketAddress(clientIP, clientPort), LearnerType.PARTICIPANT));
-        QuorumPeer peer2 = new QuorumPeer(peersView, dataDir, dataDir, clientPort, electionAlg, myId, tickTime, initLimit, syncLimit, connectToLearnerMasterLimit);
+        peersView.put(Long.valueOf(myId),
+                new QuorumServer(myId, new InetSocketAddress(clientIP, PortAssignment.unique()),
+                        new InetSocketAddress(clientIP, PortAssignment.unique()),
+                        new InetSocketAddress(clientIP, clientPort), LearnerType.PARTICIPANT));
+        QuorumPeer peer2 = new QuorumPeer(peersView, dataDir, dataDir, clientPort, electionAlg, myId, tickTime,
+                initLimit, syncLimit);
         String hostString2 = peer2.cnxnFactory.getLocalAddress().getHostString();
         assertEquals(clientIP.getHostAddress(), hostString2);
         // cleanup

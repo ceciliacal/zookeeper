@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,68 +18,61 @@
 
 package org.apache.zookeeper.server.quorum.auth;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.fail;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.PortAssignment;
 import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.server.admin.AdminServer;
-import org.apache.zookeeper.server.quorum.QuorumPeerConfig.ConfigException;
 import org.apache.zookeeper.server.quorum.QuorumPeerMain;
 import org.apache.zookeeper.server.quorum.QuorumPeerTestBase;
+import org.apache.zookeeper.server.quorum.QuorumPeerConfig.ConfigException;
 import org.apache.zookeeper.server.quorum.QuorumPeerTestBase.MainThread;
 import org.apache.zookeeper.test.ClientBase;
 import org.apache.zookeeper.test.ClientBase.CountdownWatcher;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import org.junit.After;
+import org.junit.AfterClass;
+import org.junit.Assert;
+import org.junit.Test;
 
 public class QuorumDigestAuthTest extends QuorumAuthTestBase {
 
     static {
-        String jaasEntries = "QuorumServer {\n"
-                             + "       org.apache.zookeeper.server.auth.DigestLoginModule required\n"
-                             + "       user_test=\"mypassword\";\n"
-                             + "};\n"
-                             + "QuorumLearner {\n"
-                             + "       org.apache.zookeeper.server.auth.DigestLoginModule required\n"
-                             + "       username=\"test\"\n"
-                             + "       password=\"mypassword\";\n"
-                             + "};\n"
-                             + "QuorumLearnerInvalid {\n"
-                             + "       org.apache.zookeeper.server.auth.DigestLoginModule required\n"
-                             + "       username=\"test\"\n"
-                             + "       password=\"invalid\";\n"
-                             + "};"
-                             + "\n";
+        String jaasEntries = new String(""
+                + "QuorumServer {\n"
+                + "       org.apache.zookeeper.server.auth.DigestLoginModule required\n"
+                + "       user_test=\"mypassword\";\n" + "};\n"
+                + "QuorumLearner {\n"
+                + "       org.apache.zookeeper.server.auth.DigestLoginModule required\n"
+                + "       username=\"test\"\n"
+                + "       password=\"mypassword\";\n" + "};\n"
+                + "QuorumLearnerInvalid {\n"
+                + "       org.apache.zookeeper.server.auth.DigestLoginModule required\n"
+                + "       username=\"test\"\n"
+                + "       password=\"invalid\";\n" + "};" + "\n");
         setupJaasConfig(jaasEntries);
     }
 
-    @AfterEach
-    @Override
+    @After
     public void tearDown() throws Exception {
         for (MainThread mainThread : mt) {
             mainThread.shutdown();
             mainThread.deleteBaseDir();
         }
-        super.tearDown();
     }
 
-    @AfterAll
-    public static void cleanup() {
+    @AfterClass
+    public static void cleanup(){
         cleanupJaasConfig();
     }
 
     /**
      * Test to verify that server is able to start with valid credentials
      */
-    @Test
-    @Timeout(value = 30)
+    @Test(timeout = 30000)
     public void testValidCredentials() throws Exception {
         Map<String, String> authConfigs = new HashMap<String, String>();
         authConfigs.put(QuorumAuth.QUORUM_SASL_AUTH_ENABLED, "true");
@@ -88,32 +81,12 @@ public class QuorumDigestAuthTest extends QuorumAuthTestBase {
 
         String connectStr = startQuorum(3, authConfigs, 3);
         CountdownWatcher watcher = new CountdownWatcher();
-        ZooKeeper zk = new ZooKeeper(connectStr, ClientBase.CONNECTION_TIMEOUT, watcher);
+        ZooKeeper zk = new ZooKeeper(connectStr, ClientBase.CONNECTION_TIMEOUT,
+                watcher);
         watcher.waitForConnected(ClientBase.CONNECTION_TIMEOUT);
         for (int i = 0; i < 10; i++) {
-            zk.create("/" + i, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-        }
-        zk.close();
-    }
-
-    /**
-     * Test to verify that server is able to start with valid credentials
-     * when using multiple Quorum / Election addresses
-     */
-    @Test
-    @Timeout(value = 30)
-    public void testValidCredentialsWithMultiAddresses() throws Exception {
-        Map<String, String> authConfigs = new HashMap<String, String>();
-        authConfigs.put(QuorumAuth.QUORUM_SASL_AUTH_ENABLED, "true");
-        authConfigs.put(QuorumAuth.QUORUM_SERVER_SASL_AUTH_REQUIRED, "true");
-        authConfigs.put(QuorumAuth.QUORUM_LEARNER_SASL_AUTH_REQUIRED, "true");
-
-        String connectStr = startMultiAddressQuorum(3, authConfigs, 3);
-        CountdownWatcher watcher = new CountdownWatcher();
-        ZooKeeper zk = new ZooKeeper(connectStr, ClientBase.CONNECTION_TIMEOUT, watcher);
-        watcher.waitForConnected(ClientBase.CONNECTION_TIMEOUT);
-        for (int i = 0; i < 10; i++) {
-            zk.create("/" + i, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+            zk.create("/" + i, new byte[0], Ids.OPEN_ACL_UNSAFE,
+                    CreateMode.PERSISTENT);
         }
         zk.close();
     }
@@ -123,8 +96,7 @@ public class QuorumDigestAuthTest extends QuorumAuthTestBase {
      * the configuration is set to quorum.auth.serverRequireSasl=false.
      * Quorum will talk each other even if the authentication is not succeeded
      */
-    @Test
-    @Timeout(value = 30)
+    @Test(timeout = 30000)
     public void testSaslNotRequiredWithInvalidCredentials() throws Exception {
         Map<String, String> authConfigs = new HashMap<String, String>();
         authConfigs.put(QuorumAuth.QUORUM_LEARNER_SASL_LOGIN_CONTEXT, "QuorumLearnerInvalid");
@@ -132,10 +104,12 @@ public class QuorumDigestAuthTest extends QuorumAuthTestBase {
         authConfigs.put(QuorumAuth.QUORUM_SERVER_SASL_AUTH_REQUIRED, "false");
         String connectStr = startQuorum(3, authConfigs, 3);
         CountdownWatcher watcher = new CountdownWatcher();
-        ZooKeeper zk = new ZooKeeper(connectStr, ClientBase.CONNECTION_TIMEOUT, watcher);
+        ZooKeeper zk = new ZooKeeper(connectStr, ClientBase.CONNECTION_TIMEOUT,
+                watcher);
         watcher.waitForConnected(ClientBase.CONNECTION_TIMEOUT);
         for (int i = 0; i < 10; i++) {
-            zk.create("/" + i, new byte[0], Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+            zk.create("/" + i, new byte[0], Ids.OPEN_ACL_UNSAFE,
+                    CreateMode.PERSISTENT);
         }
         zk.close();
     }
@@ -145,8 +119,7 @@ public class QuorumDigestAuthTest extends QuorumAuthTestBase {
      * if the configuration is set to quorum.auth.serverRequireSasl=true,
      * quorum.auth.learnerRequireSasl=true
      */
-    @Test
-    @Timeout(value = 30)
+    @Test(timeout = 30000)
     public void testSaslRequiredInvalidCredentials() throws Exception {
         Map<String, String> authConfigs = new HashMap<String, String>();
         authConfigs.put(QuorumAuth.QUORUM_LEARNER_SASL_LOGIN_CONTEXT, "QuorumLearnerInvalid");
@@ -154,10 +127,13 @@ public class QuorumDigestAuthTest extends QuorumAuthTestBase {
         authConfigs.put(QuorumAuth.QUORUM_SERVER_SASL_AUTH_REQUIRED, "true");
         authConfigs.put(QuorumAuth.QUORUM_LEARNER_SASL_AUTH_REQUIRED, "true");
         int serverCount = 2;
-        final int[] clientPorts = startQuorum(serverCount, new StringBuilder(), authConfigs, serverCount, false);
+        final int[] clientPorts = startQuorum(serverCount, new StringBuilder(),
+                authConfigs, serverCount);
         for (int i = 0; i < serverCount; i++) {
-            boolean waitForServerUp = ClientBase.waitForServerUp("127.0.0.1:" + clientPorts[i], QuorumPeerTestBase.TIMEOUT);
-            assertFalse(waitForServerUp, "Shouldn't start server with invalid credentials");
+            boolean waitForServerUp = ClientBase.waitForServerUp(
+                    "127.0.0.1:" + clientPorts[i], QuorumPeerTestBase.TIMEOUT);
+            Assert.assertFalse("Shouldn't start server with invalid credentials",
+                    waitForServerUp);
         }
     }
 
@@ -166,56 +142,63 @@ public class QuorumDigestAuthTest extends QuorumAuthTestBase {
      * quorum. So this test is ensuring that the quorumpeer learner is also auth
      * enabled while enabling quorum server require sasl.
      */
-    @Test
-    @Timeout(value = 10)
-    public void testEnableQuorumServerRequireSaslWithoutQuorumLearnerRequireSasl() throws Exception {
+    @Test(timeout = 10000)
+    public void testEnableQuorumServerRequireSaslWithoutQuorumLearnerRequireSasl()
+            throws Exception {
         Map<String, String> authConfigs = new HashMap<String, String>();
-        authConfigs.put(QuorumAuth.QUORUM_LEARNER_SASL_LOGIN_CONTEXT, "QuorumLearner");
+        authConfigs.put(QuorumAuth.QUORUM_LEARNER_SASL_LOGIN_CONTEXT,
+                "QuorumLearner");
         authConfigs.put(QuorumAuth.QUORUM_SASL_AUTH_ENABLED, "true");
         authConfigs.put(QuorumAuth.QUORUM_SERVER_SASL_AUTH_REQUIRED, "true");
         authConfigs.put(QuorumAuth.QUORUM_LEARNER_SASL_AUTH_REQUIRED, "false");
-        MainThread mthread = new MainThread(1, PortAssignment.unique(), "", authConfigs);
-        String[] args = new String[1];
+        MainThread mthread = new MainThread(1, PortAssignment.unique(), "",
+                authConfigs);
+        String args[] = new String[1];
         args[0] = mthread.getConfFile().toString();
         try {
             new QuorumPeerMain() {
                 @Override
-                protected void initializeAndRun(String[] args) throws ConfigException, IOException, AdminServer.AdminServerException {
+                protected void initializeAndRun(String[] args)
+                        throws ConfigException, IOException, AdminServer.AdminServerException {
                     super.initializeAndRun(args);
                 }
             }.initializeAndRun(args);
-            fail("Must throw exception as quorumpeer learner is not enabled!");
+            Assert.fail("Must throw exception as quorumpeer learner is not enabled!");
         } catch (ConfigException e) {
             // expected
         }
     }
 
+
     /**
      * If quorumpeer learner is not auth enabled then self won't be able to join
      * quorum. So this test is ensuring that the quorumpeer learner is also auth
      * enabled while enabling quorum server require sasl.
      */
-    @Test
-    @Timeout(value = 10)
-    public void testEnableQuorumAuthenticationConfigurations() throws Exception {
+    @Test(timeout = 10000)
+    public void testEnableQuorumAuthenticationConfigurations()
+            throws Exception {
         Map<String, String> authConfigs = new HashMap<String, String>();
-        authConfigs.put(QuorumAuth.QUORUM_LEARNER_SASL_LOGIN_CONTEXT, "QuorumLearner");
+        authConfigs.put(QuorumAuth.QUORUM_LEARNER_SASL_LOGIN_CONTEXT,
+                "QuorumLearner");
         authConfigs.put(QuorumAuth.QUORUM_SASL_AUTH_ENABLED, "false");
 
         // case-1) 'quorum.auth.enableSasl' is off. Tries to enable server sasl.
         authConfigs.put(QuorumAuth.QUORUM_SERVER_SASL_AUTH_REQUIRED, "true");
         authConfigs.put(QuorumAuth.QUORUM_LEARNER_SASL_AUTH_REQUIRED, "false");
-        MainThread mthread = new MainThread(1, PortAssignment.unique(), "", authConfigs);
-        String[] args = new String[1];
+        MainThread mthread = new MainThread(1, PortAssignment.unique(), "",
+                authConfigs);
+        String args[] = new String[1];
         args[0] = mthread.getConfFile().toString();
         try {
             new QuorumPeerMain() {
                 @Override
-                protected void initializeAndRun(String[] args) throws ConfigException, IOException, AdminServer.AdminServerException {
+                protected void initializeAndRun(String[] args)
+                        throws ConfigException, IOException, AdminServer.AdminServerException {
                     super.initializeAndRun(args);
                 }
             }.initializeAndRun(args);
-            fail("Must throw exception as quorum sasl is not enabled!");
+            Assert.fail("Must throw exception as quorum sasl is not enabled!");
         } catch (ConfigException e) {
             // expected
         }
@@ -226,14 +209,14 @@ public class QuorumDigestAuthTest extends QuorumAuthTestBase {
         try {
             new QuorumPeerMain() {
                 @Override
-                protected void initializeAndRun(String[] args) throws ConfigException, IOException, AdminServer.AdminServerException {
+                protected void initializeAndRun(String[] args)
+                        throws ConfigException, IOException, AdminServer.AdminServerException {
                     super.initializeAndRun(args);
                 }
             }.initializeAndRun(args);
-            fail("Must throw exception as quorum sasl is not enabled!");
+            Assert.fail("Must throw exception as quorum sasl is not enabled!");
         } catch (ConfigException e) {
             // expected
         }
     }
-
 }

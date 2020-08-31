@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -15,16 +15,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.zookeeper.server.quorum;
 
 import static org.apache.zookeeper.test.ClientBase.CONNECTION_TIMEOUT;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
 import java.io.IOException;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
-import javax.security.sasl.SaslException;
+
 import org.apache.zookeeper.PortAssignment;
 import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.common.X509Exception;
@@ -37,18 +37,19 @@ import org.apache.zookeeper.server.ZooKeeperServer;
 import org.apache.zookeeper.server.persistence.FileTxnSnapLog;
 import org.apache.zookeeper.server.quorum.QuorumPeer.ServerState;
 import org.apache.zookeeper.test.ClientBase;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import javax.security.sasl.SaslException;
 
 /**
  * This test class contains test cases related to race condition in complete
  * ZooKeeper
  */
 public class RaceConditionTest extends QuorumPeerTestBase {
-
     protected static final Logger LOG = LoggerFactory.getLogger(RaceConditionTest.class);
     private static int SERVER_COUNT = 3;
     private MainThread[] mt;
@@ -58,14 +59,13 @@ public class RaceConditionTest extends QuorumPeerTestBase {
      * Deadlock while shutting down the ZooKeeper
      */
 
-    @Test
-    @Timeout(value = 30)
+    @Test(timeout = 30000)
     public void testRaceConditionBetweenLeaderAndAckRequestProcessor() throws Exception {
         mt = startQuorum();
         // get leader
         QuorumPeer leader = getLeader(mt);
         long oldLeaderCurrentEpoch = leader.getCurrentEpoch();
-        assertNotNull(leader, "Leader should not be null");
+        assertNotNull("Leader should not be null", leader);
         // shutdown 2 followers so that leader does not have majority and goes
         // into looking state or following/leading state.
         shutdownFollowers(mt);
@@ -77,16 +77,18 @@ public class RaceConditionTest extends QuorumPeerTestBase {
          * after the leader election, not the old LEADING state.
          * </pre>
          */
-        boolean leaderStateChanged = ClientBase
-            .waitForServerState(leader, 15000, QuorumStats.Provider.LOOKING_STATE, QuorumStats.Provider.FOLLOWING_STATE);
+        boolean leaderStateChanged = ClientBase.waitForServerState(leader, 15000,
+                QuorumStats.Provider.LOOKING_STATE, QuorumStats.Provider.FOLLOWING_STATE);
         // Wait for the old leader to start completely
-        assertTrue(ClientBase.waitForServerUp("127.0.0.1:" + leader.getClientPort(), CONNECTION_TIMEOUT),
-            "Failed to bring up the old leader server");
-        assertTrue(leaderStateChanged || (leader.getCurrentEpoch() > oldLeaderCurrentEpoch),
-            "Leader failed to transition to new state. Current state is " + leader.getServerState());
+        Assert.assertTrue("Failed to bring up the old leader server", ClientBase
+                .waitForServerUp("127.0.0.1:" + leader.getClientPort(), CONNECTION_TIMEOUT));
+        assertTrue(
+                "Leader failed to transition to new state. Current state is "
+                        + leader.getServerState(),
+                leaderStateChanged || (leader.getCurrentEpoch() > oldLeaderCurrentEpoch));
     }
 
-    @AfterEach
+    @After
     public void tearDown() {
         // stop all severs
         if (null != mt) {
@@ -103,18 +105,18 @@ public class RaceConditionTest extends QuorumPeerTestBase {
     }
 
     private MainThread[] startQuorum() throws IOException {
-        final int[] clientPorts = new int[SERVER_COUNT];
+        final int clientPorts[] = new int[SERVER_COUNT];
         StringBuilder sb = new StringBuilder();
         String server;
 
         for (int i = 0; i < SERVER_COUNT; i++) {
             clientPorts[i] = PortAssignment.unique();
             server = "server." + i + "=127.0.0.1:" + PortAssignment.unique() + ":" + PortAssignment.unique()
-                     + ":participant;127.0.0.1:" + clientPorts[i];
+                    + ":participant;127.0.0.1:" + clientPorts[i];
             sb.append(server + "\n");
         }
         String currentQuorumCfgSection = sb.toString();
-        MainThread[] mt = new MainThread[SERVER_COUNT];
+        MainThread mt[] = new MainThread[SERVER_COUNT];
 
         // start all the servers
         for (int i = 0; i < SERVER_COUNT; i++) {
@@ -129,9 +131,8 @@ public class RaceConditionTest extends QuorumPeerTestBase {
 
         // ensure all servers started
         for (int i = 0; i < SERVER_COUNT; i++) {
-            assertTrue(
-                ClientBase.waitForServerUp("127.0.0.1:" + clientPorts[i], CONNECTION_TIMEOUT),
-                "waiting for server " + i + " being up");
+            Assert.assertTrue("waiting for server " + i + " being up",
+                    ClientBase.waitForServerUp("127.0.0.1:" + clientPorts[i], CONNECTION_TIMEOUT));
         }
         return mt;
     }
@@ -156,7 +157,6 @@ public class RaceConditionTest extends QuorumPeerTestBase {
     }
 
     private static class CustomQuorumPeer extends QuorumPeer {
-
         private boolean stopPing;
 
         public CustomQuorumPeer() throws SaslException {
@@ -192,10 +192,13 @@ public class RaceConditionTest extends QuorumPeerTestBase {
                      * MockSyncRequestProcessor
                      */
                     RequestProcessor finalProcessor = new FinalRequestProcessor(this);
-                    RequestProcessor toBeAppliedProcessor = new Leader.ToBeAppliedRequestProcessor(finalProcessor, getLeader());
-                    commitProcessor = new CommitProcessor(toBeAppliedProcessor, Long.toString(getServerId()), false, getZooKeeperServerListener());
+                    RequestProcessor toBeAppliedProcessor = new Leader.ToBeAppliedRequestProcessor(finalProcessor,
+                            getLeader());
+                    commitProcessor = new CommitProcessor(toBeAppliedProcessor, Long.toString(getServerId()), false,
+                            getZooKeeperServerListener());
                     commitProcessor.start();
-                    ProposalRequestProcessor proposalProcessor = new MockProposalRequestProcessor(this, commitProcessor);
+                    ProposalRequestProcessor proposalProcessor = new MockProposalRequestProcessor(this,
+                            commitProcessor);
                     proposalProcessor.initialize();
                     prepRequestProcessor = new PrepRequestProcessor(this, proposalProcessor);
                     prepRequestProcessor.start();
@@ -205,7 +208,6 @@ public class RaceConditionTest extends QuorumPeerTestBase {
             };
             return new Leader(this, zk);
         }
-
     }
 
     private static class MockSyncRequestProcessor extends SyncRequestProcessor {
@@ -220,15 +222,14 @@ public class RaceConditionTest extends QuorumPeerTestBase {
              * Add a request so that something is there for SyncRequestProcessor
              * to process, while we are in shutdown flow
              */
-            Request request = new Request(null, 0, 0, ZooDefs.OpCode.delete, ByteBuffer.wrap("/deadLockIssue".getBytes()), null);
+            Request request = new Request(null, 0, 0, ZooDefs.OpCode.delete,
+                    ByteBuffer.wrap("/deadLockIssue".getBytes()), null);
             processRequest(request);
             super.shutdown();
         }
-
     }
 
     private static class MockProposalRequestProcessor extends ProposalRequestProcessor {
-
         public MockProposalRequestProcessor(LeaderZooKeeperServer zks, RequestProcessor nextProcessor) {
             super(zks, nextProcessor);
 
@@ -239,7 +240,6 @@ public class RaceConditionTest extends QuorumPeerTestBase {
             AckRequestProcessor ackProcessor = new AckRequestProcessor(zks.getLeader());
             syncProcessor = new MockSyncRequestProcessor(zks, ackProcessor);
         }
-
     }
 
     private static class MockTestQPMain extends TestQPMain {
@@ -248,7 +248,5 @@ public class RaceConditionTest extends QuorumPeerTestBase {
         protected QuorumPeer getQuorumPeer() throws SaslException {
             return new CustomQuorumPeer();
         }
-
     }
-
 }

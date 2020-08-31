@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -26,53 +26,65 @@ import java.util.HashMap;
 
 /**
  * Front-end for serializers. Also serves as a factory for serializers.
+ *
  */
 public class RecordWriter {
-
+    
     private OutputArchive archive;
-
+    
     static HashMap<String, Method> constructFactory() {
         HashMap<String, Method> factory = new HashMap<String, Method>();
 
         try {
-            factory.put(
-                    "binary",
-                    BinaryOutputArchive.class.getDeclaredMethod("getArchive", OutputStream.class));
-        } catch (SecurityException | NoSuchMethodException ex) {
+            factory.put("binary",
+                    BinaryOutputArchive.class.getDeclaredMethod(
+                        "getArchive", new Class[]{ OutputStream.class }));
+            factory.put("csv",
+                    CsvOutputArchive.class.getDeclaredMethod(
+                        "getArchive", new Class[]{ OutputStream.class }));
+            factory.put("xml",
+                    XmlOutputArchive.class.getDeclaredMethod(
+                        "getArchive", new Class[]{ OutputStream.class }));
+        } catch (SecurityException ex) {
+            ex.printStackTrace();
+        } catch (NoSuchMethodException ex) {
             ex.printStackTrace();
         }
-
         return factory;
     }
-
-    private static HashMap<String, Method> archiveFactory = constructFactory();
-
-    private static OutputArchive createArchive(OutputStream out, String format) {
-        Method factory = archiveFactory.get(format);
+    
+    static private HashMap<String, Method> archiveFactory = constructFactory();
+    
+    static private OutputArchive createArchive(OutputStream out,
+            String format)
+            throws IOException {
+        Method factory = (Method) archiveFactory.get(format);
         if (factory != null) {
-            Object[] params = {out};
+            Object[] params = { out };
             try {
                 return (OutputArchive) factory.invoke(null, params);
-            } catch (IllegalArgumentException | InvocationTargetException | IllegalAccessException ex) {
+            } catch (IllegalArgumentException ex) {
+                ex.printStackTrace();
+            } catch (InvocationTargetException ex) {
+                ex.printStackTrace();
+            } catch (IllegalAccessException ex) {
                 ex.printStackTrace();
             }
         }
         return null;
     }
-
     /**
-     * Creates a new instance of RecordWriter.
-     *
-     * @param out    Output stream where the records will be serialized
+     * Creates a new instance of RecordWriter
+     * @param out Output stream where the records will be serialized
      * @param format Serialization format ("binary", "xml", or "csv")
      */
-    public RecordWriter(OutputStream out, String format) {
+    public RecordWriter(OutputStream out, String format)
+    throws IOException {
         archive = createArchive(out, format);
     }
-
+    
     /**
-     * Serialize a record.
-     *
+     * Serialize a record
      * @param r record to be serialized
      */
     public void write(Record r) throws IOException {

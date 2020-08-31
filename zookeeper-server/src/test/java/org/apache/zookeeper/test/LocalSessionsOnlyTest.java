@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,22 +18,19 @@
 
 package org.apache.zookeeper.test;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.fail;
 import java.util.HashMap;
-import java.util.Map;
 import java.util.Map.Entry;
+
 import org.apache.zookeeper.CreateMode;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZKTestCase;
 import org.apache.zookeeper.ZooDefs;
 import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.test.ClientBase.CountdownWatcher;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,24 +41,24 @@ import org.slf4j.LoggerFactory;
  * creation of ephemeral nodes) will fail with an error.
  */
 public class LocalSessionsOnlyTest extends ZKTestCase {
-
-    protected static final Logger LOG = LoggerFactory.getLogger(LocalSessionsOnlyTest.class);
+    protected static final Logger LOG = LoggerFactory
+            .getLogger(LocalSessionsOnlyTest.class);
     public static final int CONNECTION_TIMEOUT = ClientBase.CONNECTION_TIMEOUT;
 
     private final QuorumBase qb = new QuorumBase();
 
-    @BeforeEach
+    @Before
     public void setUp() throws Exception {
-        LOG.info("STARTING quorum {}", getClass().getName());
+        LOG.info("STARTING quorum " + getClass().getName());
         qb.localSessionsEnabled = true;
         qb.localSessionsUpgradingEnabled = false;
         qb.setUp();
         ClientBase.waitForServerUp(qb.hostPort, 10000);
     }
 
-    @AfterEach
+    @After
     public void tearDown() throws Exception {
-        LOG.info("STOPPING quorum {}", getClass().getName());
+        LOG.info("STOPPING quorum " + getClass().getName());
         qb.tearDown();
     }
 
@@ -76,29 +73,33 @@ public class LocalSessionsOnlyTest extends ZKTestCase {
     }
 
     private void testLocalSessions(boolean testLeader) throws Exception {
-        String nodePrefix = "/testLocalSessions-" + (testLeader ? "leaderTest-" : "followerTest-");
+        String nodePrefix = "/testLocalSessions-"
+            + (testLeader ? "leaderTest-" : "followerTest-");
         int leaderIdx = qb.getLeaderIndex();
-        assertFalse(leaderIdx == -1, "No leader in quorum?");
+        Assert.assertFalse("No leader in quorum?", leaderIdx == -1);
         int followerIdx = (leaderIdx + 1) % 5;
         int testPeerIdx = testLeader ? leaderIdx : followerIdx;
-        String[] hostPorts = qb.hostPort.split(",");
+        String hostPorts[] = qb.hostPort.split(",");
 
         CountdownWatcher watcher = new CountdownWatcher();
-        ZooKeeper zk = qb.createClient(watcher, hostPorts[testPeerIdx], CONNECTION_TIMEOUT);
+        ZooKeeper zk = qb.createClient(watcher, hostPorts[testPeerIdx],
+                                       CONNECTION_TIMEOUT);
         watcher.waitForConnected(CONNECTION_TIMEOUT);
 
         long localSessionId = zk.getSessionId();
 
         // Try creating some data.
         for (int i = 0; i < 5; i++) {
-            zk.create(nodePrefix + i, new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+            zk.create(nodePrefix + i, new byte[0],
+                      ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
         }
 
         // Now, try an ephemeral node.  This should fail since we
         // cannot create ephemeral nodes on a local session.
         try {
-            zk.create(nodePrefix + "ephemeral", new byte[0], ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-            fail("Ephemeral node creation should fail.");
+            zk.create(nodePrefix + "ephemeral", new byte[0],
+                      ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+            Assert.fail("Ephemeral node creation should fail.");
         } catch (KeeperException.EphemeralOnLocalSessionException e) {
         }
 
@@ -106,29 +107,31 @@ public class LocalSessionsOnlyTest extends ZKTestCase {
         zk.close();
 
         // Validate data on both follower and leader
-        Map<String, Integer> peers = new HashMap<String, Integer>();
+        HashMap<String, Integer> peers = new HashMap<String, Integer>();
         peers.put("leader", leaderIdx);
         peers.put("follower", followerIdx);
-        for (Entry<String, Integer> entry : peers.entrySet()) {
+        for (Entry<String, Integer> entry: peers.entrySet()) {
             watcher.reset();
             // Try reconnecting with a new session.
             // The data should be persisted, even though the session was not.
-            zk = qb.createClient(watcher, hostPorts[entry.getValue()], CONNECTION_TIMEOUT);
+            zk = qb.createClient(watcher, hostPorts[entry.getValue()],
+                                 CONNECTION_TIMEOUT);
             watcher.waitForConnected(CONNECTION_TIMEOUT);
 
             long newSessionId = zk.getSessionId();
-            assertFalse(newSessionId == localSessionId);
+            Assert.assertFalse(newSessionId == localSessionId);
 
             for (int i = 0; i < 5; i++) {
-                assertNotNull(zk.exists(nodePrefix + i, null), "Data not exists in " + entry.getKey());
+                Assert.assertNotNull("Data not exists in " + entry.getKey(),
+                        zk.exists(nodePrefix + i, null));
             }
 
             // We may get the correct exception but the txn may go through
-            assertNull(zk.exists(nodePrefix + "ephemeral", null), "Data exists in " + entry.getKey());
+            Assert.assertNull("Data exists in " + entry.getKey(),
+                    zk.exists(nodePrefix + "ephemeral", null));
 
             zk.close();
         }
         qb.shutdownServers();
     }
-
 }

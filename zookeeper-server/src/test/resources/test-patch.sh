@@ -13,9 +13,10 @@
 
 
 #set -x
+ulimit -n 1024
 
 ### Setup some variables.  
-### GIT_COMMIT and BUILD_URL are set by Hudson if it is run by patch process
+### SVN_REVISION and BUILD_URL are set by Hudson if it is run by patch process
 ### Read variables from properties file
 . `dirname $0`/test-patch.properties
 
@@ -33,7 +34,7 @@ parseArgs() {
       PS=$3
       WGET=$4
       JIRACLI=$5
-      GIT=$6
+      SVN=$6
       GREP=$7
       PATCH=$8
       FINDBUGS_HOME=$9
@@ -78,7 +79,7 @@ parseArgs() {
 	  cleanupAndExit 0
 	fi
       fi
-      GIT=$4
+      SVN=$4
       GREP=$5
       PATCH=$6
       FINDBUGS_HOME=$7
@@ -106,31 +107,19 @@ checkout () {
   echo ""
   echo ""
   ### When run by a developer, if the workspace contains modifications, do not continue
-  # Ref http://stackoverflow.com/a/2659808 for details on checking dirty status
-  ${GIT} diff-index --quiet HEAD
-  if [[ $? -ne 0 ]] ; then
-    uncommitted=`${GIT} diff --name-only HEAD`
-    uncommitted="You have the following files with uncommitted changes:${NEWLINE}${uncommitted}"
-  fi
-  untracked="$(${GIT} ls-files --exclude-standard --others)" && test -z "${untracked}"
-  if [[ $? -ne 0 ]] ; then
-    untracked="You have untracked and unignored files:${NEWLINE}${untracked}"
-  fi
-
+  status=`$SVN stat --ignore-externals | sed -e '/^X[ ]*/D'`
   if [[ $HUDSON == "false" ]] ; then
-    if [[ $uncommitted || $untracked ]] ; then
+    if [[ "$status" != "" ]] ; then
       echo "ERROR: can't run in a workspace that contains the following modifications"
-      echo ""
-      echo "${uncommitted}"
-      echo ""
-      echo "${untracked}"
+      echo "$status"
       cleanupAndExit 1
     fi
   else   
-    # I don't believe we need to do anything here - the jenkins job will
-    # cleanup the environment for us ("cleanup before checkout" action)
-    # on the precommit jenkins job
-    echo
+    cd $BASEDIR
+    $SVN revert -R .
+    rm -rf `$SVN status --no-ignore`
+    $SVN upgrade
+    $SVN update
   fi
   return $?
 }
@@ -152,7 +141,7 @@ setup () {
     $WGET -q -O $PATCH_DIR/patch $patchURL
     JIRA_COMMENT="Here are the results of testing the latest attachment 
   $patchURL
-  against trunk revision ${GIT_COMMIT}."
+  against trunk revision ${SVN_REVISION}."
 
   ### Copy the patch file to $PATCH_DIR
   else
@@ -564,7 +553,7 @@ $comment"
     echo ""
     echo ""
     ### Update Jira with a comment
-    export USER=jenkins
+    export USER=hudson
     $JIRACLI -s https://issues.apache.org/jira -a addcomment -u hadoopqa -p $JIRA_PASSWD --comment "$comment" --issue $defect
     $JIRACLI -s https://issues.apache.org/jira -a logout -u hadoopqa -p $JIRA_PASSWD
   fi

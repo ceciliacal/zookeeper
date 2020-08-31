@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,9 +17,8 @@
  */
 
 /**
- *
+ * 
  */
-
 package org.apache.zookeeper.server.quorum;
 
 import java.io.File;
@@ -30,64 +29,44 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Properties;
 import java.util.Set;
-import org.apache.zookeeper.PortAssignment;
+import java.util.Properties;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZKTestCase;
-import org.apache.zookeeper.ZooKeeper;
 import org.apache.zookeeper.common.PathUtils;
+import org.apache.zookeeper.server.admin.AdminServer.AdminServerException;
 import org.apache.zookeeper.server.admin.JettyAdminServer;
 import org.apache.zookeeper.test.ClientBase;
 import org.apache.zookeeper.test.QuorumBase;
-import org.junit.jupiter.api.AfterEach;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Has some common functionality for tests that work with QuorumPeers. Override
  * process(WatchedEvent) to implement the Watcher interface
  */
 public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
-
-    protected static final Logger LOG = LoggerFactory.getLogger(QuorumPeerTestBase.class);
+    protected static final Logger LOG = LoggerFactory
+            .getLogger(QuorumPeerTestBase.class);
 
     public static final int TIMEOUT = 5000;
-
-    protected Servers servers;
-    protected int numServers = 0;
-
-    @AfterEach
-    public void tearDown() throws Exception {
-        if (servers == null || servers.mt == null) {
-            LOG.info("No servers to shutdown!");
-            return;
-        }
-        for (int i = 0; i < numServers; i++) {
-            if (i < servers.mt.length) {
-                servers.mt[i].shutdown();
-            }
-        }
-    }
 
     public void process(WatchedEvent event) {
         // ignore for this test
     }
 
     public static class TestQPMain extends QuorumPeerMain {
-
         public void shutdown() {
             // ensure it closes - in particular wait for thread to exit
             if (quorumPeer != null) {
                 QuorumBase.shutdown(quorumPeer);
             }
         }
-
     }
-
+    
     public static class MainThread implements Runnable {
-
         final File confFile;
         final File tmpDir;
 
@@ -113,20 +92,21 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
          * @param tickTime initLimit will be 10 and syncLimit will be 5
          * @throws IOException
          */
-        public MainThread(int myid, int clientPort, String quorumCfgSection, Map<String, String> otherConfigs, int tickTime) throws IOException {
+        public MainThread(int myid, int clientPort, String quorumCfgSection,
+                          Map<String, String> otherConfigs, int tickTime) throws IOException {
             baseDir = ClientBase.createTmpDir();
             this.myid = myid;
             this.clientPort = clientPort;
             this.quorumCfgSection = quorumCfgSection;
             this.otherConfigs = otherConfigs;
-            LOG.info("id = {} tmpDir = {} clientPort = {}", myid, baseDir, clientPort);
+            LOG.info("id = " + myid + " tmpDir = " + baseDir + " clientPort = "
+                    + clientPort);
             confFile = new File(baseDir, "zoo.cfg");
 
             FileWriter fwriter = new FileWriter(confFile);
             fwriter.write("tickTime=" + tickTime + "\n");
             fwriter.write("initLimit=10\n");
             fwriter.write("syncLimit=5\n");
-            fwriter.write("connectToLearnerMasterLimit=5\n");
 
             tmpDir = new File(baseDir, "data");
             if (!tmpDir.mkdir()) {
@@ -164,45 +144,55 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
             this(myid, quorumCfgSection, true);
         }
 
-        public MainThread(int myid, String quorumCfgSection, Integer secureClientPort, boolean writeDynamicConfigFile) throws IOException {
-            this(myid, UNSET_STATIC_CLIENTPORT, JettyAdminServer.DEFAULT_PORT, secureClientPort, quorumCfgSection, null, null, writeDynamicConfigFile, null);
+        public MainThread(int myid, String quorumCfgSection, Integer secureClientPort, boolean writeDynamicConfigFile)
+                throws  IOException {
+            this(myid, UNSET_STATIC_CLIENTPORT, JettyAdminServer.DEFAULT_PORT, secureClientPort,
+                    quorumCfgSection, null, writeDynamicConfigFile, null);
         }
 
-        public MainThread(int myid, String quorumCfgSection, boolean writeDynamicConfigFile) throws IOException {
+        public MainThread(int myid, String quorumCfgSection, boolean writeDynamicConfigFile)
+                throws IOException {
             this(myid, UNSET_STATIC_CLIENTPORT, quorumCfgSection, writeDynamicConfigFile);
         }
 
-        public MainThread(int myid, int clientPort, String quorumCfgSection, boolean writeDynamicConfigFile) throws IOException {
-            this(myid, clientPort, JettyAdminServer.DEFAULT_PORT, quorumCfgSection, null, null, writeDynamicConfigFile);
+        public MainThread(int myid, int clientPort, String quorumCfgSection, boolean writeDynamicConfigFile)
+                throws IOException {
+            this(myid, clientPort, JettyAdminServer.DEFAULT_PORT, quorumCfgSection, null, writeDynamicConfigFile);
         }
 
-        public MainThread(int myid, int clientPort, String quorumCfgSection, String peerType, boolean writeDynamicConfigFile) throws IOException {
-            this(myid, clientPort, JettyAdminServer.DEFAULT_PORT, quorumCfgSection, null, peerType, writeDynamicConfigFile);
+        public MainThread(int myid, int clientPort, String quorumCfgSection, boolean writeDynamicConfigFile,
+                          String version) throws IOException {
+            this(myid, clientPort, JettyAdminServer.DEFAULT_PORT, quorumCfgSection, null,
+                    writeDynamicConfigFile, version);
         }
 
-        public MainThread(int myid, int clientPort, String quorumCfgSection, boolean writeDynamicConfigFile, String version) throws IOException {
-            this(myid, clientPort, JettyAdminServer.DEFAULT_PORT, quorumCfgSection, null, null, writeDynamicConfigFile, version);
+        public MainThread(int myid, int clientPort, String quorumCfgSection, String configs)
+                throws IOException {
+            this(myid, clientPort, JettyAdminServer.DEFAULT_PORT, quorumCfgSection, configs, true);
         }
 
-        public MainThread(int myid, int clientPort, String quorumCfgSection, String configs) throws IOException {
-            this(myid, clientPort, JettyAdminServer.DEFAULT_PORT, quorumCfgSection, configs, null, true);
+        public MainThread(int myid, int clientPort, int adminServerPort, String quorumCfgSection,
+                String configs)  throws IOException {
+            this(myid, clientPort, adminServerPort, quorumCfgSection, configs, true);
         }
 
-        public MainThread(int myid, int clientPort, int adminServerPort, String quorumCfgSection, String configs) throws IOException {
-            this(myid, clientPort, adminServerPort, quorumCfgSection, configs, null, true);
+        public MainThread(int myid, int clientPort, int adminServerPort, String quorumCfgSection,
+                String configs, boolean writeDynamicConfigFile)
+                throws IOException {
+            this(myid, clientPort, adminServerPort, quorumCfgSection, configs, writeDynamicConfigFile, null);
         }
 
-        public MainThread(int myid, int clientPort, int adminServerPort, String quorumCfgSection, String configs, String peerType, boolean writeDynamicConfigFile) throws IOException {
-            this(myid, clientPort, adminServerPort, quorumCfgSection, configs, peerType, writeDynamicConfigFile, null);
+        public MainThread(int myid, int clientPort, int adminServerPort, String quorumCfgSection,
+                          String configs, boolean writeDynamicConfigFile, String version) throws IOException {
+            this(myid, clientPort, adminServerPort, null, quorumCfgSection, configs, writeDynamicConfigFile, version);
         }
 
-        public MainThread(int myid, int clientPort, int adminServerPort, String quorumCfgSection, String configs, String peerType, boolean writeDynamicConfigFile, String version) throws IOException {
-            this(myid, clientPort, adminServerPort, null, quorumCfgSection, configs, peerType, writeDynamicConfigFile, version);
-        }
-
-        public MainThread(int myid, int clientPort, int adminServerPort, Integer secureClientPort, String quorumCfgSection, String configs, String peerType, boolean writeDynamicConfigFile, String version) throws IOException {
+        public MainThread(int myid, int clientPort, int adminServerPort, Integer secureClientPort,
+                          String quorumCfgSection, String configs, boolean writeDynamicConfigFile, String version)
+                throws IOException {
             tmpDir = ClientBase.createTmpDir();
-            LOG.info("id = {} tmpDir = {} clientPort = {} adminServerPort = {}", myid, tmpDir, clientPort, adminServerPort);
+            LOG.info("id = " + myid + " tmpDir = " + tmpDir + " clientPort = "
+                    + clientPort + " adminServerPort = " + adminServerPort);
 
             File dataDir = new File(tmpDir, "data");
             if (!dataDir.mkdir()) {
@@ -215,8 +205,7 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
             fwriter.write("tickTime=4000\n");
             fwriter.write("initLimit=10\n");
             fwriter.write("syncLimit=5\n");
-            fwriter.write("connectToLearnerMasterLimit=5\n");
-            if (configs != null) {
+            if(configs != null){
                 fwriter.write(configs);
             }
 
@@ -237,10 +226,6 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
                 fwriter.write("secureClientPort=" + secureClientPort + "\n");
             }
 
-            if (peerType != null) {
-                fwriter.write("peerType=" + peerType + "\n");
-            }
-
             if (writeDynamicConfigFile) {
                 String dynamicConfigFilename = createDynamicFile(quorumCfgSection, version);
                 fwriter.write("dynamicConfigFile=" + dynamicConfigFilename + "\n");
@@ -255,13 +240,12 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
             fwriter.write(Integer.toString(myid));
             fwriter.flush();
             fwriter.close();
-
-            ClientBase.createInitializeFile(dataDir);
         }
 
-        private String createDynamicFile(String quorumCfgSection, String version) throws IOException {
+        private String createDynamicFile(String quorumCfgSection, String version)
+                throws IOException {
             String filename = "zoo.cfg.dynamic";
-            if (version != null) {
+            if( version != null ){
                 filename = filename + "." + version;
             }
 
@@ -281,12 +265,11 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
         }
 
         public File[] getFilesWithPrefix(final String prefix) {
-            return tmpDir.listFiles(new FilenameFilter() {
+            return tmpDir.listFiles(new FilenameFilter() {      
                 @Override
                 public boolean accept(File dir, String name) {
                     return name.startsWith(prefix);
-                }
-            });
+                }});
         }
 
         public File getFileByName(String filename) {
@@ -294,25 +277,32 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
             return f.isFile() ? f : null;
         }
 
-        public void writeTempDynamicConfigFile(String nextQuorumCfgSection, String version) throws IOException {
-            File nextDynamicConfigFile = new File(tmpDir, "zoo.cfg" + QuorumPeerConfig.nextDynamicConfigFileSuffix);
+        public void writeTempDynamicConfigFile(String nextQuorumCfgSection, String version)
+                throws IOException {
+            File nextDynamicConfigFile = new File(tmpDir,
+                    "zoo.cfg" + QuorumPeerConfig.nextDynamicConfigFileSuffix);
             FileWriter fwriter = new FileWriter(nextDynamicConfigFile);
-            fwriter.write(nextQuorumCfgSection + "\n" + "version=" + version);
+            fwriter.write(nextQuorumCfgSection
+                    + "\n"
+                    + "version=" + version);
             fwriter.flush();
             fwriter.close();
         }
 
-        public MainThread(int myid, int clientPort, String quorumCfgSection) throws IOException {
-            this(myid, clientPort, quorumCfgSection, new HashMap<String, String>());
+        public MainThread(int myid, int clientPort, String quorumCfgSection)
+                throws IOException {
+            this(myid, clientPort, quorumCfgSection,
+                    new HashMap<String, String>());
         }
 
-        public MainThread(int myid, int clientPort, String quorumCfgSection, Map<String, String> otherConfigs) throws IOException {
+        public MainThread(int myid, int clientPort, String quorumCfgSection,
+                          Map<String, String> otherConfigs) throws IOException {
             this(myid, clientPort, quorumCfgSection, otherConfigs, 4000);
         }
 
         Thread currentThread;
 
-        public synchronized void start() {
+        synchronized public void start() {
             main = getTestQPMain();
             currentThread = new Thread(this);
             currentThread.start();
@@ -323,7 +313,7 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
         }
 
         public void run() {
-            String[] args = new String[1];
+            String args[] = new String[1];
             args[0] = confFile.toString();
             try {
                 main.initializeAndRun(args);
@@ -355,10 +345,9 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
             return t != null && t.isAlive();
         }
 
-        public void reinitialize() throws IOException {
-            File dataDir = main.quorumPeer.getTxnFactory().getDataDir();
-            ClientBase.recursiveDelete(dataDir);
-            ClientBase.createInitializeFile(dataDir.getParentFile());
+        public void clean() {
+            ClientBase.recursiveDelete(main.quorumPeer.getTxnFactory()
+                    .getDataDir());
         }
 
         public boolean isQuorumPeerRunning() {
@@ -374,6 +363,7 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
         public QuorumPeer getQuorumPeer() {
             return main.quorumPeer;
         }
+
 
         public void deleteBaseDir() {
             ClientBase.recursiveDelete(baseDir);
@@ -400,165 +390,4 @@ public class QuorumPeerTestBase extends ZKTestCase implements Watcher {
         }
 
     }
-
-    // This class holds the servers and clients for those servers
-    protected static class Servers {
-
-        MainThread[] mt;
-        ZooKeeper[] zk;
-        int[] clientPorts;
-
-        public void shutDownAllServers() throws InterruptedException {
-            for (MainThread t : mt) {
-                t.shutdown();
-            }
-        }
-
-        public void restartAllServersAndClients(Watcher watcher) throws IOException, InterruptedException {
-            for (MainThread t : mt) {
-                if (!t.isAlive()) {
-                    t.start();
-                }
-            }
-            for (int i = 0; i < zk.length; i++) {
-                restartClient(i, watcher);
-            }
-        }
-
-        public void restartClient(int clientIndex, Watcher watcher) throws IOException, InterruptedException {
-            if (zk[clientIndex] != null) {
-                zk[clientIndex].close();
-            }
-            zk[clientIndex] = new ZooKeeper(
-                    "127.0.0.1:" + clientPorts[clientIndex],
-                    ClientBase.CONNECTION_TIMEOUT,
-                    watcher);
-        }
-
-        public int findLeader() {
-            for (int i = 0; i < mt.length; i++) {
-                if (mt[i].main.quorumPeer.leader != null) {
-                    LOG.info("Leader is {}", i);
-                    return i;
-                }
-            }
-            LOG.info("Cannot find Leader");
-            return -1;
-        }
-
-        public int findAnyFollower() {
-            for (int i = 0; i < mt.length; i++) {
-                if (mt[i].main.quorumPeer.follower != null) {
-                    LOG.info("Follower is {}", i);
-                    return i;
-                }
-            }
-            LOG.info("Cannot find any follower");
-            return -1;
-        }
-
-        public int findAnyObserver() {
-            for (int i = 0; i < mt.length; i++) {
-                if (mt[i].main.quorumPeer.observer != null) {
-                    LOG.info("Observer is {}", i);
-                    return i;
-                }
-            }
-            LOG.info("Cannot find any observer");
-            return -1;
-        }
-    }
-
-    protected Servers LaunchServers(int numServers) throws IOException, InterruptedException {
-        return LaunchServers(numServers, null);
-    }
-
-    protected Servers LaunchServers(int numServers, Integer tickTime) throws IOException, InterruptedException {
-        return LaunchServers(numServers, 0, tickTime);
-    }
-
-    /** * This is a helper function for launching a set of servers
-     *
-     * @param numServers the number of participant servers
-     * @param numObserver the number of observer servers
-     * @param tickTime A ticktime to pass to MainThread
-     * @return
-     * @throws IOException
-     * @throws InterruptedException
-     */
-    protected Servers LaunchServers(int numServers, int numObservers, Integer tickTime) throws IOException, InterruptedException {
-        int SERVER_COUNT = numServers + numObservers;
-        QuorumPeerMainTest.Servers svrs = new QuorumPeerMainTest.Servers();
-        svrs.clientPorts = new int[SERVER_COUNT];
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < SERVER_COUNT; i++) {
-            svrs.clientPorts[i] = PortAssignment.unique();
-            String role = i < numServers ? "participant" : "observer";
-            sb.append(String.format("server.%d=127.0.0.1:%d:%d:%s;127.0.0.1:%d\n",
-                    i, PortAssignment.unique(), PortAssignment.unique(), role,
-                    svrs.clientPorts[i]));
-        }
-        String quorumCfgSection = sb.toString();
-
-        svrs.mt = new MainThread[SERVER_COUNT];
-        svrs.zk = new ZooKeeper[SERVER_COUNT];
-        for (int i = 0; i < SERVER_COUNT; i++) {
-            if (tickTime != null) {
-                svrs.mt[i] = new MainThread(i, svrs.clientPorts[i], quorumCfgSection, new HashMap<String, String>(), tickTime);
-            } else {
-                svrs.mt[i] = new MainThread(i, svrs.clientPorts[i], quorumCfgSection);
-            }
-            svrs.mt[i].start();
-            svrs.restartClient(i, this);
-        }
-
-        waitForAll(svrs, ZooKeeper.States.CONNECTED);
-
-        return svrs;
-    }
-
-    public static void waitForOne(ZooKeeper zk, ZooKeeper.States state) throws InterruptedException {
-        int iterations = ClientBase.CONNECTION_TIMEOUT / 500;
-        while (zk.getState() != state) {
-            if (iterations-- == 0) {
-                throw new RuntimeException("Waiting too long " + zk.getState() + " != " + state);
-            }
-            Thread.sleep(500);
-        }
-    }
-
-    protected void waitForAll(Servers servers, ZooKeeper.States state) throws InterruptedException {
-        waitForAll(servers.zk, state);
-    }
-
-    public static void waitForAll(ZooKeeper[] zks, ZooKeeper.States state) throws InterruptedException {
-        int iterations = ClientBase.CONNECTION_TIMEOUT / 1000;
-        boolean someoneNotConnected = true;
-        while (someoneNotConnected) {
-            if (iterations-- == 0) {
-                logStates(zks);
-                ClientBase.logAllStackTraces();
-                throw new RuntimeException("Waiting too long");
-            }
-
-            someoneNotConnected = false;
-            for (ZooKeeper zk : zks) {
-                if (zk.getState() != state) {
-                    someoneNotConnected = true;
-                    break;
-                }
-            }
-            Thread.sleep(1000);
-        }
-    }
-
-    public static void logStates(ZooKeeper[] zks) {
-        StringBuilder sbBuilder = new StringBuilder("Connection States: {");
-        for (int i = 0; i < zks.length; i++) {
-            sbBuilder.append(i + " : " + zks[i].getState() + ", ");
-        }
-        sbBuilder.append('}');
-        LOG.error(sbBuilder.toString());
-    }
-
 }

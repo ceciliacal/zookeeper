@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -25,14 +25,13 @@ import org.apache.zookeeper.server.ZooKeeperServerBean;
  * Follower MBean interface implementation
  */
 public class FollowerBean extends ZooKeeperServerBean implements FollowerMXBean {
-
     private final Follower follower;
 
     public FollowerBean(Follower follower, ZooKeeperServer zks) {
         super(zks);
         this.follower = follower;
     }
-
+    
     public String getName() {
         return "Follower";
     }
@@ -40,11 +39,11 @@ public class FollowerBean extends ZooKeeperServerBean implements FollowerMXBean 
     public String getQuorumAddress() {
         return follower.sock.toString();
     }
-
+    
     public String getLastQueuedZxid() {
         return "0x" + Long.toHexString(follower.getLastQueued());
     }
-
+    
     public int getPendingRevalidationCount() {
         return follower.getPendingRevalidationsCount();
     }
@@ -53,43 +52,4 @@ public class FollowerBean extends ZooKeeperServerBean implements FollowerMXBean 
     public long getElectionTimeTaken() {
         return follower.self.getElectionTimeTaken();
     }
-
-    @Override
-    public int getObserverMasterPacketSizeLimit() {
-        return follower.om == null ? -1 : follower.om.getPktsSizeLimit();
-    }
-
-    @Override
-    public void setObserverMasterPacketSizeLimit(int sizeLimit) {
-        ObserverMaster.setPktsSizeLimit(sizeLimit);
-    }
-
-    @Override
-    public int getMaxConcurrentSnapSyncs() {
-        final ObserverMaster om = follower.om;
-        return om == null ? -1 : om.getMaxConcurrentSnapSyncs();
-    }
-
-    @Override
-    public void setMaxConcurrentSnapSyncs(int maxConcurrentSnapshots) {
-        final ObserverMaster om = follower.om;
-        if (om != null) {
-            om.setMaxConcurrentSnapSyncs(maxConcurrentSnapshots);
-        }
-    }
-
-    @Override
-    public int getMaxConcurrentDiffSyncs() {
-        final ObserverMaster om = follower.om;
-        return om == null ? -1 : om.getMaxConcurrentDiffSyncs();
-    }
-
-    @Override
-    public void setMaxConcurrentDiffSyncs(int maxConcurrentDiffSyncs) {
-        final ObserverMaster om = follower.om;
-        if (om != null) {
-            om.setMaxConcurrentDiffSyncs(maxConcurrentDiffSyncs);
-        }
-    }
-
 }

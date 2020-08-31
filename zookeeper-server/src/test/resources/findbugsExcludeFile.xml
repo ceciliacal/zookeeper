@@ -32,7 +32,15 @@
     <Bug pattern="REC_CATCH_EXCEPTION" />
   </Match>
 
-    <!-- Committing out of order is an unrecoverable error, so we should
+   <!-- If we cannot open a socket to elect a leader, then we should
+            simply exit -->
+   <Match>
+     <Class name="org.apache.zookeeper.server.quorum.LeaderElection" />
+       <Method name="lookForLeader" />
+       <Bug pattern="DM_EXIT" />
+   </Match>
+
+   <!-- Committing out of order is an unrecoverable error, so we should
               really exit  -->
    <Match>
      <Class name="org.apache.zookeeper.server.quorum.FollowerZooKeeperServer" />
@@ -47,19 +55,6 @@
        <Bug pattern="DM_EXIT" />
    </Match>
 
-  <!-- QuorumCnxManager Listener thread fails to bind election port -->
-  <Match>
-    <Class name="org.apache.zookeeper.server.quorum.QuorumCnxManager$Listener"/>
-    <Method name="run" />
-    <Bug pattern="DM_EXIT" />
-  </Match>
-
-   <!-- Failed to create watch manager is a unrecoverable error -->
-   <Match>
-     <Class name="org.apache.zookeeper.server.DataTree" />
-     <Bug pattern="DM_EXIT" />
-   </Match>
-
   <Match>
     <Package name="org.apache.jute.compiler.generated" />
   </Match>
@@ -71,7 +66,7 @@
 
   <Match>
     <Class name="org.apache.zookeeper.server.DataNode" />
-      <Bug code="EI2, EI"/>
+      <Bug code="EI2"/>
   </Match>
 
   <Match>
@@ -91,7 +86,7 @@
 
   <Match>
     <Class name="org.apache.zookeeper.server.DataNode"/>
-      <Field name="children"/>
+      <Field name="children"/> 
       <Bug code="IS"/>
   </Match>
  <Match>
@@ -104,24 +99,20 @@
     <Field name="serverStats"/>
     <Bug code="IS"/>
   </Match>
-
-  <!-- The iterate function is non-thread safe, the caller will synchronize
-       on the BitHHashSet object -->
-  <Match>
-    <Class name="org.apache.zookeeper.server.util.BitHashSet" />
-    <Field name="elementCount" />
-    <Bug code="IS" />
-  </Match>
-
   <Match>
      <Class name="org.apache.zookeeper.server.quorum.LearnerSessionTracker"/>
        <Bug code="UrF"/>
+  </Match>
+  <Match>
+    <Class name="org.apache.zookeeper.server.quorum.AuthFastLeaderElection$Messenger$WorkerSender"/>
+    <Method name="process"/>
+    <Bug code="RV"/>
   </Match>
 
   <!-- these are old classes just for upgrading and should go away -->
   <Match>
     <Class name="org.apache.zookeeper.server.upgrade.DataNodeV1"/>
-  </Match>
+  </Match> 
 
   <Match>
     <Class name="org.apache.zookeeper.server.upgrade.DataTreeV1"/>
@@ -143,23 +134,6 @@
       <Method name="run" />
     </Or>
   </Match>
-
-  <!-- Synchronize on the AtomicInteger to do wait/notify, but not relying
-       on the synchronization to control the AtomicInteger value update,
-       so it's not a problem -->
-  <Match>
-    <Class name="org.apache.zookeeper.server.watch.WatcherCleaner" />
-    <Bug code="JLM" />
-    <Method name="addDeadWatcher" />
-  </Match>
-
-  <Match>
-    <Class name="org.apache.zookeeper.server.watch.WatcherCleaner$1" />
-    <Bug code="JLM" />
-    <Method name="doWork" />
-  </Match>
-
-
 
   <Match>
     <Class name="org.apache.zookeeper.server.quorum.QuorumPeer"/>
@@ -193,20 +167,5 @@
   <Match>
     <Class name="org.apache.zookeeper.server.EphemeralType"/>
       <Bug pattern="RV_RETURN_VALUE_IGNORED_NO_SIDE_EFFECT" />
-  </Match>
-
-  <!-- Disable 'Inconsistent synchronization' to allow the ServerSocket to listen without
-       locking the class -->
-  <Match>
-    <Class name="org.apache.zookeeper.server.quorum.ObserverMaster"/>
-    <Field name="ss"/>
-    <Bug code="IS"/>
-  </Match>
-
-  <!-- References code in a generated file that may or maynot be null -->
-  <Match>
-    <Class name="org.apache.zookeeper.version.VersionInfoMain" />
-    <Method name="main" />
-    <Bug pattern="RCN_REDUNDANT_NULLCHECK_OF_NULL_VALUE" />
   </Match>
 </FindBugsFilter>

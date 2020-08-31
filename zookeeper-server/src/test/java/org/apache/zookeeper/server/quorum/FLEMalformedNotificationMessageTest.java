@@ -18,7 +18,6 @@
 
 package org.apache.zookeeper.server.quorum;
 
-import static org.junit.jupiter.api.Assertions.fail;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -29,11 +28,13 @@ import org.apache.zookeeper.ZKTestCase;
 import org.apache.zookeeper.server.quorum.QuorumPeer.QuorumServer;
 import org.apache.zookeeper.server.quorum.QuorumPeer.ServerState;
 import org.apache.zookeeper.test.ClientBase;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 public class FLEMalformedNotificationMessageTest extends ZKTestCase {
     private static final Logger LOG = LoggerFactory.getLogger(FLEMalformedNotificationMessageTest.class);
@@ -50,7 +51,7 @@ public class FLEMalformedNotificationMessageTest extends ZKTestCase {
     QuorumPeer peerRunningLeaderElection;
 
 
-    @BeforeEach
+    @Before
     public void setUp() throws Exception {
         count = 3;
 
@@ -72,14 +73,14 @@ public class FLEMalformedNotificationMessageTest extends ZKTestCase {
         /*
          * Start server 0
          */
-        peerRunningLeaderElection = new QuorumPeer(peers, tmpdir[0], tmpdir[0], port[0], 3, 0, 1000, 2, 2, 2);
+        peerRunningLeaderElection = new QuorumPeer(peers, tmpdir[0], tmpdir[0], port[0], 3, 0, 1000, 2, 2);
         peerRunningLeaderElection.startLeaderElection();
         leaderElectionThread = new FLETestUtils.LEThread(peerRunningLeaderElection, 0);
         leaderElectionThread.start();
     }
 
 
-    @AfterEach
+    @After
     public void tearDown() throws Exception {
         peerRunningLeaderElection.shutdown();
         mockCnxManager.halt();
@@ -108,7 +109,7 @@ public class FLEMalformedNotificationMessageTest extends ZKTestCase {
         sendValidNotifications(1, 0);
         leaderElectionThread.join(5000);
         if (leaderElectionThread.isAlive()) {
-            fail("Leader election thread didn't join, something went wrong.");
+            Assert.fail("Leader election thread didn't join, something went wrong.");
         }
     }
 
@@ -139,7 +140,7 @@ public class FLEMalformedNotificationMessageTest extends ZKTestCase {
         sendValidNotifications(1, 0);
         leaderElectionThread.join(5000);
         if (leaderElectionThread.isAlive()) {
-            fail("Leader election thread didn't join, something went wrong.");
+            Assert.fail("Leader election thread didn't join, something went wrong.");
         }
     }
 
@@ -172,7 +173,7 @@ public class FLEMalformedNotificationMessageTest extends ZKTestCase {
         sendValidNotifications(1, 0);
         leaderElectionThread.join(5000);
         if (leaderElectionThread.isAlive()) {
-            fail("Leader election thread didn't join, something went wrong.");
+            Assert.fail("Leader election thread didn't join, something went wrong.");
         }
     }
 
@@ -195,7 +196,7 @@ public class FLEMalformedNotificationMessageTest extends ZKTestCase {
         sendValidNotifications(1, 0);
         leaderElectionThread.join(5000);
         if (leaderElectionThread.isAlive()) {
-            fail("Leader election thread didn't join, something went wrong.");
+            Assert.fail("Leader election thread didn't join, something went wrong.");
         }
     }
 
@@ -217,7 +218,7 @@ public class FLEMalformedNotificationMessageTest extends ZKTestCase {
         requestBuffer.putLong(0);                              // zxid
         requestBuffer.putLong(0);                              // electionEpoch
         requestBuffer.putShort((short) 0);                      // this is the first two bytes of a proper
-                                                               // 8 bytes Long we should send here
+        // 8 bytes Long we should send here
         mockCnxManager.toSend(0L, requestBuffer);
 
         /*
@@ -227,13 +228,13 @@ public class FLEMalformedNotificationMessageTest extends ZKTestCase {
         sendValidNotifications(1, 0);
         leaderElectionThread.join(5000);
         if (leaderElectionThread.isAlive()) {
-            fail("Leader election thread didn't join, something went wrong.");
+            Assert.fail("Leader election thread didn't join, something went wrong.");
         }
     }
 
 
     void startMockServer(int sid) throws IOException {
-        QuorumPeer peer = new QuorumPeer(peers, tmpdir[sid], tmpdir[sid], port[sid], 3, sid, 1000, 2, 2, 2);
+        QuorumPeer peer = new QuorumPeer(peers, tmpdir[sid], tmpdir[sid], port[sid], 3, sid, 1000, 2, 2);
         mockCnxManager = peer.createCnxnManager();
         mockCnxManager.listener.start();
     }

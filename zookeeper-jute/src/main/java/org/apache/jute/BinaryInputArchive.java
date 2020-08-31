@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,18 +22,13 @@ import java.io.DataInput;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 
 /**
  *
  */
 public class BinaryInputArchive implements InputArchive {
-
-    public static final String UNREASONBLE_LENGTH = "Unreasonable length = ";
-
-    // CHECKSTYLE.OFF: ConstantName - for backward compatibility
+    public static final String UNREASONBLE_LENGTH= "Unreasonable length = ";
     public static final int maxBuffer = Integer.getInteger("jute.maxbuffer", 0xfffff);
-    // CHECKSTYLE.ON:
     private static final int extraMaxBuffer;
 
     static {
@@ -46,34 +41,27 @@ public class BinaryInputArchive implements InputArchive {
             extraMaxBuffer = configuredExtraMaxBuffer;
         }
     }
-
     private DataInput in;
     private int maxBufferSize;
     private int extraMaxBufferSize;
-
-    public static BinaryInputArchive getArchive(InputStream strm) {
+    
+    static public BinaryInputArchive getArchive(InputStream strm) {
         return new BinaryInputArchive(new DataInputStream(strm));
     }
-
-    private static class BinaryIndex implements Index {
+    
+    static private class BinaryIndex implements Index {
         private int nelems;
-
         BinaryIndex(int nelems) {
             this.nelems = nelems;
         }
-
         public boolean done() {
             return (nelems <= 0);
         }
-
         public void incr() {
             nelems--;
         }
     }
-
-    /**
-     * Creates a new instance of BinaryInputArchive.
-     */
+    /** Creates a new instance of BinaryInputArchive */
     public BinaryInputArchive(DataInput in) {
         this(in, maxBuffer, extraMaxBuffer);
     }
@@ -83,80 +71,72 @@ public class BinaryInputArchive implements InputArchive {
         this.maxBufferSize = maxBufferSize;
         this.extraMaxBufferSize = extraMaxBufferSize;
     }
-
+    
     public byte readByte(String tag) throws IOException {
         return in.readByte();
     }
-
+    
     public boolean readBool(String tag) throws IOException {
         return in.readBoolean();
     }
-
+    
     public int readInt(String tag) throws IOException {
         return in.readInt();
     }
-
+    
     public long readLong(String tag) throws IOException {
         return in.readLong();
     }
-
+    
     public float readFloat(String tag) throws IOException {
         return in.readFloat();
     }
-
+    
     public double readDouble(String tag) throws IOException {
         return in.readDouble();
     }
-
+    
     public String readString(String tag) throws IOException {
-        int len = in.readInt();
-        if (len == -1) {
-            return null;
-        }
+    	int len = in.readInt();
+    	if (len == -1) return null;
         checkLength(len);
-        byte[] b = new byte[len];
-        in.readFully(b);
-        return new String(b, StandardCharsets.UTF_8);
+    	byte b[] = new byte[len];
+    	in.readFully(b);
+    	return new String(b, "UTF8");
     }
 
     public byte[] readBuffer(String tag) throws IOException {
         int len = readInt(tag);
-        if (len == -1) {
-            return null;
-        }
+        if (len == -1) return null;
         checkLength(len);
         byte[] arr = new byte[len];
         in.readFully(arr);
         return arr;
     }
-
+    
     public void readRecord(Record r, String tag) throws IOException {
         r.deserialize(this, tag);
     }
-
-    public void startRecord(String tag) throws IOException {
-    }
-
-    public void endRecord(String tag) throws IOException {
-    }
-
+    
+    public void startRecord(String tag) throws IOException {}
+    
+    public void endRecord(String tag) throws IOException {}
+    
     public Index startVector(String tag) throws IOException {
         int len = readInt(tag);
         if (len == -1) {
-            return null;
+        	return null;
         }
-        return new BinaryIndex(len);
+		return new BinaryIndex(len);
     }
-
-    public void endVector(String tag) throws IOException {
-    }
-
+    
+    public void endVector(String tag) throws IOException {}
+    
     public Index startMap(String tag) throws IOException {
         return new BinaryIndex(readInt(tag));
     }
-
-    public void endMap(String tag) throws IOException {
-    }
+    
+    public void endMap(String tag) throws IOException {}
 
     // Since this is a rough sanity check, add some padding to maxBuffer to
     // make up for extra fields, etc. (otherwise e.g. clients may be able to

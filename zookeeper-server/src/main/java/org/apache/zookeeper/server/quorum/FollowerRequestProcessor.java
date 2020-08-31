@@ -1,4 +1,4 @@
-/*
+/**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -20,11 +20,11 @@ package org.apache.zookeeper.server.quorum;
 
 import java.io.IOException;
 import java.util.concurrent.LinkedBlockingQueue;
+
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.ZooDefs.OpCode;
 import org.apache.zookeeper.server.Request;
 import org.apache.zookeeper.server.RequestProcessor;
-import org.apache.zookeeper.server.ServerMetrics;
 import org.apache.zookeeper.server.ZooKeeperCriticalThread;
 import org.apache.zookeeper.server.ZooTrace;
 import org.apache.zookeeper.txn.ErrorTxn;
@@ -35,13 +35,9 @@ import org.slf4j.LoggerFactory;
  * This RequestProcessor forwards any requests that modify the state of the
  * system to the Leader.
  */
-public class FollowerRequestProcessor extends ZooKeeperCriticalThread implements RequestProcessor {
-
+public class FollowerRequestProcessor extends ZooKeeperCriticalThread implements
+        RequestProcessor {
     private static final Logger LOG = LoggerFactory.getLogger(FollowerRequestProcessor.class);
-
-    public static final String SKIP_LEARNER_REQUEST_TO_NEXT_PROCESSOR = "zookeeper.follower.skipLearnerRequestToNextProcessor";
-
-    private final boolean skipLearnerRequestToNextProcessor;
 
     FollowerZooKeeperServer zks;
 
@@ -51,42 +47,30 @@ public class FollowerRequestProcessor extends ZooKeeperCriticalThread implements
 
     boolean finished = false;
 
-    public FollowerRequestProcessor(FollowerZooKeeperServer zks, RequestProcessor nextProcessor) {
-        super("FollowerRequestProcessor:" + zks.getServerId(), zks.getZooKeeperServerListener());
+    public FollowerRequestProcessor(FollowerZooKeeperServer zks,
+            RequestProcessor nextProcessor) {
+        super("FollowerRequestProcessor:" + zks.getServerId(), zks
+                .getZooKeeperServerListener());
         this.zks = zks;
         this.nextProcessor = nextProcessor;
-        this.skipLearnerRequestToNextProcessor = Boolean.getBoolean(SKIP_LEARNER_REQUEST_TO_NEXT_PROCESSOR);
-        LOG.info("Initialized FollowerRequestProcessor with {} as {}", SKIP_LEARNER_REQUEST_TO_NEXT_PROCESSOR,
-                skipLearnerRequestToNextProcessor);
     }
 
     @Override
     public void run() {
         try {
             while (!finished) {
-                ServerMetrics.getMetrics().LEARNER_REQUEST_PROCESSOR_QUEUE_SIZE.add(queuedRequests.size());
-
                 Request request = queuedRequests.take();
                 if (LOG.isTraceEnabled()) {
-                    ZooTrace.logRequest(LOG, ZooTrace.CLIENT_REQUEST_TRACE_MASK, 'F', request, "");
+                    ZooTrace.logRequest(LOG, ZooTrace.CLIENT_REQUEST_TRACE_MASK,
+                            'F', request, "");
                 }
                 if (request == Request.requestOfDeath) {
                     break;
                 }
-
-                // Screen quorum requests against ACLs first
-                if (!zks.authWriteRequest(request)) {
-                    continue;
-                }
-
                 // We want to queue the request to be processed before we submit
                 // the request to the leader so that we are ready to receive
                 // the response
-                maybeSendRequestToNextProcessor(request);
-
-                if (request.isThrottled()) {
-                    continue;
-                }
+                nextProcessor.processRequest(request);
 
                 // We now ship the request to the leader. As with all
                 // other quorum operations, sync also follows this code
@@ -120,50 +104,33 @@ public class FollowerRequestProcessor extends ZooKeeperCriticalThread implements
                     break;
                 }
             }
-        } catch (RuntimeException e) { // spotbugs require explicit catch of RuntimeException
-            handleException(this.getName(), e);
         } catch (Exception e) {
             handleException(this.getName(), e);
         }
         LOG.info("FollowerRequestProcessor exited loop!");
     }
 
-    private void maybeSendRequestToNextProcessor(Request request) throws RequestProcessorException {
-        if (skipLearnerRequestToNextProcessor && request.isFromLearner()) {
-            ServerMetrics.getMetrics().SKIP_LEARNER_REQUEST_TO_NEXT_PROCESSOR_COUNT.add(1);
-        } else {
-            nextProcessor.processRequest(request);
-        }
-    }
-
     public void processRequest(Request request) {
-        processRequest(request, true);
-    }
-
-    void processRequest(Request request, boolean checkForUpgrade) {
         if (!finished) {
-            if (checkForUpgrade) {
-                // Before sending the request, check if the request requires a
-                // global session and what we have is a local session. If so do
-                // an upgrade.
-                Request upgradeRequest = null;
-                try {
-                    upgradeRequest = zks.checkUpgradeSession(request);
-                } catch (KeeperException ke) {
-                    if (request.getHdr() != null) {
-                        request.getHdr().setType(OpCode.error);
-                        request.setTxn(new ErrorTxn(ke.code().intValue()));
-                    }
-                    request.setException(ke);
-                    LOG.warn("Error creating upgrade request", ke);
-                } catch (IOException ie) {
-                    LOG.error("Unexpected error in upgrade", ie);
+            // Before sending the request, check if the request requires a
+            // global session and what we have is a local session. If so do
+            // an upgrade.
+            Request upgradeRequest = null;
+            try {
+                upgradeRequest = zks.checkUpgradeSession(request);
+            } catch (KeeperException ke) {
+                if (request.getHdr() != null) {
+                    request.getHdr().setType(OpCode.error);
+                    request.setTxn(new ErrorTxn(ke.code().intValue()));
                 }
-                if (upgradeRequest != null) {
-                    queuedRequests.add(upgradeRequest);
-                }
+                request.setException(ke);
+                LOG.info("Error creating upgrade request",  ke);
+            } catch (IOException ie) {
+                LOG.error("Unexpected error in upgrade", ie);
             }
-
+            if (upgradeRequest != null) {
+                queuedRequests.add(upgradeRequest);
+            }
             queuedRequests.add(request);
         }
     }
