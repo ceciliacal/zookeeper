@@ -1,0 +1,15 @@
+
+------- HANNO IV = -1 !!!!!
+ZOOKEEPER-3857            IV: -1           OV : 0             FV: 0             AV: [-1]
+
+Ha creationDate = 10 giugno 2020, e su Jira dice che è stato fixato nella 3.6.2, che ancora non è stata rilasciata e quidni non ce l'ho in VersionInfo
+
+ZOOKEEPER-3797            IV: -1           OV : 38             FV: 38             AV: [-1, 38]
+Ha creationDate = 18 aprile 2020 e su Jira dice che è stato creato e fixato nella 3.6.1 quando in realtà, per le creationDate ecc dovrebbe essere la 3.5.7
+
+ZOOKEEPER-2684            IV: -1           OV : 28             FV: 30             AV: [-1]
+creato il 7 feb 2017 e risolto il 3 nov 17 ma Jira dice come FV = 3.6.0 (che non esiste) e che comunque sarebbe nel 2020
+
+ZOOKEEPER-2693            IV: 12           OV : 28             FV: 28             AV: [12, 23, 26]
+
+AV in quel modo discontinuo non viene modificata perche su Jira è segnata cosi ma in realtà non è vero, quindi va ricalcolata anche se c'è
