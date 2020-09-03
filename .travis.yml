@@ -5,7 +5,7 @@ jdk:
 addons:
   sonarcloud:
     organization: ceciliacal
-    token: fad53637bf43a0c773384d695521687f191475bd
+    token: 9dec0af2e72859868064557aad6dfe58c169a577
 
 install: 
   - mvn clean install -q -DskipTests=true 
