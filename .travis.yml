@@ -17,7 +17,7 @@ addons:
     organization: ceciliacal
     token: 331a1df367982550e16360321497cab14c6a817e
 
-script: mvn clean install sonar:sonar  -Dsonar.projectKey=ceciliacal_bookkeeper  spotbugs:check checkstyle:check -Pfull-build
+script: mvn clean install sonar:sonar  -Dsonar.projectKey=ceciliacal_zookkeeper  spotbugs:check checkstyle:check -Pfull-build
 
 branches:
   only:
