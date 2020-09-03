@@ -92,19 +92,13 @@ public class MyZookeeperGetChildrenTest extends ClientBase {
             children = zk.getChildren(path, watch);
 
         } catch (KeeperException e) {       //path errato
-
-
-            res=false;
             System.out.println(" \n-------- STO DENTRO TRY CATCH");
             e.printStackTrace();
-
         } catch (InterruptedException e) {
-
-            res=false;
             e.printStackTrace();
         }
         catch (IllegalArgumentException e){
-            res = false;
+            e.printStackTrace();
         }
 
 

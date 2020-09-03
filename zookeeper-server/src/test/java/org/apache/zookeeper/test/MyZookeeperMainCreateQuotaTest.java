@@ -1,9 +1,6 @@
 package org.apache.zookeeper.test;
 
 import org.apache.zookeeper.*;
-import org.apache.zookeeper.data.Stat;
-import org.apache.zookeeper.server.ZooKeeperServer;
-import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;

@@ -349,6 +349,7 @@ public class WatcherFuncTest extends ClientBase {
 
         List<EventType> e2 = new ArrayList<EventType>();
 
+        //non c'è nessun nodo al path /foo perché non l'ho mai creato, quindi ho assertFail
         try {
             lsnr.getData("/foo", w1, null);
             Assert.fail();
@@ -364,6 +365,8 @@ public class WatcherFuncTest extends ClientBase {
             Assert.assertEquals("/foo/bar", e.getPath());
         }
 
+        //creazione nodi da cui effettivamente prendo dati e stat (quindi avrò dei path validi)
+
         client.create("/foo", "parent".getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
         Assert.assertNotNull(lsnr.getData("/foo", true, null));
         Assert.assertNotNull(lsnr.getData("/foo", w1, null));
@@ -373,11 +376,17 @@ public class WatcherFuncTest extends ClientBase {
         Assert.assertNotNull(lsnr.getData("/foo/bar", w4, null));
         Assert.assertNotNull(lsnr.getData("/foo/bar", w4, null));
 
+        //setto dati del nodo al path foo. version -1 significa che matcha la versione
+        //di qualsiasi nodo
+        //se setData ha successo, triggera tutti i watch su quel nodo lasciati da getData
+        //il trigger può essere per aver settato i dati del nodo o per averlo eliminato
         client.setData("/foo", "parent".getBytes(), -1);
         expected.add(EventType.NodeDataChanged);
         client.setData("/foo/bar", "child".getBytes(), -1);
         e2.add(EventType.NodeDataChanged);
 
+        //posso testare setData e vedere se ha successo andando a verificare che
+        //abbia triggerato i watch presenti sui nodi
         lsnr_dwatch.verify(expected);
         w1.verify(expected);
         w2.verify(e2);
