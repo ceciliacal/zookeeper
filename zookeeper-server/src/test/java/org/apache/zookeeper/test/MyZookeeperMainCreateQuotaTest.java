@@ -77,7 +77,6 @@ public class MyZookeeperMainCreateQuotaTest  extends ClientBase{
     public void setup() throws KeeperException, InterruptedException, IOException {
 
         zk = createClient();
-       // path = "/a/b/v";
 
         zk.setData("/", "myTest".getBytes(), -1);
         zk.create("/path_01", "myTest".getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE,
