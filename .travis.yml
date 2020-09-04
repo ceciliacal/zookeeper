@@ -20,7 +20,7 @@ addons:
 
 install: mvn clean install -q -DskipTests=true
 
-script: mvn clean verify  sonar:sonar spotbugs:check checkstyle:check -Pfull-build
+script: mvn clean org.jacoco:jacoco-maven-plugin:prepare-agent verify  sonar:sonar spotbugs:check checkstyle:check -Pfull-build
 
 branches:
   only:
