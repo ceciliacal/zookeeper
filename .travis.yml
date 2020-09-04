@@ -15,7 +15,7 @@ addons:
     
   sonarcloud:
     organization: "ceciliacal"
-    token: "8b7bb333d9d20fd2c16f7d5f92892c1a951cf56b"  
+    token: "da523a61ed1f68aec3d793163534cdd222350f13"  
     
 
 install: mvn clean install -q -DskipTests=true

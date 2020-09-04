@@ -310,6 +310,10 @@
     <dependency.locations.enabled>false</dependency.locations.enabled>
 
     <surefire-forkcount>8</surefire-forkcount>
+	
+	
+    <sonar.projectKey>ceciliacal_zookeeper-${project.groupId}:${project.artifactId}</sonar.projectKey>
+
 
     <!-- dependency versions -->
     <slf4j.version>1.7.25</slf4j.version>
