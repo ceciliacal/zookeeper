@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SetQuotaCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.cli</a> &gt; <span class="el_source">SetQuotaCommand.java</span></div><h1>SetQuotaCommand.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.cli;
+
+import java.io.IOException;
+import java.util.List;
+import org.apache.commons.cli.*;
+import org.apache.zookeeper.*;
+import org.apache.zookeeper.data.Stat;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * setQuota command for cli
+ */
+public class SetQuotaCommand extends CliCommand {
+
+<span class="nc" id="L33">    private static final Logger LOG = LoggerFactory.getLogger(SetQuotaCommand.class);</span>
+<span class="nc" id="L34">    private Options options = new Options();</span>
+    private String[] args;
+    private CommandLine cl;
+
+    public SetQuotaCommand() {
+<span class="nc" id="L39">        super(&quot;setquota&quot;, &quot;-n|-b val path&quot;);</span>
+        
+<span class="nc" id="L41">        OptionGroup og1 = new OptionGroup();</span>
+<span class="nc" id="L42">        og1.addOption(new Option(&quot;b&quot;, true, &quot;bytes quota&quot;));</span>
+<span class="nc" id="L43">        og1.addOption(new Option(&quot;n&quot;, true, &quot;num quota&quot;));</span>
+<span class="nc" id="L44">        og1.setRequired(true);</span>
+<span class="nc" id="L45">        options.addOptionGroup(og1);</span>
+<span class="nc" id="L46">   }</span>
+
+    @Override
+    public CliCommand parse(String[] cmdArgs) throws CliParseException {
+<span class="nc" id="L50">        Parser parser = new PosixParser();</span>
+        try {
+<span class="nc" id="L52">            cl = parser.parse(options, cmdArgs);</span>
+<span class="nc" id="L53">        } catch (ParseException ex) {</span>
+<span class="nc" id="L54">            throw new CliParseException(ex);</span>
+<span class="nc" id="L55">        }</span>
+<span class="nc" id="L56">        args = cl.getArgs();</span>
+<span class="nc bnc" id="L57" title="All 2 branches missed.">        if (args.length &lt; 2) {</span>
+<span class="nc" id="L58">            throw new CliParseException(getUsageStr());</span>
+        }
+
+<span class="nc" id="L61">        return this;</span>
+    }
+
+    @Override
+    public boolean exec() throws CliException {
+        // get the args
+<span class="nc" id="L67">        String path = args[1];</span>
+
+<span class="nc bnc" id="L69" title="All 2 branches missed.">        if (cl.hasOption(&quot;b&quot;)) {</span>
+            // we are setting the bytes quota
+<span class="nc" id="L71">            long bytes = Long.parseLong(cl.getOptionValue(&quot;b&quot;));</span>
+            try {
+<span class="nc" id="L73">                createQuota(zk, path, bytes, -1);</span>
+<span class="nc" id="L74">            } catch (KeeperException|IOException|InterruptedException ex) {</span>
+<span class="nc" id="L75">                throw new CliWrapperException(ex);</span>
+<span class="nc" id="L76">            }</span>
+<span class="nc bnc" id="L77" title="All 2 branches missed.">        } else if (cl.hasOption(&quot;n&quot;)) {</span>
+            // we are setting the num quota
+<span class="nc" id="L79">            int numNodes = Integer.parseInt(cl.getOptionValue(&quot;n&quot;));</span>
+            try {
+<span class="nc" id="L81">                createQuota(zk, path, -1L, numNodes);</span>
+<span class="nc" id="L82">            } catch (KeeperException|IOException|InterruptedException ex) {</span>
+<span class="nc" id="L83">                throw new CliWrapperException(ex);</span>
+<span class="nc" id="L84">            }</span>
+<span class="nc" id="L85">        } else {</span>
+<span class="nc" id="L86">            throw new MalformedCommandException(getUsageStr());</span>
+        }
+
+<span class="nc" id="L89">        return false;</span>
+    }
+
+    public static boolean createQuota(ZooKeeper zk, String path,
+            long bytes, int numNodes)
+            throws KeeperException, IOException, InterruptedException, MalformedPathException {
+        // check if the path exists. We cannot create
+        // quota for a path that already exists in zookeeper
+        // for now.
+        Stat initStat;
+        try {
+<span class="nc" id="L100">            initStat = zk.exists(path, false);</span>
+<span class="nc" id="L101">        } catch (IllegalArgumentException ex) {</span>
+<span class="nc" id="L102">            throw new MalformedPathException(ex.getMessage());</span>
+<span class="nc" id="L103">        }</span>
+<span class="nc bnc" id="L104" title="All 2 branches missed.">        if (initStat == null) {</span>
+<span class="nc" id="L105">            throw new IllegalArgumentException(path + &quot; does not exist.&quot;);</span>
+        }
+        // now check if their is already existing
+        // parent or child that has quota
+
+<span class="nc" id="L110">        String quotaPath = Quotas.quotaZookeeper;</span>
+        // check for more than 2 children --
+        // if zookeeper_stats and zookeeper_quotas
+        // are not the children then this path
+        // is an ancestor of some path that
+        // already has quota
+<span class="nc" id="L116">        String realPath = Quotas.quotaZookeeper + path;</span>
+        try {
+<span class="nc" id="L118">            List&lt;String&gt; children = zk.getChildren(realPath, false);</span>
+<span class="nc bnc" id="L119" title="All 2 branches missed.">            for (String child : children) {</span>
+<span class="nc bnc" id="L120" title="All 2 branches missed.">                if (!child.startsWith(&quot;zookeeper_&quot;)) {</span>
+<span class="nc" id="L121">                    throw new IllegalArgumentException(path + &quot; has child &quot;</span>
+                            + child + &quot; which has a quota&quot;);
+                }
+<span class="nc" id="L124">            }</span>
+<span class="nc" id="L125">        } catch (KeeperException.NoNodeException ne) {</span>
+            // this is fine
+<span class="nc" id="L127">        }</span>
+
+        //check for any parent that has been quota
+<span class="nc" id="L130">        checkIfParentQuota(zk, path);</span>
+
+        // this is valid node for quota
+        // start creating all the parents
+<span class="nc bnc" id="L134" title="All 2 branches missed.">        if (zk.exists(quotaPath, false) == null) {</span>
+            try {
+<span class="nc" id="L136">                zk.create(Quotas.procZookeeper, null, ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                        CreateMode.PERSISTENT);
+<span class="nc" id="L138">                zk.create(Quotas.quotaZookeeper, null, ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                        CreateMode.PERSISTENT);
+<span class="nc" id="L140">            } catch (KeeperException.NodeExistsException ne) {</span>
+                // do nothing
+<span class="nc" id="L142">            }</span>
+        }
+
+        // now create the direct children
+        // and the stat and quota nodes
+<span class="nc" id="L147">        String[] splits = path.split(&quot;/&quot;);</span>
+<span class="nc" id="L148">        StringBuilder sb = new StringBuilder();</span>
+<span class="nc" id="L149">        sb.append(quotaPath);</span>
+<span class="nc bnc" id="L150" title="All 2 branches missed.">        for (int i = 1; i &lt; splits.length; i++) {</span>
+<span class="nc" id="L151">            sb.append(&quot;/&quot;).append(splits[i]);</span>
+<span class="nc" id="L152">            quotaPath = sb.toString();</span>
+            try {
+<span class="nc" id="L154">                zk.create(quotaPath, null, ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                        CreateMode.PERSISTENT);
+<span class="nc" id="L156">            } catch (KeeperException.NodeExistsException ne) {</span>
+                //do nothing
+<span class="nc" id="L158">            }</span>
+        }
+<span class="nc" id="L160">        String statPath = quotaPath + &quot;/&quot; + Quotas.statNode;</span>
+<span class="nc" id="L161">        quotaPath = quotaPath + &quot;/&quot; + Quotas.limitNode;</span>
+<span class="nc" id="L162">        StatsTrack strack = new StatsTrack(null);</span>
+<span class="nc" id="L163">        strack.setBytes(bytes);</span>
+<span class="nc" id="L164">        strack.setCount(numNodes);</span>
+        try {
+<span class="nc" id="L166">            zk.create(quotaPath, strack.toString().getBytes(),</span>
+                    ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+<span class="nc" id="L168">            StatsTrack stats = new StatsTrack(null);</span>
+<span class="nc" id="L169">            stats.setBytes(0L);</span>
+<span class="nc" id="L170">            stats.setCount(0);</span>
+<span class="nc" id="L171">            zk.create(statPath, stats.toString().getBytes(),</span>
+                    ZooDefs.Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+<span class="nc" id="L173">        } catch (KeeperException.NodeExistsException ne) {</span>
+<span class="nc" id="L174">            byte[] data = zk.getData(quotaPath, false, new Stat());</span>
+<span class="nc" id="L175">            StatsTrack strackC = new StatsTrack(new String(data));</span>
+<span class="nc bnc" id="L176" title="All 2 branches missed.">            if (bytes != -1L) {</span>
+<span class="nc" id="L177">                strackC.setBytes(bytes);</span>
+            }
+<span class="nc bnc" id="L179" title="All 2 branches missed.">            if (numNodes != -1) {</span>
+<span class="nc" id="L180">                strackC.setCount(numNodes);</span>
+            }
+<span class="nc" id="L182">            zk.setData(quotaPath, strackC.toString().getBytes(), -1);</span>
+<span class="nc" id="L183">        }</span>
+<span class="nc" id="L184">        return true;</span>
+    }
+
+    private static void checkIfParentQuota(ZooKeeper zk, String path)
+            throws InterruptedException, KeeperException {
+<span class="nc" id="L189">        final String[] splits = path.split(&quot;/&quot;);</span>
+<span class="nc" id="L190">        String quotaPath = Quotas.quotaZookeeper;</span>
+<span class="nc bnc" id="L191" title="All 2 branches missed.">        for (String str : splits) {</span>
+<span class="nc bnc" id="L192" title="All 2 branches missed.">            if (str.length() == 0) {</span>
+                // this should only be for the beginning of the path
+                // i.e. &quot;/...&quot; - split(path)[0] is empty string before first '/'
+<span class="nc" id="L195">                continue;</span>
+            }
+<span class="nc" id="L197">            quotaPath += &quot;/&quot; + str;</span>
+<span class="nc" id="L198">            List&lt;String&gt; children = null;</span>
+            try {
+<span class="nc" id="L200">                children = zk.getChildren(quotaPath, false);</span>
+<span class="nc" id="L201">            } catch (KeeperException.NoNodeException ne) {</span>
+<span class="nc" id="L202">                LOG.debug(&quot;child removed during quota check&quot;, ne);</span>
+<span class="nc" id="L203">                return;</span>
+<span class="nc" id="L204">            }</span>
+<span class="nc bnc" id="L205" title="All 2 branches missed.">            if (children.size() == 0) {</span>
+<span class="nc" id="L206">                return;</span>
+            }
+<span class="nc bnc" id="L208" title="All 2 branches missed.">            for (String child : children) {</span>
+<span class="nc bnc" id="L209" title="All 2 branches missed.">                if (Quotas.limitNode.equals(child)) {</span>
+<span class="nc" id="L210">                    throw new IllegalArgumentException(path + &quot; has a parent &quot;</span>
+                            + quotaPath + &quot; which has a quota&quot;);
+                }
+<span class="nc" id="L213">            }</span>
+        }
+<span class="nc" id="L215">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

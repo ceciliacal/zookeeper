@@ -1,0 +1,323 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>JMXEnv.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.test</a> &gt; <span class="el_source">JMXEnv.java</span></div><h1>JMXEnv.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.test;
+
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
+
+import javax.management.MBeanServer;
+import javax.management.MBeanServerConnection;
+import javax.management.MalformedObjectNameException;
+import javax.management.ObjectName;
+import javax.management.remote.JMXConnector;
+import javax.management.remote.JMXConnectorFactory;
+import javax.management.remote.JMXConnectorServer;
+import javax.management.remote.JMXConnectorServerFactory;
+import javax.management.remote.JMXServiceURL;
+
+
+import org.apache.zookeeper.jmx.CommonNames;
+import org.apache.zookeeper.jmx.MBeanRegistry;
+import org.junit.Assert;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+<span class="nc" id="L43">public class JMXEnv {</span>
+<span class="fc" id="L44">    protected static final Logger LOG = LoggerFactory.getLogger(JMXEnv.class);</span>
+
+    private static JMXConnectorServer cs;
+    private static JMXConnector cc;
+
+    public static void setUp() throws IOException {
+<span class="fc" id="L50">        MBeanServer mbs = MBeanRegistry.getInstance().getPlatformMBeanServer();</span>
+        
+<span class="fc" id="L52">        JMXServiceURL url = new JMXServiceURL(&quot;service:jmx:rmi://127.0.0.1&quot;);</span>
+<span class="fc" id="L53">        cs = JMXConnectorServerFactory.newJMXConnectorServer(url, null, mbs);</span>
+<span class="fc" id="L54">        cs.start();</span>
+
+<span class="fc" id="L56">       JMXServiceURL addr = cs.getAddress();</span>
+        
+<span class="fc" id="L58">       cc = JMXConnectorFactory.connect(addr);</span>
+<span class="fc" id="L59">    }</span>
+    
+    public static void tearDown() {
+        try {
+<span class="pc bpc" id="L63" title="1 of 2 branches missed.">            if (cc != null) {</span>
+<span class="fc" id="L64">                cc.close();</span>
+            }
+<span class="nc" id="L66">        } catch (IOException e) {</span>
+<span class="nc" id="L67">            LOG.warn(&quot;Unexpected, ignoring&quot;, e);</span>
+            
+<span class="fc" id="L69">        }</span>
+<span class="fc" id="L70">        cc = null;</span>
+        try {
+<span class="pc bpc" id="L72" title="1 of 2 branches missed.">            if (cs != null) {</span>
+<span class="fc" id="L73">                cs.stop();</span>
+            }
+<span class="nc" id="L75">        } catch (IOException e) {</span>
+<span class="nc" id="L76">            LOG.warn(&quot;Unexpected, ignoring&quot;, e);</span>
+            
+<span class="fc" id="L78">        }</span>
+<span class="fc" id="L79">        cs = null;</span>
+<span class="fc" id="L80">    }</span>
+    
+    public static MBeanServerConnection conn() throws IOException {
+<span class="fc" id="L83">        return cc.getMBeanServerConnection();</span>
+    }
+
+    /**
+     * Ensure that all of the specified names are registered.
+     * Note that these are components of the name, and in particular
+     * order matters - you want the more specific name (leafs) specified
+     * before their parent(s) (since names are hierarchical)
+     * It waits in a loop up to 60 seconds before failing if there is a
+     * mismatch.
+     * @param expectedNames
+     * @return
+     * @throws IOException
+     * @throws MalformedObjectNameException
+     */
+    public static Set&lt;ObjectName&gt; ensureAll(String... expectedNames)
+        throws IOException, InterruptedException
+    {
+        Set&lt;ObjectName&gt; beans;
+        Set&lt;ObjectName&gt; found;
+<span class="fc" id="L103">        int nTry = 0;</span>
+        do {
+<span class="pc bpc" id="L105" title="1 of 2 branches missed.">            if (nTry++ &gt; 0) {</span>
+<span class="nc" id="L106">                Thread.sleep(100);</span>
+            }
+            try {
+<span class="fc" id="L109">                beans = conn().queryNames(</span>
+                        new ObjectName(CommonNames.DOMAIN + &quot;:*&quot;), null);
+<span class="nc" id="L111">            } catch (MalformedObjectNameException e) {</span>
+<span class="nc" id="L112">                throw new RuntimeException(e);</span>
+<span class="fc" id="L113">            }</span>
+        
+<span class="fc" id="L115">            found = new HashSet&lt;ObjectName&gt;();</span>
+<span class="fc bfc" id="L116" title="All 2 branches covered.">            for (String name : expectedNames) {</span>
+<span class="fc" id="L117">                LOG.info(&quot;expect:&quot; + name);</span>
+<span class="pc bpc" id="L118" title="1 of 2 branches missed.">                for (ObjectName bean : beans) {</span>
+<span class="fc bfc" id="L119" title="All 2 branches covered.">                    if (bean.toString().contains(name)) {</span>
+<span class="fc" id="L120">                        LOG.info(&quot;found:&quot; + name + &quot; &quot; + bean);</span>
+<span class="fc" id="L121">                        found.add(bean);</span>
+<span class="fc" id="L122">                        break;</span>
+                    }
+<span class="fc" id="L124">                }</span>
+<span class="fc" id="L125">                beans.removeAll(found);</span>
+            }
+<span class="pc bpc" id="L127" title="3 of 4 branches missed.">        } while ((expectedNames.length != found.size()) &amp;&amp; (nTry &lt; 600));</span>
+<span class="fc" id="L128">        Assert.assertEquals(&quot;expected &quot; + Arrays.toString(expectedNames),</span>
+<span class="fc" id="L129">                expectedNames.length, found.size());</span>
+<span class="fc" id="L130">        return beans;</span>
+    }
+
+    /**
+     * Ensure that only the specified names are registered.
+     * Note that these are components of the name, and in particular
+     * order matters - you want the more specific name (leafs) specified
+     * before their parent(s) (since names are hierarchical)
+     * @param expectedNames
+     * @return
+     * @throws IOException
+     * @throws MalformedObjectNameException
+     */
+    public static Set&lt;ObjectName&gt; ensureOnly(String... expectedNames)
+        throws IOException, InterruptedException
+    {
+<span class="fc" id="L146">        LOG.info(&quot;ensureOnly:&quot; + Arrays.toString(expectedNames));</span>
+<span class="fc" id="L147">        Set&lt;ObjectName&gt; beans = ensureAll(expectedNames);</span>
+<span class="pc bpc" id="L148" title="1 of 2 branches missed.">        for (ObjectName bean : beans) {</span>
+<span class="nc" id="L149">            LOG.info(&quot;unexpected:&quot; + bean.toString());</span>
+<span class="nc" id="L150">        }</span>
+<span class="fc" id="L151">        Assert.assertEquals(0, beans.size());</span>
+<span class="fc" id="L152">        return beans;</span>
+    }
+    
+    public static void ensureNone(String... expectedNames)
+        throws IOException, InterruptedException
+    {
+        Set&lt;ObjectName&gt; beans;
+<span class="nc" id="L159">        int nTry = 0;</span>
+<span class="nc" id="L160">        boolean foundUnexpected = false;</span>
+<span class="nc" id="L161">        String unexpectedName = &quot;&quot;;</span>
+        do {
+<span class="nc bnc" id="L163" title="All 2 branches missed.">            if (nTry++ &gt; 0) {</span>
+<span class="nc" id="L164">                Thread.sleep(100);</span>
+            }
+            try {
+<span class="nc" id="L167">                beans = conn().queryNames(</span>
+                        new ObjectName(CommonNames.DOMAIN + &quot;:*&quot;), null);
+<span class="nc" id="L169">            } catch (MalformedObjectNameException e) {</span>
+<span class="nc" id="L170">                throw new RuntimeException(e);</span>
+<span class="nc" id="L171">            }</span>
+  
+<span class="nc" id="L173">            foundUnexpected = false; </span>
+<span class="nc bnc" id="L174" title="All 2 branches missed.">            for (String name : expectedNames) {</span>
+<span class="nc bnc" id="L175" title="All 2 branches missed.">                for (ObjectName bean : beans) {</span>
+<span class="nc bnc" id="L176" title="All 2 branches missed.">                    if (bean.toString().contains(name)) {</span>
+<span class="nc" id="L177">                        LOG.info(&quot;didntexpect:&quot; + name);</span>
+<span class="nc" id="L178">                        foundUnexpected = true;</span>
+<span class="nc" id="L179">                        unexpectedName = name + &quot; &quot; + bean.toString();</span>
+<span class="nc" id="L180">                        break;</span>
+                    }
+<span class="nc" id="L182">                }</span>
+<span class="nc bnc" id="L183" title="All 2 branches missed.">                if (foundUnexpected) {</span>
+<span class="nc" id="L184">                    break;</span>
+                }
+            }
+<span class="nc bnc" id="L187" title="All 4 branches missed.">        } while ((foundUnexpected) &amp;&amp; (nTry &lt; 600));</span>
+<span class="nc bnc" id="L188" title="All 2 branches missed.">        if (foundUnexpected) {</span>
+<span class="nc" id="L189">            LOG.info(&quot;List of all beans follows:&quot;);</span>
+<span class="nc bnc" id="L190" title="All 2 branches missed.">            for (ObjectName bean : beans) {</span>
+<span class="nc" id="L191">                LOG.info(&quot;bean:&quot; + bean.toString());</span>
+<span class="nc" id="L192">            }</span>
+<span class="nc" id="L193">            Assert.fail(unexpectedName);</span>
+        }
+<span class="nc" id="L195">    }</span>
+
+    public static void dump() throws IOException {
+<span class="nc" id="L198">        LOG.info(&quot;JMXEnv.dump() follows&quot;);</span>
+        Set&lt;ObjectName&gt; beans;
+        try {
+<span class="nc" id="L201">            beans = conn().queryNames(</span>
+                    new ObjectName(CommonNames.DOMAIN + &quot;:*&quot;), null);
+<span class="nc" id="L203">        } catch (MalformedObjectNameException e) {</span>
+<span class="nc" id="L204">            throw new RuntimeException(e);</span>
+<span class="nc" id="L205">        }</span>
+<span class="nc bnc" id="L206" title="All 2 branches missed.">        for (ObjectName bean : beans) {</span>
+<span class="nc" id="L207">            LOG.info(&quot;bean:&quot; + bean.toString());</span>
+<span class="nc" id="L208">        }</span>
+<span class="nc" id="L209">    }</span>
+
+    /**
+     * Ensure that the specified parent names are registered. Note that these
+     * are components of the name. It waits in a loop up to 60 seconds before
+     * failing if there is a mismatch. This will return the beans which are not
+     * matched.
+     * 
+     * {@link https://issues.apache.org/jira/browse/ZOOKEEPER-1858}
+     * 
+     * @param expectedNames
+     *            - expected beans
+     * @return the beans which are not matched with the given expected names
+     * 
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    public static Set&lt;ObjectName&gt; ensureParent(String... expectedNames)
+            throws IOException, InterruptedException {
+<span class="fc" id="L228">        LOG.info(&quot;ensureParent:&quot; + Arrays.toString(expectedNames));</span>
+
+        Set&lt;ObjectName&gt; beans;
+<span class="fc" id="L231">        int nTry = 0;</span>
+<span class="fc" id="L232">        Set&lt;ObjectName&gt; found = new HashSet&lt;ObjectName&gt;();</span>
+        do {
+<span class="pc bpc" id="L234" title="1 of 2 branches missed.">            if (nTry++ &gt; 0) {</span>
+<span class="nc" id="L235">                Thread.sleep(500);</span>
+            }
+            try {
+<span class="fc" id="L238">                beans = conn().queryNames(</span>
+                        new ObjectName(CommonNames.DOMAIN + &quot;:*&quot;), null);
+<span class="nc" id="L240">            } catch (MalformedObjectNameException e) {</span>
+<span class="nc" id="L241">                throw new RuntimeException(e);</span>
+<span class="fc" id="L242">            }</span>
+<span class="fc" id="L243">            found.clear();</span>
+<span class="fc bfc" id="L244" title="All 2 branches covered.">            for (String name : expectedNames) {</span>
+<span class="fc" id="L245">                LOG.info(&quot;expect:&quot; + name);</span>
+<span class="pc bpc" id="L246" title="1 of 2 branches missed.">                for (ObjectName bean : beans) {</span>
+                    // check the existence of name in bean
+<span class="fc bfc" id="L248" title="All 2 branches covered.">                    if (compare(bean.toString(), name)) {</span>
+<span class="fc" id="L249">                        LOG.info(&quot;found:&quot; + name + &quot; &quot; + bean);</span>
+<span class="fc" id="L250">                        found.add(bean);</span>
+<span class="fc" id="L251">                        break;</span>
+                    }
+<span class="fc" id="L253">                }</span>
+<span class="fc" id="L254">                beans.removeAll(found);</span>
+            }
+<span class="pc bpc" id="L256" title="3 of 4 branches missed.">        } while (expectedNames.length != found.size() &amp;&amp; nTry &lt; 120);</span>
+<span class="fc" id="L257">        Assert.assertEquals(&quot;expected &quot; + Arrays.toString(expectedNames),</span>
+<span class="fc" id="L258">                expectedNames.length, found.size());</span>
+<span class="fc" id="L259">        return beans;</span>
+    }
+
+    /**
+     * Ensure that the specified bean name and its attribute is registered. Note
+     * that these are components of the name. It waits in a loop up to 60
+     * seconds before failing if there is a mismatch. This will return the beans
+     * which are not matched.
+     *
+     * @param expectedName
+     *            - expected bean
+     * @param expectedAttribute
+     *            - expected attribute
+     * @return the value of the attribute
+     *
+     * @throws Exception
+     */
+    public static Object ensureBeanAttribute(String expectedName,
+            String expectedAttribute) throws Exception {
+<span class="nc" id="L278">        String value = &quot;&quot;;</span>
+<span class="nc" id="L279">        LOG.info(&quot;ensure bean:{}, attribute:{}&quot;, new Object[] { expectedName,</span>
+                expectedAttribute });
+
+        Set&lt;ObjectName&gt; beans;
+<span class="nc" id="L283">        int nTry = 0;</span>
+        do {
+<span class="nc bnc" id="L285" title="All 2 branches missed.">            if (nTry++ &gt; 0) {</span>
+<span class="nc" id="L286">                Thread.sleep(500);</span>
+            }
+            try {
+<span class="nc" id="L289">                beans = conn().queryNames(</span>
+                        new ObjectName(CommonNames.DOMAIN + &quot;:*&quot;), null);
+<span class="nc" id="L291">            } catch (MalformedObjectNameException e) {</span>
+<span class="nc" id="L292">                throw new RuntimeException(e);</span>
+<span class="nc" id="L293">            }</span>
+<span class="nc" id="L294">            LOG.info(&quot;expect:&quot; + expectedName);</span>
+<span class="nc bnc" id="L295" title="All 2 branches missed.">            for (ObjectName bean : beans) {</span>
+                // check the existence of name in bean
+<span class="nc bnc" id="L297" title="All 2 branches missed.">                if (bean.toString().equals(expectedName)) {</span>
+<span class="nc" id="L298">                    LOG.info(&quot;found:{} {}&quot;, new Object[] { expectedName, bean });</span>
+<span class="nc" id="L299">                    return conn().getAttribute(bean, expectedAttribute);</span>
+                }
+<span class="nc" id="L301">            }</span>
+<span class="nc bnc" id="L302" title="All 2 branches missed.">        } while (nTry &lt; 120);</span>
+<span class="nc" id="L303">        Assert.fail(&quot;Failed to find bean:&quot; + expectedName + &quot;, attribute:&quot;</span>
+                + expectedAttribute);
+<span class="nc" id="L305">        return value;</span>
+    }
+
+    /**
+     * Comparing that the given name exists in the bean. For component beans,
+     * the component name will be present at the end of the bean name
+     * 
+     * For example 'StandaloneServer' will present in the bean name like
+     * 'org.apache.ZooKeeperService:name0=StandaloneServer_port-1'
+     */
+    private static boolean compare(String bean, String name) {
+<span class="fc" id="L316">        String[] names = bean.split(&quot;=&quot;);</span>
+<span class="pc bpc" id="L317" title="1 of 4 branches missed.">        if (names.length &gt; 0 &amp;&amp; names[names.length - 1].contains(name)) {</span>
+<span class="fc" id="L318">            return true;</span>
+        }
+<span class="fc" id="L320">        return false;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

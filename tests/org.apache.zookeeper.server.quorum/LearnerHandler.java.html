@@ -1,0 +1,1001 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LearnerHandler.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">LearnerHandler.java</span></div><h1>LearnerHandler.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.quorum;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.util.Iterator;
+import java.util.Queue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
+
+import javax.security.sasl.SaslException;
+
+import org.apache.jute.BinaryInputArchive;
+import org.apache.jute.BinaryOutputArchive;
+import org.apache.jute.Record;
+import org.apache.zookeeper.KeeperException.SessionExpiredException;
+import org.apache.zookeeper.ZooDefs.OpCode;
+import org.apache.zookeeper.server.Request;
+import org.apache.zookeeper.server.TxnLogProposalIterator;
+import org.apache.zookeeper.server.ZKDatabase;
+import org.apache.zookeeper.server.ZooKeeperThread;
+import org.apache.zookeeper.server.ZooTrace;
+import org.apache.zookeeper.server.quorum.Leader.Proposal;
+import org.apache.zookeeper.server.quorum.QuorumPeer.LearnerType;
+import org.apache.zookeeper.server.util.SerializeUtils;
+import org.apache.zookeeper.server.util.ZxidUtils;
+import org.apache.zookeeper.txn.TxnHeader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * There will be an instance of this class created by the Leader for each
+ * learner. All communication with a learner is handled by this
+ * class.
+ */
+public class LearnerHandler extends ZooKeeperThread {
+<span class="nc" id="L62">    private static final Logger LOG = LoggerFactory.getLogger(LearnerHandler.class);</span>
+
+    protected final Socket sock;
+
+    public Socket getSocket() {
+<span class="nc" id="L67">        return sock;</span>
+    }
+
+    final Leader leader;
+
+    /** Deadline for receiving the next ack. If we are bootstrapping then
+     * it's based on the initLimit, if we are done bootstrapping it's based
+     * on the syncLimit. Once the deadline is past this learner should
+     * be considered no longer &quot;sync'd&quot; with the leader. */
+    volatile long tickOfNextAckDeadline;
+    
+    /**
+     * ZooKeeper server identifier of this learner
+     */
+<span class="nc" id="L81">    protected long sid = 0;</span>
+
+    long getSid(){
+<span class="nc" id="L84">        return sid;</span>
+    }
+
+<span class="nc" id="L87">    protected int version = 0x1;</span>
+
+    int getVersion() {
+<span class="nc" id="L90">    	return version;</span>
+    }
+
+    /**
+     * The packets to be sent to the learner
+     */
+<span class="nc" id="L96">    final LinkedBlockingQueue&lt;QuorumPacket&gt; queuedPackets =</span>
+        new LinkedBlockingQueue&lt;QuorumPacket&gt;();
+
+    /**
+     * This class controls the time that the Leader has been
+     * waiting for acknowledgement of a proposal from this Learner.
+     * If the time is above syncLimit, the connection will be closed.
+     * It keeps track of only one proposal at a time, when the ACK for
+     * that proposal arrives, it switches to the last proposal received
+     * or clears the value if there is no pending proposal.
+     */
+<span class="nc" id="L107">    private class SyncLimitCheck {</span>
+<span class="nc" id="L108">        private boolean started = false;</span>
+<span class="nc" id="L109">        private long currentZxid = 0;</span>
+<span class="nc" id="L110">        private long currentTime = 0;</span>
+<span class="nc" id="L111">        private long nextZxid = 0;</span>
+<span class="nc" id="L112">        private long nextTime = 0;</span>
+
+        public synchronized void start() {
+<span class="nc" id="L115">            started = true;</span>
+<span class="nc" id="L116">        }</span>
+
+        public synchronized void updateProposal(long zxid, long time) {
+<span class="nc bnc" id="L119" title="All 2 branches missed.">            if (!started) {</span>
+<span class="nc" id="L120">                return;</span>
+            }
+<span class="nc bnc" id="L122" title="All 2 branches missed.">            if (currentTime == 0) {</span>
+<span class="nc" id="L123">                currentTime = time;</span>
+<span class="nc" id="L124">                currentZxid = zxid;</span>
+            } else {
+<span class="nc" id="L126">                nextTime = time;</span>
+<span class="nc" id="L127">                nextZxid = zxid;</span>
+            }
+<span class="nc" id="L129">        }</span>
+
+        public synchronized void updateAck(long zxid) {
+<span class="nc bnc" id="L132" title="All 2 branches missed.">             if (currentZxid == zxid) {</span>
+<span class="nc" id="L133">                 currentTime = nextTime;</span>
+<span class="nc" id="L134">                 currentZxid = nextZxid;</span>
+<span class="nc" id="L135">                 nextTime = 0;</span>
+<span class="nc" id="L136">                 nextZxid = 0;</span>
+<span class="nc bnc" id="L137" title="All 2 branches missed.">             } else if (nextZxid == zxid) {</span>
+<span class="nc" id="L138">                 LOG.warn(&quot;ACK for &quot; + zxid + &quot; received before ACK for &quot; + currentZxid + &quot;!!!!&quot;);</span>
+<span class="nc" id="L139">                 nextTime = 0;</span>
+<span class="nc" id="L140">                 nextZxid = 0;</span>
+             }
+<span class="nc" id="L142">        }</span>
+
+        public synchronized boolean check(long time) {
+<span class="nc bnc" id="L145" title="All 2 branches missed.">            if (currentTime == 0) {</span>
+<span class="nc" id="L146">                return true;</span>
+            } else {
+<span class="nc" id="L148">                long msDelay = (time - currentTime) / 1000000;</span>
+<span class="nc bnc" id="L149" title="All 2 branches missed.">                return (msDelay &lt; (leader.self.tickTime * leader.self.syncLimit));</span>
+            }
+        }
+    };
+
+<span class="nc" id="L154">    private SyncLimitCheck syncLimitCheck = new SyncLimitCheck();</span>
+
+    private BinaryInputArchive ia;
+
+    private BinaryOutputArchive oa;
+
+    private final BufferedInputStream bufferedInput;
+    private BufferedOutputStream bufferedOutput;
+    
+    /**
+     * Keep track of whether we have started send packets thread
+     */
+<span class="nc" id="L166">    private volatile boolean sendingThreadStarted = false;</span>
+
+    /**
+     * For testing purpose, force leader to use snapshot to sync with followers
+     */
+    public static final String FORCE_SNAP_SYNC = &quot;zookeeper.forceSnapshotSync&quot;;
+<span class="nc" id="L172">    private boolean forceSnapSync = false;</span>
+
+    /**
+     * Keep track of whether we need to queue TRUNC or DIFF into packet queue
+     * that we are going to blast it to the learner
+     */
+<span class="nc" id="L178">    private boolean needOpPacket = true;</span>
+    
+    /**
+     * Last zxid sent to the learner as part of synchronization
+     */
+    private long leaderLastZxid;
+
+    LearnerHandler(Socket sock, BufferedInputStream bufferedInput,Leader leader) throws IOException {
+<span class="nc" id="L186">        super(&quot;LearnerHandler-&quot; + sock.getRemoteSocketAddress());</span>
+<span class="nc" id="L187">        this.sock = sock;</span>
+<span class="nc" id="L188">        this.leader = leader;</span>
+<span class="nc" id="L189">        this.bufferedInput = bufferedInput;</span>
+
+<span class="nc bnc" id="L191" title="All 2 branches missed.">        if (Boolean.getBoolean(FORCE_SNAP_SYNC)) {</span>
+<span class="nc" id="L192">            forceSnapSync = true;</span>
+<span class="nc" id="L193">            LOG.info(&quot;Forcing snapshot sync is enabled&quot;);</span>
+        }
+
+        try {
+<span class="nc bnc" id="L197" title="All 2 branches missed.">            if (leader.self != null) {</span>
+<span class="nc" id="L198">                leader.self.authServer.authenticate(sock,</span>
+                        new DataInputStream(bufferedInput));
+            }
+<span class="nc" id="L201">        } catch (IOException e) {</span>
+<span class="nc" id="L202">            LOG.error(&quot;Server failed to authenticate quorum learner, addr: {}, closing connection&quot;,</span>
+<span class="nc" id="L203">                    sock.getRemoteSocketAddress(), e);</span>
+            try {
+<span class="nc" id="L205">                sock.close();</span>
+<span class="nc" id="L206">            } catch (IOException ie) {</span>
+<span class="nc" id="L207">                LOG.error(&quot;Exception while closing socket&quot;, ie);</span>
+<span class="nc" id="L208">            }</span>
+<span class="nc" id="L209">            throw new SaslException(&quot;Authentication failure: &quot; + e.getMessage());</span>
+<span class="nc" id="L210">        }</span>
+<span class="nc" id="L211">    }</span>
+
+    @Override
+    public String toString() {
+<span class="nc" id="L215">        StringBuilder sb = new StringBuilder();</span>
+<span class="nc" id="L216">        sb.append(&quot;LearnerHandler &quot;).append(sock);</span>
+<span class="nc" id="L217">        sb.append(&quot; tickOfNextAckDeadline:&quot;).append(tickOfNextAckDeadline());</span>
+<span class="nc" id="L218">        sb.append(&quot; synced?:&quot;).append(synced());</span>
+<span class="nc" id="L219">        sb.append(&quot; queuedPacketLength:&quot;).append(queuedPackets.size());</span>
+<span class="nc" id="L220">        return sb.toString();</span>
+    }
+
+    /**
+     * If this packet is queued, the sender thread will exit
+     */
+<span class="nc" id="L226">    final QuorumPacket proposalOfDeath = new QuorumPacket();</span>
+
+<span class="nc" id="L228">    private LearnerType  learnerType = LearnerType.PARTICIPANT;</span>
+    public LearnerType getLearnerType() {
+<span class="nc" id="L230">        return learnerType;</span>
+    }
+
+    /**
+     * This method will use the thread to send packets added to the
+     * queuedPackets list
+     *
+     * @throws InterruptedException
+     */
+    private void sendPackets() throws InterruptedException {
+<span class="nc" id="L240">        long traceMask = ZooTrace.SERVER_PACKET_TRACE_MASK;</span>
+        while (true) {
+            try {
+                QuorumPacket p;
+<span class="nc" id="L244">                p = queuedPackets.poll();</span>
+<span class="nc bnc" id="L245" title="All 2 branches missed.">                if (p == null) {</span>
+<span class="nc" id="L246">                    bufferedOutput.flush();</span>
+<span class="nc" id="L247">                    p = queuedPackets.take();</span>
+                }
+
+<span class="nc bnc" id="L250" title="All 2 branches missed.">                if (p == proposalOfDeath) {</span>
+                    // Packet of death!
+<span class="nc" id="L252">                    break;</span>
+                }
+<span class="nc bnc" id="L254" title="All 2 branches missed.">                if (p.getType() == Leader.PING) {</span>
+<span class="nc" id="L255">                    traceMask = ZooTrace.SERVER_PING_TRACE_MASK;</span>
+                }
+<span class="nc bnc" id="L257" title="All 2 branches missed.">                if (p.getType() == Leader.PROPOSAL) {</span>
+<span class="nc" id="L258">                    syncLimitCheck.updateProposal(p.getZxid(), System.nanoTime());</span>
+                }
+<span class="nc bnc" id="L260" title="All 2 branches missed.">                if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L261">                    ZooTrace.logQuorumPacket(LOG, traceMask, 'o', p);</span>
+                }
+<span class="nc" id="L263">                oa.writeRecord(p, &quot;packet&quot;);</span>
+<span class="nc" id="L264">            } catch (IOException e) {</span>
+<span class="nc bnc" id="L265" title="All 2 branches missed.">                if (!sock.isClosed()) {</span>
+<span class="nc" id="L266">                    LOG.warn(&quot;Unexpected exception at &quot; + this, e);</span>
+                    try {
+                        // this will cause everything to shutdown on
+                        // this learner handler and will help notify
+                        // the learner/observer instantaneously
+<span class="nc" id="L271">                        sock.close();</span>
+<span class="nc" id="L272">                    } catch(IOException ie) {</span>
+<span class="nc" id="L273">                        LOG.warn(&quot;Error closing socket for handler &quot; + this, ie);</span>
+<span class="nc" id="L274">                    }</span>
+                }
+<span class="nc" id="L276">                break;</span>
+<span class="nc" id="L277">            }</span>
+        }
+<span class="nc" id="L279">    }</span>
+
+    static public String packetToString(QuorumPacket p) {
+        String type;
+<span class="nc" id="L283">        String mess = null;</span>
+
+<span class="nc bnc" id="L285" title="All 18 branches missed.">        switch (p.getType()) {</span>
+        case Leader.ACK:
+<span class="nc" id="L287">            type = &quot;ACK&quot;;</span>
+<span class="nc" id="L288">            break;</span>
+        case Leader.COMMIT:
+<span class="nc" id="L290">            type = &quot;COMMIT&quot;;</span>
+<span class="nc" id="L291">            break;</span>
+        case Leader.FOLLOWERINFO:
+<span class="nc" id="L293">            type = &quot;FOLLOWERINFO&quot;;</span>
+<span class="nc" id="L294">            break;</span>
+        case Leader.NEWLEADER:
+<span class="nc" id="L296">            type = &quot;NEWLEADER&quot;;</span>
+<span class="nc" id="L297">            break;</span>
+        case Leader.PING:
+<span class="nc" id="L299">            type = &quot;PING&quot;;</span>
+<span class="nc" id="L300">            break;</span>
+        case Leader.PROPOSAL:
+<span class="nc" id="L302">            type = &quot;PROPOSAL&quot;;</span>
+<span class="nc" id="L303">            TxnHeader hdr = new TxnHeader();</span>
+            try {
+<span class="nc" id="L305">                SerializeUtils.deserializeTxn(p.getData(), hdr);</span>
+                // mess = &quot;transaction: &quot; + txn.toString();
+<span class="nc" id="L307">            } catch (IOException e) {</span>
+<span class="nc" id="L308">                LOG.warn(&quot;Unexpected exception&quot;,e);</span>
+<span class="nc" id="L309">            }</span>
+<span class="nc" id="L310">            break;</span>
+        case Leader.REQUEST:
+<span class="nc" id="L312">            type = &quot;REQUEST&quot;;</span>
+<span class="nc" id="L313">            break;</span>
+        case Leader.REVALIDATE:
+<span class="nc" id="L315">            type = &quot;REVALIDATE&quot;;</span>
+<span class="nc" id="L316">            ByteArrayInputStream bis = new ByteArrayInputStream(p.getData());</span>
+<span class="nc" id="L317">            DataInputStream dis = new DataInputStream(bis);</span>
+            try {
+<span class="nc" id="L319">                long id = dis.readLong();</span>
+<span class="nc" id="L320">                mess = &quot; sessionid = &quot; + id;</span>
+<span class="nc" id="L321">            } catch (IOException e) {</span>
+<span class="nc" id="L322">                LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+<span class="nc" id="L323">            }</span>
+
+<span class="nc" id="L325">            break;</span>
+        case Leader.UPTODATE:
+<span class="nc" id="L327">            type = &quot;UPTODATE&quot;;</span>
+<span class="nc" id="L328">            break;</span>
+        case Leader.DIFF:
+<span class="nc" id="L330">            type = &quot;DIFF&quot;;</span>
+<span class="nc" id="L331">            break;</span>
+        case Leader.TRUNC:
+<span class="nc" id="L333">            type = &quot;TRUNC&quot;;</span>
+<span class="nc" id="L334">            break;</span>
+        case Leader.SNAP:
+<span class="nc" id="L336">            type = &quot;SNAP&quot;;</span>
+<span class="nc" id="L337">            break;</span>
+        case Leader.ACKEPOCH:
+<span class="nc" id="L339">            type = &quot;ACKEPOCH&quot;;</span>
+<span class="nc" id="L340">            break;</span>
+        case Leader.SYNC:
+<span class="nc" id="L342">            type = &quot;SYNC&quot;;</span>
+<span class="nc" id="L343">            break;</span>
+        case Leader.INFORM:
+<span class="nc" id="L345">            type = &quot;INFORM&quot;;</span>
+<span class="nc" id="L346">            break;</span>
+        case Leader.COMMITANDACTIVATE:
+<span class="nc" id="L348">            type = &quot;COMMITANDACTIVATE&quot;;</span>
+<span class="nc" id="L349">            break;</span>
+        case Leader.INFORMANDACTIVATE:
+<span class="nc" id="L351">            type = &quot;INFORMANDACTIVATE&quot;;</span>
+<span class="nc" id="L352">            break;</span>
+        default:
+<span class="nc" id="L354">            type = &quot;UNKNOWN&quot; + p.getType();</span>
+        }
+<span class="nc" id="L356">        String entry = null;</span>
+<span class="nc bnc" id="L357" title="All 2 branches missed.">        if (type != null) {</span>
+<span class="nc" id="L358">            entry = type + &quot; &quot; + Long.toHexString(p.getZxid()) + &quot; &quot; + mess;</span>
+        }
+<span class="nc" id="L360">        return entry;</span>
+    }
+
+    /**
+     * This thread will receive packets from the peer and process them and
+     * also listen to new connections from new peers.
+     */
+    @Override
+    public void run() {
+        try {
+<span class="nc" id="L370">            leader.addLearnerHandler(this);</span>
+<span class="nc" id="L371">            tickOfNextAckDeadline = leader.self.tick.get()</span>
+                    + leader.self.initLimit + leader.self.syncLimit;
+
+<span class="nc" id="L374">            ia = BinaryInputArchive.getArchive(bufferedInput);</span>
+<span class="nc" id="L375">            bufferedOutput = new BufferedOutputStream(sock.getOutputStream());</span>
+<span class="nc" id="L376">            oa = BinaryOutputArchive.getArchive(bufferedOutput);</span>
+
+<span class="nc" id="L378">            QuorumPacket qp = new QuorumPacket();</span>
+<span class="nc" id="L379">            ia.readRecord(qp, &quot;packet&quot;);</span>
+<span class="nc bnc" id="L380" title="All 4 branches missed.">            if(qp.getType() != Leader.FOLLOWERINFO &amp;&amp; qp.getType() != Leader.OBSERVERINFO){</span>
+<span class="nc" id="L381">                LOG.error(&quot;First packet &quot; + qp.toString()</span>
+                        + &quot; is not FOLLOWERINFO or OBSERVERINFO!&quot;);
+<span class="nc" id="L383">                return;</span>
+            }
+
+<span class="nc" id="L386">            byte learnerInfoData[] = qp.getData();</span>
+<span class="nc bnc" id="L387" title="All 2 branches missed.">            if (learnerInfoData != null) {</span>
+<span class="nc" id="L388">                ByteBuffer bbsid = ByteBuffer.wrap(learnerInfoData);</span>
+<span class="nc bnc" id="L389" title="All 2 branches missed.">                if (learnerInfoData.length &gt;= 8) {</span>
+<span class="nc" id="L390">                    this.sid = bbsid.getLong();</span>
+                }
+<span class="nc bnc" id="L392" title="All 2 branches missed.">                if (learnerInfoData.length &gt;= 12) {</span>
+<span class="nc" id="L393">                    this.version = bbsid.getInt(); // protocolVersion</span>
+                }
+<span class="nc bnc" id="L395" title="All 2 branches missed.">                if (learnerInfoData.length &gt;= 20) {</span>
+<span class="nc" id="L396">                    long configVersion = bbsid.getLong();</span>
+<span class="nc bnc" id="L397" title="All 2 branches missed.">                    if (configVersion &gt; leader.self.getQuorumVerifier().getVersion()) {</span>
+<span class="nc" id="L398">                        throw new IOException(&quot;Follower is ahead of the leader (has a later activated configuration)&quot;);</span>
+                    }
+                }
+<span class="nc" id="L401">            } else {</span>
+<span class="nc" id="L402">                this.sid = leader.followerCounter.getAndDecrement();</span>
+            }
+
+<span class="nc bnc" id="L405" title="All 2 branches missed.">            if (leader.self.getView().containsKey(this.sid)) {</span>
+<span class="nc" id="L406">                LOG.info(&quot;Follower sid: &quot; + this.sid + &quot; : info : &quot;</span>
+<span class="nc" id="L407">                        + leader.self.getView().get(this.sid).toString());</span>
+            } else {
+<span class="nc" id="L409">                LOG.info(&quot;Follower sid: &quot; + this.sid + &quot; not in the current config &quot; + Long.toHexString(leader.self.getQuorumVerifier().getVersion()));</span>
+            }
+                        
+<span class="nc bnc" id="L412" title="All 2 branches missed.">            if (qp.getType() == Leader.OBSERVERINFO) {</span>
+<span class="nc" id="L413">                  learnerType = LearnerType.OBSERVER;</span>
+            }
+
+<span class="nc" id="L416">            long lastAcceptedEpoch = ZxidUtils.getEpochFromZxid(qp.getZxid());</span>
+
+            long peerLastZxid;
+<span class="nc" id="L419">            StateSummary ss = null;</span>
+<span class="nc" id="L420">            long zxid = qp.getZxid();</span>
+<span class="nc" id="L421">            long newEpoch = leader.getEpochToPropose(this.getSid(), lastAcceptedEpoch);</span>
+<span class="nc" id="L422">            long newLeaderZxid = ZxidUtils.makeZxid(newEpoch, 0);</span>
+
+<span class="nc bnc" id="L424" title="All 2 branches missed.">            if (this.getVersion() &lt; 0x10000) {</span>
+                // we are going to have to extrapolate the epoch information
+<span class="nc" id="L426">                long epoch = ZxidUtils.getEpochFromZxid(zxid);</span>
+<span class="nc" id="L427">                ss = new StateSummary(epoch, zxid);</span>
+                // fake the message
+<span class="nc" id="L429">                leader.waitForEpochAck(this.getSid(), ss);</span>
+<span class="nc" id="L430">            } else {</span>
+<span class="nc" id="L431">                byte ver[] = new byte[4];</span>
+<span class="nc" id="L432">                ByteBuffer.wrap(ver).putInt(0x10000);</span>
+<span class="nc" id="L433">                QuorumPacket newEpochPacket = new QuorumPacket(Leader.LEADERINFO, newLeaderZxid, ver, null);</span>
+<span class="nc" id="L434">                oa.writeRecord(newEpochPacket, &quot;packet&quot;);</span>
+<span class="nc" id="L435">                bufferedOutput.flush();</span>
+<span class="nc" id="L436">                QuorumPacket ackEpochPacket = new QuorumPacket();</span>
+<span class="nc" id="L437">                ia.readRecord(ackEpochPacket, &quot;packet&quot;);</span>
+<span class="nc bnc" id="L438" title="All 2 branches missed.">                if (ackEpochPacket.getType() != Leader.ACKEPOCH) {</span>
+<span class="nc" id="L439">                    LOG.error(ackEpochPacket.toString()</span>
+                            + &quot; is not ACKEPOCH&quot;);
+<span class="nc" id="L441">                    return;</span>
+				}
+<span class="nc" id="L443">                ByteBuffer bbepoch = ByteBuffer.wrap(ackEpochPacket.getData());</span>
+<span class="nc" id="L444">                ss = new StateSummary(bbepoch.getInt(), ackEpochPacket.getZxid());</span>
+<span class="nc" id="L445">                leader.waitForEpochAck(this.getSid(), ss);</span>
+            }
+<span class="nc" id="L447">            peerLastZxid = ss.getLastZxid();</span>
+           
+            // Take any necessary action if we need to send TRUNC or DIFF
+            // startForwarding() will be called in all cases
+<span class="nc" id="L451">            boolean needSnap = syncFollower(peerLastZxid, leader.zk.getZKDatabase(), leader);</span>
+            
+            /* if we are not truncating or sending a diff just send a snapshot */
+<span class="nc bnc" id="L454" title="All 2 branches missed.">            if (needSnap) {</span>
+<span class="nc bnc" id="L455" title="All 2 branches missed.">                boolean exemptFromThrottle = getLearnerType() != LearnerType.OBSERVER;</span>
+<span class="nc" id="L456">                LearnerSnapshot snapshot = </span>
+<span class="nc" id="L457">                        leader.getLearnerSnapshotThrottler().beginSnapshot(exemptFromThrottle);</span>
+                try {
+<span class="nc" id="L459">                    long zxidToSend = leader.zk.getZKDatabase().getDataTreeLastProcessedZxid();</span>
+<span class="nc" id="L460">                    oa.writeRecord(new QuorumPacket(Leader.SNAP, zxidToSend, null, null), &quot;packet&quot;);</span>
+<span class="nc" id="L461">                    bufferedOutput.flush();</span>
+
+<span class="nc" id="L463">                    LOG.info(&quot;Sending snapshot last zxid of peer is 0x{}, zxid of leader is 0x{}, &quot;</span>
+                            + &quot;send zxid of db as 0x{}, {} concurrent snapshots, &quot; 
+                            + &quot;snapshot was {} from throttle&quot;,
+<span class="nc" id="L466">                            Long.toHexString(peerLastZxid), </span>
+<span class="nc" id="L467">                            Long.toHexString(leaderLastZxid),</span>
+<span class="nc" id="L468">                            Long.toHexString(zxidToSend), </span>
+<span class="nc" id="L469">                            snapshot.getConcurrentSnapshotNumber(),</span>
+<span class="nc bnc" id="L470" title="All 2 branches missed.">                            snapshot.isEssential() ? &quot;exempt&quot; : &quot;not exempt&quot;);</span>
+                    // Dump data to peer
+<span class="nc" id="L472">                    leader.zk.getZKDatabase().serializeSnapshot(oa);</span>
+<span class="nc" id="L473">                    oa.writeString(&quot;BenWasHere&quot;, &quot;signature&quot;);</span>
+<span class="nc" id="L474">                    bufferedOutput.flush();</span>
+                } finally {
+<span class="nc" id="L476">                    snapshot.close();</span>
+                }
+            }
+
+<span class="nc" id="L480">            LOG.debug(&quot;Sending NEWLEADER message to &quot; + sid);</span>
+            // the version of this quorumVerifier will be set by leader.lead() in case
+            // the leader is just being established. waitForEpochAck makes sure that readyToStart is true if
+            // we got here, so the version was set
+<span class="nc bnc" id="L484" title="All 2 branches missed.">            if (getVersion() &lt; 0x10000) {</span>
+<span class="nc" id="L485">                QuorumPacket newLeaderQP = new QuorumPacket(Leader.NEWLEADER,</span>
+                        newLeaderZxid, null, null);
+<span class="nc" id="L487">                oa.writeRecord(newLeaderQP, &quot;packet&quot;);</span>
+<span class="nc" id="L488">            } else {</span>
+<span class="nc" id="L489">                QuorumPacket newLeaderQP = new QuorumPacket(Leader.NEWLEADER,</span>
+<span class="nc" id="L490">                        newLeaderZxid, leader.self.getLastSeenQuorumVerifier()</span>
+<span class="nc" id="L491">                                .toString().getBytes(), null);</span>
+<span class="nc" id="L492">                queuedPackets.add(newLeaderQP);</span>
+            }
+<span class="nc" id="L494">            bufferedOutput.flush();</span>
+
+            // Start thread that blast packets in the queue to learner
+<span class="nc" id="L497">            startSendingPackets();</span>
+            
+            /*
+             * Have to wait for the first ACK, wait until
+             * the leader is ready, and only then we can
+             * start processing messages.
+             */
+<span class="nc" id="L504">            qp = new QuorumPacket();</span>
+<span class="nc" id="L505">            ia.readRecord(qp, &quot;packet&quot;);</span>
+<span class="nc bnc" id="L506" title="All 2 branches missed.">            if(qp.getType() != Leader.ACK){</span>
+<span class="nc" id="L507">                LOG.error(&quot;Next packet was supposed to be an ACK,&quot;</span>
+<span class="nc" id="L508">                    + &quot; but received packet: {}&quot;, packetToString(qp));</span>
+<span class="nc" id="L509">                return;</span>
+            }
+
+<span class="nc bnc" id="L512" title="All 2 branches missed.">            if(LOG.isDebugEnabled()){</span>
+<span class="nc" id="L513">            	LOG.debug(&quot;Received NEWLEADER-ACK message from &quot; + sid);   </span>
+            }
+<span class="nc" id="L515">            leader.waitForNewLeaderAck(getSid(), qp.getZxid());</span>
+
+<span class="nc" id="L517">            syncLimitCheck.start();</span>
+            
+            // now that the ack has been processed expect the syncLimit
+<span class="nc" id="L520">            sock.setSoTimeout(leader.self.tickTime * leader.self.syncLimit);</span>
+
+            /*
+             * Wait until leader starts up
+             */
+<span class="nc" id="L525">            synchronized(leader.zk){</span>
+<span class="nc bnc" id="L526" title="All 4 branches missed.">                while(!leader.zk.isRunning() &amp;&amp; !this.isInterrupted()){</span>
+<span class="nc" id="L527">                    leader.zk.wait(20);</span>
+                }
+<span class="nc" id="L529">            }</span>
+            // Mutation packets will be queued during the serialize,
+            // so we need to mark when the peer can actually start
+            // using the data
+            //
+<span class="nc" id="L534">            LOG.debug(&quot;Sending UPTODATE message to &quot; + sid);      </span>
+<span class="nc" id="L535">            queuedPackets.add(new QuorumPacket(Leader.UPTODATE, -1, null, null));</span>
+
+            while (true) {
+<span class="nc" id="L538">                qp = new QuorumPacket();</span>
+<span class="nc" id="L539">                ia.readRecord(qp, &quot;packet&quot;);</span>
+
+<span class="nc" id="L541">                long traceMask = ZooTrace.SERVER_PACKET_TRACE_MASK;</span>
+<span class="nc bnc" id="L542" title="All 2 branches missed.">                if (qp.getType() == Leader.PING) {</span>
+<span class="nc" id="L543">                    traceMask = ZooTrace.SERVER_PING_TRACE_MASK;</span>
+                }
+<span class="nc bnc" id="L545" title="All 2 branches missed.">                if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L546">                    ZooTrace.logQuorumPacket(LOG, traceMask, 'i', qp);</span>
+                }
+<span class="nc" id="L548">                tickOfNextAckDeadline = leader.self.tick.get() + leader.self.syncLimit;</span>
+
+
+                ByteBuffer bb;
+                long sessionId;
+                int cxid;
+                int type;
+
+<span class="nc bnc" id="L556" title="All 5 branches missed.">                switch (qp.getType()) {</span>
+                case Leader.ACK:
+<span class="nc bnc" id="L558" title="All 2 branches missed.">                    if (this.learnerType == LearnerType.OBSERVER) {</span>
+<span class="nc bnc" id="L559" title="All 2 branches missed.">                        if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L560">                            LOG.debug(&quot;Received ACK from Observer  &quot; + this.sid);</span>
+                        }
+                    }
+<span class="nc" id="L563">                    syncLimitCheck.updateAck(qp.getZxid());</span>
+<span class="nc" id="L564">                    leader.processAck(this.sid, qp.getZxid(), sock.getLocalSocketAddress());</span>
+<span class="nc" id="L565">                    break;</span>
+                case Leader.PING:
+                    // Process the touches
+<span class="nc" id="L568">                    ByteArrayInputStream bis = new ByteArrayInputStream(qp</span>
+<span class="nc" id="L569">                            .getData());</span>
+<span class="nc" id="L570">                    DataInputStream dis = new DataInputStream(bis);</span>
+<span class="nc bnc" id="L571" title="All 2 branches missed.">                    while (dis.available() &gt; 0) {</span>
+<span class="nc" id="L572">                        long sess = dis.readLong();</span>
+<span class="nc" id="L573">                        int to = dis.readInt();</span>
+<span class="nc" id="L574">                        leader.zk.touch(sess, to);</span>
+<span class="nc" id="L575">                    }</span>
+                    break;
+                case Leader.REVALIDATE:
+<span class="nc" id="L578">                    bis = new ByteArrayInputStream(qp.getData());</span>
+<span class="nc" id="L579">                    dis = new DataInputStream(bis);</span>
+<span class="nc" id="L580">                    long id = dis.readLong();</span>
+<span class="nc" id="L581">                    int to = dis.readInt();</span>
+<span class="nc" id="L582">                    ByteArrayOutputStream bos = new ByteArrayOutputStream();</span>
+<span class="nc" id="L583">                    DataOutputStream dos = new DataOutputStream(bos);</span>
+<span class="nc" id="L584">                    dos.writeLong(id);</span>
+<span class="nc" id="L585">                    boolean valid = leader.zk.checkIfValidGlobalSession(id, to);</span>
+<span class="nc bnc" id="L586" title="All 2 branches missed.">                    if (valid) {</span>
+                        try {
+                            //set the session owner
+                            // as the follower that
+                            // owns the session
+<span class="nc" id="L591">                            leader.zk.setOwner(id, this);</span>
+<span class="nc" id="L592">                        } catch (SessionExpiredException e) {</span>
+<span class="nc" id="L593">                            LOG.error(&quot;Somehow session &quot; + Long.toHexString(id) +</span>
+                                    &quot; expired right after being renewed! (impossible)&quot;, e);
+<span class="nc" id="L595">                        }</span>
+                    }
+<span class="nc bnc" id="L597" title="All 2 branches missed.">                    if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L598">                        ZooTrace.logTraceMessage(LOG,</span>
+                                                 ZooTrace.SESSION_TRACE_MASK,
+<span class="nc" id="L600">                                                 &quot;Session 0x&quot; + Long.toHexString(id)</span>
+                                                 + &quot; is valid: &quot;+ valid);
+                    }
+<span class="nc" id="L603">                    dos.writeBoolean(valid);</span>
+<span class="nc" id="L604">                    qp.setData(bos.toByteArray());</span>
+<span class="nc" id="L605">                    queuedPackets.add(qp);</span>
+<span class="nc" id="L606">                    break;</span>
+                case Leader.REQUEST:
+<span class="nc" id="L608">                    bb = ByteBuffer.wrap(qp.getData());</span>
+<span class="nc" id="L609">                    sessionId = bb.getLong();</span>
+<span class="nc" id="L610">                    cxid = bb.getInt();</span>
+<span class="nc" id="L611">                    type = bb.getInt();</span>
+<span class="nc" id="L612">                    bb = bb.slice();</span>
+                    Request si;
+<span class="nc bnc" id="L614" title="All 2 branches missed.">                    if(type == OpCode.sync){</span>
+<span class="nc" id="L615">                        si = new LearnerSyncRequest(this, sessionId, cxid, type, bb, qp.getAuthinfo());</span>
+                    } else {
+<span class="nc" id="L617">                        si = new Request(null, sessionId, cxid, type, bb, qp.getAuthinfo());</span>
+                    }
+<span class="nc" id="L619">                    si.setOwner(this);</span>
+<span class="nc" id="L620">                    leader.zk.submitLearnerRequest(si);</span>
+<span class="nc" id="L621">                    break;</span>
+                default:
+<span class="nc" id="L623">                    LOG.warn(&quot;unexpected quorum packet, type: {}&quot;, packetToString(qp));</span>
+                    break;
+                }
+<span class="nc" id="L626">            }</span>
+<span class="nc" id="L627">        } catch (IOException e) {</span>
+<span class="nc bnc" id="L628" title="All 4 branches missed.">            if (sock != null &amp;&amp; !sock.isClosed()) {</span>
+<span class="nc" id="L629">                LOG.error(&quot;Unexpected exception causing shutdown while sock &quot;</span>
+                        + &quot;still open&quot;, e);
+            	//close the socket to make sure the
+            	//other side can see it being close
+            	try {
+<span class="nc" id="L634">            		sock.close();</span>
+<span class="nc" id="L635">            	} catch(IOException ie) {</span>
+            		// do nothing
+<span class="nc" id="L637">            	}</span>
+            }
+<span class="nc" id="L639">        } catch (InterruptedException e) {</span>
+<span class="nc" id="L640">            LOG.error(&quot;Unexpected exception causing shutdown&quot;, e);</span>
+<span class="nc" id="L641">        } catch (SnapshotThrottleException e) {</span>
+<span class="nc" id="L642">            LOG.error(&quot;too many concurrent snapshots: &quot; + e);</span>
+        } finally {
+<span class="nc" id="L644">            LOG.warn(&quot;******* GOODBYE &quot;</span>
+<span class="nc bnc" id="L645" title="All 2 branches missed.">                    + (sock != null ? sock.getRemoteSocketAddress() : &quot;&lt;null&gt;&quot;)</span>
+                    + &quot; ********&quot;);
+<span class="nc" id="L647">            shutdown();</span>
+        }
+<span class="nc" id="L649">    }</span>
+
+    /**
+     * Start thread that will forward any packet in the queue to the follower
+     */
+    protected void startSendingPackets() {
+<span class="nc bnc" id="L655" title="All 2 branches missed.">        if (!sendingThreadStarted) {</span>
+            // Start sending packets
+<span class="nc" id="L657">            new Thread() {</span>
+                public void run() {
+<span class="nc" id="L659">                    Thread.currentThread().setName(</span>
+<span class="nc" id="L660">                            &quot;Sender-&quot; + sock.getRemoteSocketAddress());</span>
+                    try {
+<span class="nc" id="L662">                        sendPackets();</span>
+<span class="nc" id="L663">                    } catch (InterruptedException e) {</span>
+<span class="nc" id="L664">                        LOG.warn(&quot;Unexpected interruption &quot; + e.getMessage());</span>
+<span class="nc" id="L665">                    }</span>
+<span class="nc" id="L666">                }</span>
+<span class="nc" id="L667">            }.start();</span>
+<span class="nc" id="L668">            sendingThreadStarted = true;</span>
+        } else {
+<span class="nc" id="L670">            LOG.error(&quot;Attempting to start sending thread after it already started&quot;);</span>
+        }
+<span class="nc" id="L672">    }</span>
+
+    /**
+     * Determine if we need to sync with follower using DIFF/TRUNC/SNAP
+     * and setup follower to receive packets from commit processor
+     *
+     * @param peerLastZxid
+     * @param db
+     * @param leader
+     * @return true if snapshot transfer is needed.
+     */
+    public boolean syncFollower(long peerLastZxid, ZKDatabase db, Leader leader) {
+        /*
+         * When leader election is completed, the leader will set its
+         * lastProcessedZxid to be (epoch &lt; 32). There will be no txn associated
+         * with this zxid.
+         *
+         * The learner will set its lastProcessedZxid to the same value if
+         * it get DIFF or SNAP from the leader. If the same learner come
+         * back to sync with leader using this zxid, we will never find this
+         * zxid in our history. In this case, we will ignore TRUNC logic and
+         * always send DIFF if we have old enough history
+         */
+<span class="nc bnc" id="L695" title="All 2 branches missed.">        boolean isPeerNewEpochZxid = (peerLastZxid &amp; 0xffffffffL) == 0;</span>
+        // Keep track of the latest zxid which already queued
+<span class="nc" id="L697">        long currentZxid = peerLastZxid;</span>
+<span class="nc" id="L698">        boolean needSnap = true;</span>
+<span class="nc" id="L699">        boolean txnLogSyncEnabled = db.isTxnLogSyncEnabled();</span>
+<span class="nc" id="L700">        ReentrantReadWriteLock lock = db.getLogLock();</span>
+<span class="nc" id="L701">        ReadLock rl = lock.readLock();</span>
+        try {
+<span class="nc" id="L703">            rl.lock();</span>
+<span class="nc" id="L704">            long maxCommittedLog = db.getmaxCommittedLog();</span>
+<span class="nc" id="L705">            long minCommittedLog = db.getminCommittedLog();</span>
+<span class="nc" id="L706">            long lastProcessedZxid = db.getDataTreeLastProcessedZxid();</span>
+
+<span class="nc" id="L708">            LOG.info(&quot;Synchronizing with Follower sid: {} maxCommittedLog=0x{}&quot;</span>
+                    + &quot; minCommittedLog=0x{} lastProcessedZxid=0x{}&quot;
+<span class="nc" id="L710">                    + &quot; peerLastZxid=0x{}&quot;, getSid(),</span>
+<span class="nc" id="L711">                    Long.toHexString(maxCommittedLog),</span>
+<span class="nc" id="L712">                    Long.toHexString(minCommittedLog),</span>
+<span class="nc" id="L713">                    Long.toHexString(lastProcessedZxid),</span>
+<span class="nc" id="L714">                    Long.toHexString(peerLastZxid));</span>
+
+<span class="nc bnc" id="L716" title="All 2 branches missed.">            if (db.getCommittedLog().isEmpty()) {</span>
+                /*
+                 * It is possible that committedLog is empty. In that case
+                 * setting these value to the latest txn in leader db
+                 * will reduce the case that we need to handle
+                 *
+                 * Here is how each case handle by the if block below
+                 * 1. lastProcessZxid == peerZxid -&gt; Handle by (2)
+                 * 2. lastProcessZxid &lt; peerZxid -&gt; Handle by (3)
+                 * 3. lastProcessZxid &gt; peerZxid -&gt; Handle by (5)
+                 */
+<span class="nc" id="L727">                minCommittedLog = lastProcessedZxid;</span>
+<span class="nc" id="L728">                maxCommittedLog = lastProcessedZxid;</span>
+            }
+
+            /*
+             * Here are the cases that we want to handle
+             *
+             * 1. Force sending snapshot (for testing purpose)
+             * 2. Peer and leader is already sync, send empty diff
+             * 3. Follower has txn that we haven't seen. This may be old leader
+             *    so we need to send TRUNC. However, if peer has newEpochZxid,
+             *    we cannot send TRUNC since the follower has no txnlog
+             * 4. Follower is within committedLog range or already in-sync.
+             *    We may need to send DIFF or TRUNC depending on follower's zxid
+             *    We always send empty DIFF if follower is already in-sync
+             * 5. Follower missed the committedLog. We will try to use on-disk
+             *    txnlog + committedLog to sync with follower. If that fail,
+             *    we will send snapshot
+             */
+
+<span class="nc bnc" id="L747" title="All 2 branches missed.">            if (forceSnapSync) {</span>
+                // Force leader to use snapshot to sync with follower
+<span class="nc" id="L749">                LOG.warn(&quot;Forcing snapshot sync - should not see this in production&quot;);</span>
+<span class="nc bnc" id="L750" title="All 2 branches missed.">            } else if (lastProcessedZxid == peerLastZxid) {</span>
+                // Follower is already sync with us, send empty diff
+<span class="nc" id="L752">                LOG.info(&quot;Sending DIFF zxid=0x&quot; + Long.toHexString(peerLastZxid) +</span>
+<span class="nc" id="L753">                         &quot; for peer sid: &quot; +  getSid());</span>
+<span class="nc" id="L754">                queueOpPacket(Leader.DIFF, peerLastZxid);</span>
+<span class="nc" id="L755">                needOpPacket = false;</span>
+<span class="nc" id="L756">                needSnap = false;</span>
+<span class="nc bnc" id="L757" title="All 4 branches missed.">            } else if (peerLastZxid &gt; maxCommittedLog &amp;&amp; !isPeerNewEpochZxid) {</span>
+                // Newer than committedLog, send trunc and done
+<span class="nc" id="L759">                LOG.debug(&quot;Sending TRUNC to follower zxidToSend=0x&quot; +</span>
+<span class="nc" id="L760">                          Long.toHexString(maxCommittedLog) +</span>
+<span class="nc" id="L761">                          &quot; for peer sid:&quot; +  getSid());</span>
+<span class="nc" id="L762">                queueOpPacket(Leader.TRUNC, maxCommittedLog);</span>
+<span class="nc" id="L763">                currentZxid = maxCommittedLog;</span>
+<span class="nc" id="L764">                needOpPacket = false;</span>
+<span class="nc" id="L765">                needSnap = false;</span>
+<span class="nc bnc" id="L766" title="All 4 branches missed.">            } else if ((maxCommittedLog &gt;= peerLastZxid)</span>
+                    &amp;&amp; (minCommittedLog &lt;= peerLastZxid)) {
+                // Follower is within commitLog range
+<span class="nc" id="L769">                LOG.info(&quot;Using committedLog for peer sid: &quot; +  getSid());</span>
+<span class="nc" id="L770">                Iterator&lt;Proposal&gt; itr = db.getCommittedLog().iterator();</span>
+<span class="nc" id="L771">                currentZxid = queueCommittedProposals(itr, peerLastZxid,</span>
+<span class="nc" id="L772">                                                     null, maxCommittedLog);</span>
+<span class="nc" id="L773">                needSnap = false;</span>
+<span class="nc bnc" id="L774" title="All 4 branches missed.">            } else if (peerLastZxid &lt; minCommittedLog &amp;&amp; txnLogSyncEnabled) {</span>
+                // Use txnlog and committedLog to sync
+
+                // Calculate sizeLimit that we allow to retrieve txnlog from disk
+<span class="nc" id="L778">                long sizeLimit = db.calculateTxnLogSizeLimit();</span>
+                // This method can return empty iterator if the requested zxid
+                // is older than on-disk txnlog
+<span class="nc" id="L781">                Iterator&lt;Proposal&gt; txnLogItr = db.getProposalsFromTxnLog(</span>
+                        peerLastZxid, sizeLimit);
+<span class="nc bnc" id="L783" title="All 2 branches missed.">                if (txnLogItr.hasNext()) {</span>
+<span class="nc" id="L784">                    LOG.info(&quot;Use txnlog and committedLog for peer sid: &quot; +  getSid());</span>
+<span class="nc" id="L785">                    currentZxid = queueCommittedProposals(txnLogItr, peerLastZxid,</span>
+<span class="nc" id="L786">                                                         minCommittedLog, maxCommittedLog);</span>
+
+<span class="nc" id="L788">                    LOG.debug(&quot;Queueing committedLog 0x&quot; + Long.toHexString(currentZxid));</span>
+<span class="nc" id="L789">                    Iterator&lt;Proposal&gt; committedLogItr = db.getCommittedLog().iterator();</span>
+<span class="nc" id="L790">                    currentZxid = queueCommittedProposals(committedLogItr, currentZxid,</span>
+<span class="nc" id="L791">                                                         null, maxCommittedLog);</span>
+<span class="nc" id="L792">                    needSnap = false;</span>
+                }
+                // closing the resources
+<span class="nc bnc" id="L795" title="All 2 branches missed.">                if (txnLogItr instanceof TxnLogProposalIterator) {</span>
+<span class="nc" id="L796">                    TxnLogProposalIterator txnProposalItr = (TxnLogProposalIterator) txnLogItr;</span>
+<span class="nc" id="L797">                    txnProposalItr.close();</span>
+                }
+<span class="nc" id="L799">            } else {</span>
+<span class="nc" id="L800">                LOG.warn(&quot;Unhandled scenario for peer sid: &quot; +  getSid());</span>
+            }
+<span class="nc" id="L802">            LOG.debug(&quot;Start forwarding 0x&quot; + Long.toHexString(currentZxid) +</span>
+<span class="nc" id="L803">                      &quot; for peer sid: &quot; +  getSid());</span>
+<span class="nc" id="L804">            leaderLastZxid = leader.startForwarding(this, currentZxid);</span>
+        } finally {
+<span class="nc" id="L806">            rl.unlock();</span>
+        }
+
+<span class="nc bnc" id="L809" title="All 4 branches missed.">        if (needOpPacket &amp;&amp; !needSnap) {</span>
+            // This should never happen, but we should fall back to sending
+            // snapshot just in case.
+<span class="nc" id="L812">            LOG.error(&quot;Unhandled scenario for peer sid: &quot; +  getSid() +</span>
+                     &quot; fall back to use snapshot&quot;);
+<span class="nc" id="L814">            needSnap = true;</span>
+        }
+
+<span class="nc" id="L817">        return needSnap;</span>
+    }
+
+    /**
+     * Queue committed proposals into packet queue. The range of packets which
+     * is going to be queued are (peerLaxtZxid, maxZxid]
+     *
+     * @param itr  iterator point to the proposals
+     * @param peerLastZxid  last zxid seen by the follower
+     * @param maxZxid  max zxid of the proposal to queue, null if no limit
+     * @param lastCommittedZxid when sending diff, we need to send lastCommittedZxid
+     *        on the leader to follow Zab 1.0 protocol.
+     * @return last zxid of the queued proposal
+     */
+    protected long queueCommittedProposals(Iterator&lt;Proposal&gt; itr,
+            long peerLastZxid, Long maxZxid, Long lastCommittedZxid) {
+<span class="nc bnc" id="L833" title="All 2 branches missed.">        boolean isPeerNewEpochZxid = (peerLastZxid &amp; 0xffffffffL) == 0;</span>
+<span class="nc" id="L834">        long queuedZxid = peerLastZxid;</span>
+        // as we look through proposals, this variable keeps track of previous
+        // proposal Id.
+<span class="nc" id="L837">        long prevProposalZxid = -1;</span>
+<span class="nc bnc" id="L838" title="All 2 branches missed.">        while (itr.hasNext()) {</span>
+<span class="nc" id="L839">            Proposal propose = itr.next();</span>
+
+<span class="nc" id="L841">            long packetZxid = propose.packet.getZxid();</span>
+            // abort if we hit the limit
+<span class="nc bnc" id="L843" title="All 4 branches missed.">            if ((maxZxid != null) &amp;&amp; (packetZxid &gt; maxZxid)) {</span>
+<span class="nc" id="L844">                break;</span>
+            }
+
+            // skip the proposals the peer already has
+<span class="nc bnc" id="L848" title="All 2 branches missed.">            if (packetZxid &lt; peerLastZxid) {</span>
+<span class="nc" id="L849">                prevProposalZxid = packetZxid;</span>
+<span class="nc" id="L850">                continue;</span>
+            }
+
+            // If we are sending the first packet, figure out whether to trunc
+            // or diff
+<span class="nc bnc" id="L855" title="All 2 branches missed.">            if (needOpPacket) {</span>
+
+                // Send diff when we see the follower's zxid in our history
+<span class="nc bnc" id="L858" title="All 2 branches missed.">                if (packetZxid == peerLastZxid) {</span>
+<span class="nc" id="L859">                    LOG.info(&quot;Sending DIFF zxid=0x&quot; +</span>
+<span class="nc" id="L860">                             Long.toHexString(lastCommittedZxid) +</span>
+<span class="nc" id="L861">                             &quot; for peer sid: &quot; + getSid());</span>
+<span class="nc" id="L862">                    queueOpPacket(Leader.DIFF, lastCommittedZxid);</span>
+<span class="nc" id="L863">                    needOpPacket = false;</span>
+<span class="nc" id="L864">                    continue;</span>
+                }
+
+<span class="nc bnc" id="L867" title="All 2 branches missed.">                if (isPeerNewEpochZxid) {</span>
+                   // Send diff and fall through if zxid is of a new-epoch
+<span class="nc" id="L869">                   LOG.info(&quot;Sending DIFF zxid=0x&quot; +</span>
+<span class="nc" id="L870">                            Long.toHexString(lastCommittedZxid) +</span>
+<span class="nc" id="L871">                            &quot; for peer sid: &quot; + getSid());</span>
+<span class="nc" id="L872">                   queueOpPacket(Leader.DIFF, lastCommittedZxid);</span>
+<span class="nc" id="L873">                   needOpPacket = false;</span>
+<span class="nc bnc" id="L874" title="All 2 branches missed.">                } else if (packetZxid &gt; peerLastZxid  ) {</span>
+                    // Peer have some proposals that the leader hasn't seen yet
+                    // it may used to be a leader
+<span class="nc" id="L877">                    if (ZxidUtils.getEpochFromZxid(packetZxid) !=</span>
+<span class="nc bnc" id="L878" title="All 2 branches missed.">                            ZxidUtils.getEpochFromZxid(peerLastZxid)) {</span>
+                        // We cannot send TRUNC that cross epoch boundary.
+                        // The learner will crash if it is asked to do so.
+                        // We will send snapshot this those cases.
+<span class="nc" id="L882">                        LOG.warn(&quot;Cannot send TRUNC to peer sid: &quot; + getSid() +</span>
+                                 &quot; peer zxid is from different epoch&quot; );
+<span class="nc" id="L884">                        return queuedZxid;</span>
+                    }
+
+<span class="nc" id="L887">                    LOG.info(&quot;Sending TRUNC zxid=0x&quot; +</span>
+<span class="nc" id="L888">                            Long.toHexString(prevProposalZxid) +</span>
+<span class="nc" id="L889">                            &quot; for peer sid: &quot; + getSid());</span>
+<span class="nc" id="L890">                    queueOpPacket(Leader.TRUNC, prevProposalZxid);</span>
+<span class="nc" id="L891">                    needOpPacket = false;</span>
+                }
+            }
+
+<span class="nc bnc" id="L895" title="All 2 branches missed.">            if (packetZxid &lt;= queuedZxid) {</span>
+                // We can get here, if we don't have op packet to queue
+                // or there is a duplicate txn in a given iterator
+<span class="nc" id="L898">                continue;</span>
+            }
+
+            // Since this is already a committed proposal, we need to follow
+            // it by a commit packet
+<span class="nc" id="L903">            queuePacket(propose.packet);</span>
+<span class="nc" id="L904">            queueOpPacket(Leader.COMMIT, packetZxid);</span>
+<span class="nc" id="L905">            queuedZxid = packetZxid;</span>
+
+<span class="nc" id="L907">        }</span>
+
+<span class="nc bnc" id="L909" title="All 4 branches missed.">        if (needOpPacket &amp;&amp; isPeerNewEpochZxid) {</span>
+            // We will send DIFF for this kind of zxid in any case. This if-block
+            // is the catch when our history older than learner and there is
+            // no new txn since then. So we need an empty diff
+<span class="nc" id="L913">            LOG.info(&quot;Sending DIFF zxid=0x&quot; +</span>
+<span class="nc" id="L914">                     Long.toHexString(lastCommittedZxid) +</span>
+<span class="nc" id="L915">                     &quot; for peer sid: &quot; + getSid());</span>
+<span class="nc" id="L916">            queueOpPacket(Leader.DIFF, lastCommittedZxid);</span>
+<span class="nc" id="L917">            needOpPacket = false;</span>
+        }
+
+<span class="nc" id="L920">        return queuedZxid;</span>
+    }    
+    
+    public void shutdown() {
+        // Send the packet of death
+        try {
+<span class="nc" id="L926">            queuedPackets.put(proposalOfDeath);</span>
+<span class="nc" id="L927">        } catch (InterruptedException e) {</span>
+<span class="nc" id="L928">            LOG.warn(&quot;Ignoring unexpected exception&quot;, e);</span>
+<span class="nc" id="L929">        }</span>
+        try {
+<span class="nc bnc" id="L931" title="All 4 branches missed.">            if (sock != null &amp;&amp; !sock.isClosed()) {</span>
+<span class="nc" id="L932">                sock.close();</span>
+            }
+<span class="nc" id="L934">        } catch (IOException e) {</span>
+<span class="nc" id="L935">            LOG.warn(&quot;Ignoring unexpected exception during socket close&quot;, e);</span>
+<span class="nc" id="L936">        }</span>
+<span class="nc" id="L937">        this.interrupt();</span>
+<span class="nc" id="L938">        leader.removeLearnerHandler(this);</span>
+<span class="nc" id="L939">    }</span>
+
+    public long tickOfNextAckDeadline() {
+<span class="nc" id="L942">        return tickOfNextAckDeadline;</span>
+    }
+
+    /**
+     * ping calls from the leader to the peers
+     */
+    public void ping() {
+        // If learner hasn't sync properly yet, don't send ping packet
+        // otherwise, the learner will crash
+<span class="nc bnc" id="L951" title="All 2 branches missed.">        if (!sendingThreadStarted) {</span>
+<span class="nc" id="L952">            return;</span>
+        }
+        long id;
+<span class="nc bnc" id="L955" title="All 2 branches missed.">        if (syncLimitCheck.check(System.nanoTime())) {</span>
+<span class="nc" id="L956">            synchronized(leader) {</span>
+<span class="nc" id="L957">                id = leader.lastProposed;</span>
+<span class="nc" id="L958">            }</span>
+<span class="nc" id="L959">            QuorumPacket ping = new QuorumPacket(Leader.PING, id, null, null);</span>
+<span class="nc" id="L960">            queuePacket(ping);</span>
+<span class="nc" id="L961">        } else {</span>
+<span class="nc" id="L962">            LOG.warn(&quot;Closing connection to peer due to transaction timeout.&quot;);</span>
+<span class="nc" id="L963">            shutdown();</span>
+        }
+<span class="nc" id="L965">    }</span>
+
+    /**
+     * Queue leader packet of a given type
+     * @param type
+     * @param zxid
+     */
+    private void queueOpPacket(int type, long zxid) {
+<span class="nc" id="L973">        QuorumPacket packet = new QuorumPacket(type, zxid, null, null);</span>
+<span class="nc" id="L974">        queuePacket(packet);</span>
+<span class="nc" id="L975">    }</span>
+    
+    void queuePacket(QuorumPacket p) {
+<span class="nc" id="L978">        queuedPackets.add(p);</span>
+<span class="nc" id="L979">    }</span>
+
+    public boolean synced() {
+<span class="nc bnc" id="L982" title="All 2 branches missed.">        return isAlive()</span>
+<span class="nc bnc" id="L983" title="All 2 branches missed.">        &amp;&amp; leader.self.tick.get() &lt;= tickOfNextAckDeadline;</span>
+    }
+    
+    /**
+     * For testing, return packet queue
+     * @return
+     */
+    public Queue&lt;QuorumPacket&gt; getQueuedPackets() {
+<span class="nc" id="L991">        return queuedPackets;</span>
+    }
+
+    /**
+     * For testing, we need to reset this value
+     */
+    public void setFirstPacket(boolean value) {
+<span class="nc" id="L998">        needOpPacket = value;</span>
+<span class="nc" id="L999">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

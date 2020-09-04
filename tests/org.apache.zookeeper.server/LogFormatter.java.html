@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LogFormatter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server</a> &gt; <span class="el_source">LogFormatter.java</span></div><h1>LogFormatter.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server;
+
+import java.io.EOFException;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.text.DateFormat;
+import java.util.Date;
+import java.util.zip.Adler32;
+import java.util.zip.Checksum;
+
+import org.apache.jute.BinaryInputArchive;
+import org.apache.jute.Record;
+import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.server.persistence.FileHeader;
+import org.apache.zookeeper.server.persistence.FileTxnLog;
+import org.apache.zookeeper.server.util.SerializeUtils;
+import org.apache.zookeeper.txn.TxnHeader;
+
+@InterfaceAudience.Public
+<span class="nc" id="L40">public class LogFormatter {</span>
+<span class="nc" id="L41">    private static final Logger LOG = LoggerFactory.getLogger(LogFormatter.class);</span>
+
+    /**
+     * @param args
+     */
+    public static void main(String[] args) throws Exception {
+<span class="nc bnc" id="L47" title="All 2 branches missed.">        if (args.length != 1) {</span>
+<span class="nc" id="L48">            System.err.println(&quot;USAGE: LogFormatter log_file&quot;);</span>
+<span class="nc" id="L49">            System.exit(2);</span>
+        }
+<span class="nc" id="L51">        FileInputStream fis = new FileInputStream(args[0]);</span>
+<span class="nc" id="L52">        BinaryInputArchive logStream = BinaryInputArchive.getArchive(fis);</span>
+<span class="nc" id="L53">        FileHeader fhdr = new FileHeader();</span>
+<span class="nc" id="L54">        fhdr.deserialize(logStream, &quot;fileheader&quot;);</span>
+
+<span class="nc bnc" id="L56" title="All 2 branches missed.">        if (fhdr.getMagic() != FileTxnLog.TXNLOG_MAGIC) {</span>
+<span class="nc" id="L57">            System.err.println(&quot;Invalid magic number for &quot; + args[0]);</span>
+<span class="nc" id="L58">            System.exit(2);</span>
+        }
+<span class="nc" id="L60">        System.out.println(&quot;ZooKeeper Transactional Log File with dbid &quot;</span>
+<span class="nc" id="L61">                + fhdr.getDbid() + &quot; txnlog format version &quot;</span>
+<span class="nc" id="L62">                + fhdr.getVersion());</span>
+
+<span class="nc" id="L64">        int count = 0;</span>
+        while (true) {
+            long crcValue;
+            byte[] bytes;
+            try {
+<span class="nc" id="L69">                crcValue = logStream.readLong(&quot;crcvalue&quot;);</span>
+
+<span class="nc" id="L71">                bytes = logStream.readBuffer(&quot;txnEntry&quot;);</span>
+<span class="nc" id="L72">            } catch (EOFException e) {</span>
+<span class="nc" id="L73">                System.out.println(&quot;EOF reached after &quot; + count + &quot; txns.&quot;);</span>
+<span class="nc" id="L74">                return;</span>
+<span class="nc" id="L75">            }</span>
+<span class="nc bnc" id="L76" title="All 2 branches missed.">            if (bytes.length == 0) {</span>
+                // Since we preallocate, we define EOF to be an
+                // empty transaction
+<span class="nc" id="L79">                System.out.println(&quot;EOF reached after &quot; + count + &quot; txns.&quot;);</span>
+<span class="nc" id="L80">                return;</span>
+            }
+<span class="nc" id="L82">            Checksum crc = new Adler32();</span>
+<span class="nc" id="L83">            crc.update(bytes, 0, bytes.length);</span>
+<span class="nc bnc" id="L84" title="All 2 branches missed.">            if (crcValue != crc.getValue()) {</span>
+<span class="nc" id="L85">                throw new IOException(&quot;CRC doesn't match &quot; + crcValue +</span>
+<span class="nc" id="L86">                        &quot; vs &quot; + crc.getValue());</span>
+            }
+<span class="nc" id="L88">            TxnHeader hdr = new TxnHeader();</span>
+<span class="nc" id="L89">            Record txn = SerializeUtils.deserializeTxn(bytes, hdr);</span>
+<span class="nc" id="L90">            System.out.println(DateFormat.getDateTimeInstance(DateFormat.SHORT,</span>
+<span class="nc" id="L91">                    DateFormat.LONG).format(new Date(hdr.getTime()))</span>
+                    + &quot; session 0x&quot;
+<span class="nc" id="L93">                    + Long.toHexString(hdr.getClientId())</span>
+                    + &quot; cxid 0x&quot;
+<span class="nc" id="L95">                    + Long.toHexString(hdr.getCxid())</span>
+                    + &quot; zxid 0x&quot;
+<span class="nc" id="L97">                    + Long.toHexString(hdr.getZxid())</span>
+<span class="nc" id="L98">                    + &quot; &quot; + TraceFormatter.op2String(hdr.getType()) + &quot; &quot; + txn);</span>
+<span class="nc bnc" id="L99" title="All 2 branches missed.">            if (logStream.readByte(&quot;EOR&quot;) != 'B') {</span>
+<span class="nc" id="L100">                LOG.error(&quot;Last transaction was partial.&quot;);</span>
+<span class="nc" id="L101">                throw new EOFException(&quot;Last transaction was partial.&quot;);</span>
+            }
+<span class="nc" id="L103">            count++;</span>
+<span class="nc" id="L104">        }</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

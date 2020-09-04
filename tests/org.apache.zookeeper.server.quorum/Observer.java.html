@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Observer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">Observer.java</span></div><h1>Observer.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.quorum;
+
+import java.io.IOException;
+import java.nio.ByteBuffer;
+
+import org.apache.jute.Record;
+import org.apache.zookeeper.server.ObserverBean;
+import org.apache.zookeeper.server.Request;
+import org.apache.zookeeper.server.quorum.QuorumPeer.QuorumServer;
+import org.apache.zookeeper.server.quorum.flexible.QuorumVerifier;
+import org.apache.zookeeper.server.util.SerializeUtils;
+import org.apache.zookeeper.txn.SetDataTxn;
+import org.apache.zookeeper.txn.TxnHeader;
+
+/**
+ * Observers are peers that do not take part in the atomic broadcast protocol.
+ * Instead, they are informed of successful proposals by the Leader. Observers
+ * therefore naturally act as a relay point for publishing the proposal stream
+ * and can relieve Followers of some of the connection load. Observers may
+ * submit proposals, but do not vote in their acceptance.
+ *
+ * See ZOOKEEPER-368 for a discussion of this feature.
+ */
+public class Observer extends Learner{
+
+<span class="nc" id="L44">    Observer(QuorumPeer self,ObserverZooKeeperServer observerZooKeeperServer) {</span>
+<span class="nc" id="L45">        this.self = self;</span>
+<span class="nc" id="L46">        this.zk=observerZooKeeperServer;</span>
+<span class="nc" id="L47">    }</span>
+
+    @Override
+    public String toString() {
+<span class="nc" id="L51">        StringBuilder sb = new StringBuilder();</span>
+<span class="nc" id="L52">        sb.append(&quot;Observer &quot;).append(sock);</span>
+<span class="nc" id="L53">        sb.append(&quot; pendingRevalidationCount:&quot;)</span>
+<span class="nc" id="L54">            .append(pendingRevalidations.size());</span>
+<span class="nc" id="L55">        return sb.toString();</span>
+    }
+
+    /**
+     * the main method called by the observer to observe the leader
+     * @throws Exception 
+     */
+    void observeLeader() throws Exception {
+<span class="nc" id="L63">        zk.registerJMX(new ObserverBean(this, zk), self.jmxLocalPeerBean);</span>
+
+        try {
+<span class="nc" id="L66">            QuorumServer leaderServer = findLeader();</span>
+<span class="nc" id="L67">            LOG.info(&quot;Observing &quot; + leaderServer.addr);</span>
+            try {
+<span class="nc" id="L69">                connectToLeader(leaderServer.addr, leaderServer.hostname);</span>
+<span class="nc" id="L70">                long newLeaderZxid = registerWithLeader(Leader.OBSERVERINFO);</span>
+<span class="nc bnc" id="L71" title="All 2 branches missed.">                if (self.isReconfigStateChange())</span>
+<span class="nc" id="L72">                   throw new Exception(&quot;learned about role change&quot;);</span>
+ 
+<span class="nc" id="L74">                syncWithLeader(newLeaderZxid);</span>
+<span class="nc" id="L75">                QuorumPacket qp = new QuorumPacket();</span>
+<span class="nc bnc" id="L76" title="All 2 branches missed.">                while (this.isRunning()) {</span>
+<span class="nc" id="L77">                    readPacket(qp);</span>
+<span class="nc" id="L78">                    processPacket(qp);</span>
+                }
+<span class="nc" id="L80">            } catch (Exception e) {</span>
+<span class="nc" id="L81">                LOG.warn(&quot;Exception when observing the leader&quot;, e);</span>
+                try {
+<span class="nc" id="L83">                    sock.close();</span>
+<span class="nc" id="L84">                } catch (IOException e1) {</span>
+<span class="nc" id="L85">                    e1.printStackTrace();</span>
+<span class="nc" id="L86">                }</span>
+
+                // clear pending revalidations
+<span class="nc" id="L89">                pendingRevalidations.clear();</span>
+<span class="nc" id="L90">            }</span>
+        } finally {
+<span class="nc" id="L92">            zk.unregisterJMX(this);</span>
+        }
+<span class="nc" id="L94">    }</span>
+
+    /**
+     * Controls the response of an observer to the receipt of a quorumpacket
+     * @param qp
+     * @throws Exception 
+     */
+    protected void processPacket(QuorumPacket qp) throws Exception{
+<span class="nc bnc" id="L102" title="All 9 branches missed.">        switch (qp.getType()) {</span>
+        case Leader.PING:
+<span class="nc" id="L104">            ping(qp);</span>
+<span class="nc" id="L105">            break;</span>
+        case Leader.PROPOSAL:
+<span class="nc" id="L107">            LOG.warn(&quot;Ignoring proposal&quot;);</span>
+<span class="nc" id="L108">            break;</span>
+        case Leader.COMMIT:
+<span class="nc" id="L110">            LOG.warn(&quot;Ignoring commit&quot;);</span>
+<span class="nc" id="L111">            break;</span>
+        case Leader.UPTODATE:
+<span class="nc" id="L113">            LOG.error(&quot;Received an UPTODATE message after Observer started&quot;);</span>
+<span class="nc" id="L114">            break;</span>
+        case Leader.REVALIDATE:
+<span class="nc" id="L116">            revalidate(qp);</span>
+<span class="nc" id="L117">            break;</span>
+        case Leader.SYNC:
+<span class="nc" id="L119">            ((ObserverZooKeeperServer)zk).sync();</span>
+<span class="nc" id="L120">            break;</span>
+        case Leader.INFORM:
+<span class="nc" id="L122">            TxnHeader hdr = new TxnHeader();</span>
+<span class="nc" id="L123">            Record txn = SerializeUtils.deserializeTxn(qp.getData(), hdr);</span>
+<span class="nc" id="L124">            Request request = new Request (hdr.getClientId(),  hdr.getCxid(), hdr.getType(), hdr, txn, 0);</span>
+<span class="nc" id="L125">            ObserverZooKeeperServer obs = (ObserverZooKeeperServer)zk;</span>
+<span class="nc" id="L126">            obs.commitRequest(request);</span>
+<span class="nc" id="L127">            break;</span>
+        case Leader.INFORMANDACTIVATE:            
+<span class="nc" id="L129">            hdr = new TxnHeader();</span>
+            
+           // get new designated leader from (current) leader's message
+<span class="nc" id="L132">            ByteBuffer buffer = ByteBuffer.wrap(qp.getData());    </span>
+<span class="nc" id="L133">           long suggestedLeaderId = buffer.getLong();</span>
+           
+<span class="nc" id="L135">            byte[] remainingdata = new byte[buffer.remaining()];</span>
+<span class="nc" id="L136">            buffer.get(remainingdata);</span>
+<span class="nc" id="L137">            txn = SerializeUtils.deserializeTxn(remainingdata, hdr);</span>
+<span class="nc" id="L138">            QuorumVerifier qv = self.configFromString(new String(((SetDataTxn)txn).getData()));</span>
+            
+<span class="nc" id="L140">            request = new Request (hdr.getClientId(),  hdr.getCxid(), hdr.getType(), hdr, txn, 0);</span>
+<span class="nc" id="L141">            obs = (ObserverZooKeeperServer)zk;</span>
+                        
+<span class="nc" id="L143">            boolean majorChange = </span>
+<span class="nc" id="L144">                self.processReconfig(qv, suggestedLeaderId, qp.getZxid(), true);</span>
+           
+<span class="nc" id="L146">            obs.commitRequest(request);                                 </span>
+
+<span class="nc bnc" id="L148" title="All 2 branches missed.">            if (majorChange) {</span>
+<span class="nc" id="L149">               throw new Exception(&quot;changes proposed in reconfig&quot;);</span>
+           }            
+            break;
+        default:
+<span class="nc" id="L153">            LOG.warn(&quot;Unknown packet type: {}&quot;, LearnerHandler.packetToString(qp));</span>
+            break;
+        }
+<span class="nc" id="L156">    }</span>
+
+    /**
+     * Shutdown the Observer.
+     */
+    public void shutdown() {
+<span class="nc" id="L162">        LOG.info(&quot;shutdown called&quot;, new Exception(&quot;shutdown Observer&quot;));</span>
+<span class="nc" id="L163">        super.shutdown();</span>
+<span class="nc" id="L164">    }</span>
+}
+
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

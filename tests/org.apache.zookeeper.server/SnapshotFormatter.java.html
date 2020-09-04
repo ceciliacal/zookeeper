@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SnapshotFormatter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server</a> &gt; <span class="el_source">SnapshotFormatter.java</span></div><h1>SnapshotFormatter.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server;
+
+import java.io.BufferedInputStream;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.zip.Adler32;
+import java.util.zip.CheckedInputStream;
+
+import org.apache.jute.BinaryInputArchive;
+import org.apache.jute.InputArchive;
+import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.zookeeper.data.StatPersisted;
+import org.apache.zookeeper.server.persistence.FileSnap;
+
+/**
+ * Dump a snapshot file to stdout.
+ */
+@InterfaceAudience.Public
+<span class="nc" id="L42">public class SnapshotFormatter {</span>
+
+    /**
+     * USAGE: SnapshotFormatter snapshot_file
+     */
+    public static void main(String[] args) throws Exception {
+<span class="nc bnc" id="L48" title="All 2 branches missed.">        if (args.length != 1) {</span>
+<span class="nc" id="L49">            System.err.println(&quot;USAGE: SnapshotFormatter snapshot_file&quot;);</span>
+<span class="nc" id="L50">            System.exit(2);</span>
+        }
+
+<span class="nc" id="L53">        new SnapshotFormatter().run(args[0]);</span>
+<span class="nc" id="L54">    }</span>
+    
+    public void run(String snapshotFileName) throws IOException {
+<span class="nc" id="L57">        InputStream is = new CheckedInputStream(</span>
+                new BufferedInputStream(new FileInputStream(snapshotFileName)),
+                new Adler32());
+<span class="nc" id="L60">        InputArchive ia = BinaryInputArchive.getArchive(is);</span>
+        
+<span class="nc" id="L62">        FileSnap fileSnap = new FileSnap(null);</span>
+
+<span class="nc" id="L64">        DataTree dataTree = new DataTree();</span>
+<span class="nc" id="L65">        Map&lt;Long, Integer&gt; sessions = new HashMap&lt;Long, Integer&gt;();</span>
+        
+<span class="nc" id="L67">        fileSnap.deserialize(dataTree, sessions, ia);</span>
+
+<span class="nc" id="L69">        printDetails(dataTree, sessions);</span>
+<span class="nc" id="L70">    }</span>
+
+    private void printDetails(DataTree dataTree, Map&lt;Long, Integer&gt; sessions) {
+<span class="nc" id="L73">        printZnodeDetails(dataTree);</span>
+<span class="nc" id="L74">        printSessionDetails(dataTree, sessions);</span>
+<span class="nc" id="L75">    }</span>
+
+    private void printZnodeDetails(DataTree dataTree) {
+<span class="nc" id="L78">        System.out.println(String.format(&quot;ZNode Details (count=%d):&quot;,</span>
+<span class="nc" id="L79">                dataTree.getNodeCount()));</span>
+        
+<span class="nc" id="L81">        printZnode(dataTree, &quot;/&quot;);</span>
+<span class="nc" id="L82">        System.out.println(&quot;----&quot;);</span>
+<span class="nc" id="L83">    }</span>
+
+    private void printZnode(DataTree dataTree, String name) {
+<span class="nc" id="L86">        System.out.println(&quot;----&quot;);</span>
+<span class="nc" id="L87">        DataNode n = dataTree.getNode(name);</span>
+        Set&lt;String&gt; children;
+<span class="nc" id="L89">        synchronized(n) { // keep findbugs happy</span>
+<span class="nc" id="L90">            System.out.println(name);</span>
+<span class="nc" id="L91">            printStat(n.stat);</span>
+<span class="nc bnc" id="L92" title="All 2 branches missed.">            if (n.data != null) {</span>
+<span class="nc" id="L93">                System.out.println(&quot;  dataLength = &quot; + n.data.length);</span>
+            } else {
+<span class="nc" id="L95">                System.out.println(&quot;  no data&quot;);</span>
+            }
+<span class="nc" id="L97">            children = n.getChildren();</span>
+<span class="nc" id="L98">        }</span>
+<span class="nc bnc" id="L99" title="All 2 branches missed.">        for (String child : children) {</span>
+<span class="nc bnc" id="L100" title="All 2 branches missed.">            printZnode(dataTree, name + (name.equals(&quot;/&quot;) ? &quot;&quot; : &quot;/&quot;) + child);</span>
+<span class="nc" id="L101">        }</span>
+<span class="nc" id="L102">    }</span>
+
+    private void printSessionDetails(DataTree dataTree, Map&lt;Long, Integer&gt; sessions) {
+<span class="nc" id="L105">        System.out.println(&quot;Session Details (sid, timeout, ephemeralCount):&quot;);</span>
+<span class="nc bnc" id="L106" title="All 2 branches missed.">        for (Map.Entry&lt;Long, Integer&gt; e : sessions.entrySet()) {</span>
+<span class="nc" id="L107">            long sid = e.getKey();</span>
+<span class="nc" id="L108">            System.out.println(String.format(&quot;%#016x, %d, %d&quot;,</span>
+<span class="nc" id="L109">                    sid, e.getValue(), dataTree.getEphemerals(sid).size()));</span>
+<span class="nc" id="L110">        }</span>
+<span class="nc" id="L111">    }</span>
+
+    private void printStat(StatPersisted stat) {
+<span class="nc" id="L114">        printHex(&quot;cZxid&quot;, stat.getCzxid());</span>
+<span class="nc" id="L115">        System.out.println(&quot;  ctime = &quot; + new Date(stat.getCtime()).toString());</span>
+<span class="nc" id="L116">        printHex(&quot;mZxid&quot;, stat.getMzxid());</span>
+<span class="nc" id="L117">        System.out.println(&quot;  mtime = &quot; + new Date(stat.getMtime()).toString());</span>
+<span class="nc" id="L118">        printHex(&quot;pZxid&quot;, stat.getPzxid());</span>
+<span class="nc" id="L119">        System.out.println(&quot;  cversion = &quot; + stat.getCversion());</span>
+<span class="nc" id="L120">        System.out.println(&quot;  dataVersion = &quot; + stat.getVersion());</span>
+<span class="nc" id="L121">        System.out.println(&quot;  aclVersion = &quot; + stat.getAversion());</span>
+<span class="nc" id="L122">        printHex(&quot;ephemeralOwner&quot;, stat.getEphemeralOwner());</span>
+<span class="nc" id="L123">    }</span>
+
+    private void printHex(String prefix, long value) {
+<span class="nc" id="L126">        System.out.println(String.format(&quot;  %s = %#016x&quot;, prefix, value));</span>
+<span class="nc" id="L127">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

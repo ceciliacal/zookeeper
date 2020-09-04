@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ConnectStringParser.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.client</a> &gt; <span class="el_source">ConnectStringParser.java</span></div><h1>ConnectStringParser.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.client;
+
+import org.apache.zookeeper.common.PathUtils;
+
+import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.apache.zookeeper.common.StringUtils.split;
+
+/**
+ * A parser for ZooKeeper Client connect strings.
+ * 
+ * This class is not meant to be seen or used outside of ZooKeeper itself.
+ * 
+ * The chrootPath member should be replaced by a Path object in issue
+ * ZOOKEEPER-849.
+ * 
+ * @see org.apache.zookeeper.ZooKeeper
+ */
+public final class ConnectStringParser {
+    private static final int DEFAULT_PORT = 2181;
+
+    private final String chrootPath;
+
+<span class="fc" id="L44">    private final ArrayList&lt;InetSocketAddress&gt; serverAddresses = new ArrayList&lt;InetSocketAddress&gt;();</span>
+
+    /**
+     * 
+     * @throws IllegalArgumentException
+     *             for an invalid chroot path.
+     */
+<span class="fc" id="L51">    public ConnectStringParser(String connectString) {</span>
+        // parse out chroot, if any
+<span class="fc" id="L53">        int off = connectString.indexOf('/');</span>
+<span class="pc bpc" id="L54" title="1 of 2 branches missed.">        if (off &gt;= 0) {</span>
+<span class="nc" id="L55">            String chrootPath = connectString.substring(off);</span>
+            // ignore &quot;/&quot; chroot spec, same as null
+<span class="nc bnc" id="L57" title="All 2 branches missed.">            if (chrootPath.length() == 1) {</span>
+<span class="nc" id="L58">                this.chrootPath = null;</span>
+            } else {
+<span class="nc" id="L60">                PathUtils.validatePath(chrootPath);</span>
+<span class="nc" id="L61">                this.chrootPath = chrootPath;</span>
+            }
+<span class="nc" id="L63">            connectString = connectString.substring(0, off);</span>
+<span class="nc" id="L64">        } else {</span>
+<span class="fc" id="L65">            this.chrootPath = null;</span>
+        }
+
+<span class="fc" id="L68">        List&lt;String&gt; hostsList = split(connectString,&quot;,&quot;);</span>
+<span class="fc bfc" id="L69" title="All 2 branches covered.">        for (String host : hostsList) {</span>
+<span class="fc" id="L70">            int port = DEFAULT_PORT;</span>
+<span class="fc" id="L71">            int pidx = host.lastIndexOf(':');</span>
+<span class="pc bpc" id="L72" title="1 of 2 branches missed.">            if (pidx &gt;= 0) {</span>
+                // otherwise : is at the end of the string, ignore
+<span class="pc bpc" id="L74" title="1 of 2 branches missed.">                if (pidx &lt; host.length() - 1) {</span>
+<span class="fc" id="L75">                    port = Integer.parseInt(host.substring(pidx + 1));</span>
+                }
+<span class="fc" id="L77">                host = host.substring(0, pidx);</span>
+            }
+<span class="fc" id="L79">            serverAddresses.add(InetSocketAddress.createUnresolved(host, port));</span>
+<span class="fc" id="L80">        }</span>
+<span class="fc" id="L81">    }</span>
+
+    public String getChrootPath() {
+<span class="fc" id="L84">        return chrootPath;</span>
+    }
+
+    public ArrayList&lt;InetSocketAddress&gt; getServerAddresses() {
+<span class="fc" id="L88">        return serverAddresses;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

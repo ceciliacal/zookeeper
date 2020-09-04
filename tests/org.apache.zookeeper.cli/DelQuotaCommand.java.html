@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DelQuotaCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.cli</a> &gt; <span class="el_source">DelQuotaCommand.java</span></div><h1>DelQuotaCommand.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.cli;
+
+import java.io.IOException;
+import java.util.List;
+import org.apache.commons.cli.*;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.Quotas;
+import org.apache.zookeeper.StatsTrack;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.data.Stat;
+
+/**
+ * delQuota command for cli
+ */
+public class DelQuotaCommand extends CliCommand {
+
+<span class="nc" id="L34">    private Options options = new Options();</span>
+    private String[] args;
+    private CommandLine cl;
+
+    public DelQuotaCommand() {
+<span class="nc" id="L39">        super(&quot;delquota&quot;, &quot;[-n|-b] path&quot;);</span>
+
+<span class="nc" id="L41">        OptionGroup og1 = new OptionGroup();</span>
+<span class="nc" id="L42">        og1.addOption(new Option(&quot;b&quot;, false, &quot;bytes quota&quot;));</span>
+<span class="nc" id="L43">        og1.addOption(new Option(&quot;n&quot;, false, &quot;num quota&quot;));</span>
+<span class="nc" id="L44">        options.addOptionGroup(og1);</span>
+<span class="nc" id="L45">    }</span>
+
+    @Override
+    public CliCommand parse(String[] cmdArgs) throws CliParseException {
+<span class="nc" id="L49">        Parser parser = new PosixParser();</span>
+        try {
+<span class="nc" id="L51">            cl = parser.parse(options, cmdArgs);</span>
+<span class="nc" id="L52">        } catch (ParseException ex) {</span>
+<span class="nc" id="L53">            throw new CliParseException(ex);</span>
+<span class="nc" id="L54">        }</span>
+<span class="nc" id="L55">        args = cl.getArgs();</span>
+<span class="nc bnc" id="L56" title="All 2 branches missed.">        if (args.length &lt; 2) {</span>
+<span class="nc" id="L57">            throw new CliParseException(getUsageStr());</span>
+        }
+
+<span class="nc" id="L60">        return this;</span>
+    }
+
+    @Override
+    public boolean exec() throws CliException {
+        //if neither option -n or -b is specified, we delete
+        // the quota node for thsi node.
+<span class="nc" id="L67">        String path = args[1];</span>
+        try {
+<span class="nc bnc" id="L69" title="All 2 branches missed.">            if (cl.hasOption(&quot;b&quot;)) {</span>
+<span class="nc" id="L70">                delQuota(zk, path, true, false);</span>
+<span class="nc bnc" id="L71" title="All 2 branches missed.">            } else if (cl.hasOption(&quot;n&quot;)) {</span>
+<span class="nc" id="L72">                delQuota(zk, path, false, true);</span>
+<span class="nc bnc" id="L73" title="All 2 branches missed.">            } else if (args.length == 2) {</span>
+                // we don't have an option specified.
+                // just delete whole quota node
+<span class="nc" id="L76">                delQuota(zk, path, true, true);</span>
+            }
+<span class="nc" id="L78">        } catch (KeeperException|InterruptedException|IOException ex) {</span>
+<span class="nc" id="L79">            throw new CliWrapperException(ex);</span>
+<span class="nc" id="L80">        }</span>
+<span class="nc" id="L81">        return false;</span>
+    }
+
+    /**
+     * this method deletes quota for a node.
+     *
+     * @param zk the zookeeper client
+     * @param path the path to delete quota for
+     * @param bytes true if number of bytes needs to be unset
+     * @param numNodes true if number of nodes needs to be unset
+     * @return true if quota deletion is successful
+     * @throws KeeperException
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    public static boolean delQuota(ZooKeeper zk, String path,
+            boolean bytes, boolean numNodes)
+            throws KeeperException, IOException, InterruptedException, MalformedPathException {
+<span class="nc" id="L99">        String parentPath = Quotas.quotaZookeeper + path;</span>
+<span class="nc" id="L100">        String quotaPath = Quotas.quotaZookeeper + path + &quot;/&quot; + </span>
+                Quotas.limitNode;
+<span class="nc bnc" id="L102" title="All 2 branches missed.">        if (zk.exists(quotaPath, false) == null) {</span>
+<span class="nc" id="L103">            System.out.println(&quot;Quota does not exist for &quot; + path);</span>
+<span class="nc" id="L104">            return true;</span>
+        }
+<span class="nc" id="L106">        byte[] data = null;</span>
+        try {
+<span class="nc" id="L108">            data = zk.getData(quotaPath, false, new Stat());</span>
+<span class="nc" id="L109">        } catch (IllegalArgumentException ex) {</span>
+<span class="nc" id="L110">            throw new MalformedPathException(ex.getMessage());</span>
+<span class="nc" id="L111">        } catch (KeeperException.NoNodeException ne) {</span>
+<span class="nc" id="L112">            System.err.println(&quot;quota does not exist for &quot; + path);</span>
+<span class="nc" id="L113">            return true;</span>
+<span class="nc" id="L114">        }</span>
+<span class="nc" id="L115">        StatsTrack strack = new StatsTrack(new String(data));</span>
+<span class="nc bnc" id="L116" title="All 4 branches missed.">        if (bytes &amp;&amp; !numNodes) {</span>
+<span class="nc" id="L117">            strack.setBytes(-1L);</span>
+<span class="nc" id="L118">            zk.setData(quotaPath, strack.toString().getBytes(), -1);</span>
+<span class="nc bnc" id="L119" title="All 4 branches missed.">        } else if (!bytes &amp;&amp; numNodes) {</span>
+<span class="nc" id="L120">            strack.setCount(-1);</span>
+<span class="nc" id="L121">            zk.setData(quotaPath, strack.toString().getBytes(), -1);</span>
+<span class="nc bnc" id="L122" title="All 4 branches missed.">        } else if (bytes &amp;&amp; numNodes) {</span>
+            // delete till you can find a node with more than
+            // one child
+<span class="nc" id="L125">            List&lt;String&gt; children = zk.getChildren(parentPath, false);</span>
+            /// delete the direct children first
+<span class="nc bnc" id="L127" title="All 2 branches missed.">            for (String child : children) {</span>
+<span class="nc" id="L128">                zk.delete(parentPath + &quot;/&quot; + child, -1);</span>
+<span class="nc" id="L129">            }</span>
+            // cut the tree till their is more than one child
+<span class="nc" id="L131">            trimProcQuotas(zk, parentPath);</span>
+        }
+<span class="nc" id="L133">        return true;</span>
+    }
+
+    /**
+     * trim the quota tree to recover unwanted tree elements in the quota's tree
+     *
+     * @param zk the zookeeper client
+     * @param path the path to start from and go up and see if their is any
+     * unwanted parent in the path.
+     * @return true if successful
+     * @throws KeeperException
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    private static boolean trimProcQuotas(ZooKeeper zk, String path)
+            throws KeeperException, IOException, InterruptedException {
+<span class="nc bnc" id="L149" title="All 2 branches missed.">        if (Quotas.quotaZookeeper.equals(path)) {</span>
+<span class="nc" id="L150">            return true;</span>
+        }
+<span class="nc" id="L152">        List&lt;String&gt; children = zk.getChildren(path, false);</span>
+<span class="nc bnc" id="L153" title="All 2 branches missed.">        if (children.size() == 0) {</span>
+<span class="nc" id="L154">            zk.delete(path, -1);</span>
+<span class="nc" id="L155">            String parent = path.substring(0, path.lastIndexOf('/'));</span>
+<span class="nc" id="L156">            return trimProcQuotas(zk, parent);</span>
+        } else {
+<span class="nc" id="L158">            return true;</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

@@ -1,0 +1,376 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>CommitProcessor.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">CommitProcessor.java</span></div><h1>CommitProcessor.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.quorum;
+
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.LinkedBlockingQueue;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.ZooDefs.OpCode;
+import org.apache.zookeeper.server.Request;
+import org.apache.zookeeper.server.RequestProcessor;
+import org.apache.zookeeper.server.WorkerService;
+import org.apache.zookeeper.server.ZooKeeperCriticalThread;
+import org.apache.zookeeper.server.ZooKeeperServerListener;
+
+/**
+ * This RequestProcessor matches the incoming committed requests with the
+ * locally submitted requests. The trick is that locally submitted requests that
+ * change the state of the system will come back as incoming committed requests,
+ * so we need to match them up.
+ *
+ * The CommitProcessor is multi-threaded. Communication between threads is
+ * handled via queues, atomics, and wait/notifyAll synchronized on the
+ * processor. The CommitProcessor acts as a gateway for allowing requests to
+ * continue with the remainder of the processing pipeline. It will allow many
+ * read requests but only a single write request to be in flight simultaneously,
+ * thus ensuring that write requests are processed in transaction id order.
+ *
+ *   - 1   commit processor main thread, which watches the request queues and
+ *         assigns requests to worker threads based on their sessionId so that
+ *         read and write requests for a particular session are always assigned
+ *         to the same thread (and hence are guaranteed to run in order).
+ *   - 0-N worker threads, which run the rest of the request processor pipeline
+ *         on the requests. If configured with 0 worker threads, the primary
+ *         commit processor thread runs the pipeline directly.
+ *
+ * Typical (default) thread counts are: on a 32 core machine, 1 commit
+ * processor thread and 32 worker threads.
+ *
+ * Multi-threading constraints:
+ *   - Each session's requests must be processed in order.
+ *   - Write requests must be processed in zxid order
+ *   - Must ensure no race condition between writes in one session that would
+ *     trigger a watch being set by a read request in another session
+ *
+ * The current implementation solves the third constraint by simply allowing no
+ * read requests to be processed in parallel with write requests.
+ */
+public class CommitProcessor extends ZooKeeperCriticalThread implements
+        RequestProcessor {
+<span class="nc" id="L70">    private static final Logger LOG = LoggerFactory.getLogger(CommitProcessor.class);</span>
+
+    /** Default: numCores */
+    public static final String ZOOKEEPER_COMMIT_PROC_NUM_WORKER_THREADS =
+        &quot;zookeeper.commitProcessor.numWorkerThreads&quot;;
+    /** Default worker pool shutdown timeout in ms: 5000 (5s) */
+    public static final String ZOOKEEPER_COMMIT_PROC_SHUTDOWN_TIMEOUT =
+        &quot;zookeeper.commitProcessor.shutdownTimeout&quot;;
+
+    /**
+     * Requests that we are holding until the commit comes in.
+     */
+<span class="nc" id="L82">    protected final LinkedBlockingQueue&lt;Request&gt; queuedRequests =</span>
+        new LinkedBlockingQueue&lt;Request&gt;();
+
+    /**
+     * Requests that have been committed.
+     */
+<span class="nc" id="L88">    protected final LinkedBlockingQueue&lt;Request&gt; committedRequests =</span>
+        new LinkedBlockingQueue&lt;Request&gt;();
+
+    /** Request for which we are currently awaiting a commit */
+<span class="nc" id="L92">    protected final AtomicReference&lt;Request&gt; nextPending =</span>
+        new AtomicReference&lt;Request&gt;();
+    /** Request currently being committed (ie, sent off to next processor) */
+<span class="nc" id="L95">    private final AtomicReference&lt;Request&gt; currentlyCommitting =</span>
+        new AtomicReference&lt;Request&gt;();
+
+    /** The number of requests currently being processed */
+<span class="nc" id="L99">    protected AtomicInteger numRequestsProcessing = new AtomicInteger(0);</span>
+
+    RequestProcessor nextProcessor;
+
+<span class="nc" id="L103">    protected volatile boolean stopped = true;</span>
+    private long workerShutdownTimeoutMS;
+    protected WorkerService workerPool;
+
+    /**
+     * This flag indicates whether we need to wait for a response to come back from the
+     * leader or we just let the sync operation flow through like a read. The flag will
+     * be false if the CommitProcessor is in a Leader pipeline.
+     */
+    boolean matchSyncs;
+
+    public CommitProcessor(RequestProcessor nextProcessor, String id,
+                           boolean matchSyncs, ZooKeeperServerListener listener) {
+<span class="nc" id="L116">        super(&quot;CommitProcessor:&quot; + id, listener);</span>
+<span class="nc" id="L117">        this.nextProcessor = nextProcessor;</span>
+<span class="nc" id="L118">        this.matchSyncs = matchSyncs;</span>
+<span class="nc" id="L119">    }</span>
+
+    private boolean isProcessingRequest() {
+<span class="nc bnc" id="L122" title="All 2 branches missed.">        return numRequestsProcessing.get() != 0;</span>
+    }
+
+    private boolean isWaitingForCommit() {
+<span class="nc bnc" id="L126" title="All 2 branches missed.">        return nextPending.get() != null;</span>
+    }
+
+    private boolean isProcessingCommit() {
+<span class="nc bnc" id="L130" title="All 2 branches missed.">        return currentlyCommitting.get() != null;</span>
+    }
+
+    protected boolean needCommit(Request request) {
+<span class="nc bnc" id="L134" title="All 4 branches missed.">        switch (request.type) {</span>
+            case OpCode.create:
+            case OpCode.create2:
+            case OpCode.createTTL:
+            case OpCode.createContainer:
+            case OpCode.delete:
+            case OpCode.deleteContainer:
+            case OpCode.setData:
+            case OpCode.reconfig:
+            case OpCode.multi:
+            case OpCode.setACL:
+<span class="nc" id="L145">                return true;</span>
+            case OpCode.sync:
+<span class="nc" id="L147">                return matchSyncs;    </span>
+            case OpCode.createSession:
+            case OpCode.closeSession:
+<span class="nc bnc" id="L150" title="All 2 branches missed.">                return !request.isLocalSession();</span>
+            default:
+<span class="nc" id="L152">                return false;</span>
+        }
+    }
+
+    @Override
+    public void run() {
+        Request request;
+        try {
+<span class="nc bnc" id="L160" title="All 2 branches missed.">            while (!stopped) {</span>
+<span class="nc" id="L161">                synchronized(this) {</span>
+<span class="nc bnc" id="L162" title="All 2 branches missed.">                    while (</span>
+                        !stopped &amp;&amp;
+<span class="nc bnc" id="L164" title="All 6 branches missed.">                        ((queuedRequests.isEmpty() || isWaitingForCommit() || isProcessingCommit()) &amp;&amp;</span>
+<span class="nc bnc" id="L165" title="All 4 branches missed.">                         (committedRequests.isEmpty() || isProcessingRequest()))) {</span>
+<span class="nc" id="L166">                        wait();</span>
+                    }
+<span class="nc" id="L168">                }</span>
+
+                /*
+                 * Processing queuedRequests: Process the next requests until we
+                 * find one for which we need to wait for a commit. We cannot
+                 * process a read request while we are processing write request.
+                 */
+<span class="nc bnc" id="L175" title="All 4 branches missed.">                while (!stopped &amp;&amp; !isWaitingForCommit() &amp;&amp;</span>
+<span class="nc bnc" id="L176" title="All 2 branches missed.">                       !isProcessingCommit() &amp;&amp;</span>
+<span class="nc bnc" id="L177" title="All 2 branches missed.">                       (request = queuedRequests.poll()) != null) {</span>
+<span class="nc bnc" id="L178" title="All 2 branches missed.">                    if (needCommit(request)) {</span>
+<span class="nc" id="L179">                        nextPending.set(request);</span>
+                    } else {
+<span class="nc" id="L181">                        sendToNextProcessor(request);</span>
+                    }
+                }
+
+                /*
+                 * Processing committedRequests: check and see if the commit
+                 * came in for the pending request. We can only commit a
+                 * request when there is no other request being processed.
+                 */
+<span class="nc" id="L190">                processCommitted();</span>
+            }
+<span class="nc" id="L192">        } catch (Throwable e) {</span>
+<span class="nc" id="L193">            handleException(this.getName(), e);</span>
+<span class="nc" id="L194">        }</span>
+<span class="nc" id="L195">        LOG.info(&quot;CommitProcessor exited loop!&quot;);</span>
+<span class="nc" id="L196">    }</span>
+
+    /*
+     * Separated this method from the main run loop
+     * for test purposes (ZOOKEEPER-1863)
+     */
+    protected void processCommitted() {
+        Request request;
+
+<span class="nc bnc" id="L205" title="All 4 branches missed.">        if (!stopped &amp;&amp; !isProcessingRequest() &amp;&amp;</span>
+<span class="nc bnc" id="L206" title="All 2 branches missed.">                (committedRequests.peek() != null)) {</span>
+
+            /*
+             * ZOOKEEPER-1863: continue only if there is no new request
+             * waiting in queuedRequests or it is waiting for a
+             * commit. 
+             */
+<span class="nc bnc" id="L213" title="All 4 branches missed.">            if ( !isWaitingForCommit() &amp;&amp; !queuedRequests.isEmpty()) {</span>
+<span class="nc" id="L214">                return;</span>
+            }
+<span class="nc" id="L216">            request = committedRequests.poll();</span>
+
+            /*
+             * We match with nextPending so that we can move to the
+             * next request when it is committed. We also want to
+             * use nextPending because it has the cnxn member set
+             * properly.
+             */
+<span class="nc" id="L224">            Request pending = nextPending.get();</span>
+<span class="nc bnc" id="L225" title="All 6 branches missed.">            if (pending != null &amp;&amp;</span>
+                pending.sessionId == request.sessionId &amp;&amp;
+                pending.cxid == request.cxid) {
+                // we want to send our version of the request.
+                // the pointer to the connection in the request
+<span class="nc" id="L230">                pending.setHdr(request.getHdr());</span>
+<span class="nc" id="L231">                pending.setTxn(request.getTxn());</span>
+<span class="nc" id="L232">                pending.zxid = request.zxid;</span>
+                // Set currentlyCommitting so we will block until this
+                // completes. Cleared by CommitWorkRequest after
+                // nextProcessor returns.
+<span class="nc" id="L236">                currentlyCommitting.set(pending);</span>
+<span class="nc" id="L237">                nextPending.set(null);</span>
+<span class="nc" id="L238">                sendToNextProcessor(pending);</span>
+            } else {
+                // this request came from someone else so just
+                // send the commit packet
+<span class="nc" id="L242">                currentlyCommitting.set(request);</span>
+<span class="nc" id="L243">                sendToNextProcessor(request);</span>
+            }
+        }      
+<span class="nc" id="L246">    }</span>
+
+    @Override
+    public void start() {
+<span class="nc" id="L250">        int numCores = Runtime.getRuntime().availableProcessors();</span>
+<span class="nc" id="L251">        int numWorkerThreads = Integer.getInteger(</span>
+            ZOOKEEPER_COMMIT_PROC_NUM_WORKER_THREADS, numCores);
+<span class="nc" id="L253">        workerShutdownTimeoutMS = Long.getLong(</span>
+            ZOOKEEPER_COMMIT_PROC_SHUTDOWN_TIMEOUT, 5000);
+
+<span class="nc" id="L256">        LOG.info(&quot;Configuring CommitProcessor with &quot;</span>
+<span class="nc bnc" id="L257" title="All 2 branches missed.">                 + (numWorkerThreads &gt; 0 ? numWorkerThreads : &quot;no&quot;)</span>
+                 + &quot; worker threads.&quot;);
+<span class="nc bnc" id="L259" title="All 2 branches missed.">        if (workerPool == null) {</span>
+<span class="nc" id="L260">            workerPool = new WorkerService(</span>
+                &quot;CommitProcWork&quot;, numWorkerThreads, true);
+        }
+<span class="nc" id="L263">        stopped = false;</span>
+<span class="nc" id="L264">        super.start();</span>
+<span class="nc" id="L265">    }</span>
+
+    /**
+     * Schedule final request processing; if a worker thread pool is not being
+     * used, processing is done directly by this thread.
+     */
+    private void sendToNextProcessor(Request request) {
+<span class="nc" id="L272">        numRequestsProcessing.incrementAndGet();</span>
+<span class="nc" id="L273">        workerPool.schedule(new CommitWorkRequest(request), request.sessionId);</span>
+<span class="nc" id="L274">    }</span>
+
+    /**
+     * CommitWorkRequest is a small wrapper class to allow
+     * downstream processing to be run using the WorkerService
+     */
+    private class CommitWorkRequest extends WorkerService.WorkRequest {
+        private final Request request;
+
+<span class="nc" id="L283">        CommitWorkRequest(Request request) {</span>
+<span class="nc" id="L284">            this.request = request;</span>
+<span class="nc" id="L285">        }</span>
+
+        @Override
+        public void cleanup() {
+<span class="nc bnc" id="L289" title="All 2 branches missed.">            if (!stopped) {</span>
+<span class="nc" id="L290">                LOG.error(&quot;Exception thrown by downstream processor,&quot;</span>
+                          + &quot; unable to continue.&quot;);
+<span class="nc" id="L292">                CommitProcessor.this.halt();</span>
+            }
+<span class="nc" id="L294">        }</span>
+
+        public void doWork() throws RequestProcessorException {
+            try {
+<span class="nc" id="L298">                nextProcessor.processRequest(request);</span>
+            } finally {
+                // If this request is the commit request that was blocking
+                // the processor, clear.
+<span class="nc" id="L302">                currentlyCommitting.compareAndSet(request, null);</span>
+
+                /*
+                 * Decrement outstanding request count. The processor may be
+                 * blocked at the moment because it is waiting for the pipeline
+                 * to drain. In that case, wake it up if there are pending
+                 * requests.
+                 */
+<span class="nc bnc" id="L310" title="All 2 branches missed.">                if (numRequestsProcessing.decrementAndGet() == 0) {</span>
+<span class="nc bnc" id="L311" title="All 2 branches missed.">                    if (!queuedRequests.isEmpty() ||</span>
+<span class="nc bnc" id="L312" title="All 2 branches missed.">                        !committedRequests.isEmpty()) {</span>
+<span class="nc" id="L313">                        wakeup();</span>
+                    }
+                }
+            }
+<span class="nc" id="L317">        }</span>
+    }
+
+    @SuppressFBWarnings(&quot;NN_NAKED_NOTIFY&quot;)
+    synchronized private void wakeup() {
+<span class="nc" id="L322">        notifyAll();</span>
+<span class="nc" id="L323">    }</span>
+
+    public void commit(Request request) {
+<span class="nc bnc" id="L326" title="All 4 branches missed.">        if (stopped || request == null) {</span>
+<span class="nc" id="L327">            return;</span>
+        }
+<span class="nc bnc" id="L329" title="All 2 branches missed.">        if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L330">            LOG.debug(&quot;Committing request:: &quot; + request);</span>
+        }
+<span class="nc" id="L332">        committedRequests.add(request);</span>
+<span class="nc bnc" id="L333" title="All 2 branches missed.">        if (!isProcessingCommit()) {</span>
+<span class="nc" id="L334">            wakeup();</span>
+        }
+<span class="nc" id="L336">    }</span>
+
+    @Override
+    public void processRequest(Request request) {
+<span class="nc bnc" id="L340" title="All 2 branches missed.">        if (stopped) {</span>
+<span class="nc" id="L341">            return;</span>
+        }
+<span class="nc bnc" id="L343" title="All 2 branches missed.">        if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L344">            LOG.debug(&quot;Processing request:: &quot; + request);</span>
+        }
+<span class="nc" id="L346">        queuedRequests.add(request);</span>
+<span class="nc bnc" id="L347" title="All 2 branches missed.">        if (!isWaitingForCommit()) {</span>
+<span class="nc" id="L348">            wakeup();</span>
+        }
+<span class="nc" id="L350">    }</span>
+
+    private void halt() {
+<span class="nc" id="L353">        stopped = true;</span>
+<span class="nc" id="L354">        wakeup();</span>
+<span class="nc" id="L355">        queuedRequests.clear();</span>
+<span class="nc bnc" id="L356" title="All 2 branches missed.">        if (workerPool != null) {</span>
+<span class="nc" id="L357">            workerPool.stop();</span>
+        }
+<span class="nc" id="L359">    }</span>
+
+    public void shutdown() {
+<span class="nc" id="L362">        LOG.info(&quot;Shutting down&quot;);</span>
+
+<span class="nc" id="L364">        halt();</span>
+
+<span class="nc bnc" id="L366" title="All 2 branches missed.">        if (workerPool != null) {</span>
+<span class="nc" id="L367">            workerPool.join(workerShutdownTimeoutMS);</span>
+        }
+
+<span class="nc bnc" id="L370" title="All 2 branches missed.">        if (nextProcessor != null) {</span>
+<span class="nc" id="L371">            nextProcessor.shutdown();</span>
+        }
+<span class="nc" id="L373">    }</span>
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

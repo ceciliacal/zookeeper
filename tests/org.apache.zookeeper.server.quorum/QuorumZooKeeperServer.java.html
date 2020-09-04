@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>QuorumZooKeeperServer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">QuorumZooKeeperServer.java</span></div><h1>QuorumZooKeeperServer.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.server.quorum;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.ByteBuffer;
+
+import org.apache.zookeeper.CreateMode;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.MultiTransactionRecord;
+import org.apache.zookeeper.Op;
+import org.apache.zookeeper.ZooDefs.OpCode;
+import org.apache.zookeeper.proto.CreateRequest;
+import org.apache.zookeeper.server.ByteBufferInputStream;
+import org.apache.zookeeper.server.Request;
+import org.apache.zookeeper.server.ZKDatabase;
+import org.apache.zookeeper.server.ZooKeeperServer;
+import org.apache.zookeeper.server.persistence.FileTxnSnapLog;
+
+/**
+ * Abstract base class for all ZooKeeperServers that participate in
+ * a quorum.
+ */
+public abstract class QuorumZooKeeperServer extends ZooKeeperServer {
+
+    public final QuorumPeer self;
+    protected UpgradeableSessionTracker upgradeableSessionTracker;
+
+    protected QuorumZooKeeperServer(FileTxnSnapLog logFactory, int tickTime,
+            int minSessionTimeout, int maxSessionTimeout,
+            ZKDatabase zkDb, QuorumPeer self)
+    {
+<span class="nc" id="L49">        super(logFactory, tickTime, minSessionTimeout, maxSessionTimeout, zkDb);</span>
+<span class="nc" id="L50">        this.self = self;</span>
+<span class="nc" id="L51">    }</span>
+
+    @Override
+    protected void startSessionTracker() {
+<span class="nc" id="L55">        upgradeableSessionTracker = (UpgradeableSessionTracker) sessionTracker;</span>
+<span class="nc" id="L56">        upgradeableSessionTracker.start();</span>
+<span class="nc" id="L57">    }</span>
+
+    public Request checkUpgradeSession(Request request)
+            throws IOException, KeeperException {
+        // If this is a request for a local session and it is to
+        // create an ephemeral node, then upgrade the session and return
+        // a new session request for the leader.
+        // This is called by the request processor thread (either follower
+        // or observer request processor), which is unique to a learner.
+        // So will not be called concurrently by two threads.
+<span class="nc bnc" id="L67" title="All 6 branches missed.">        if ((request.type != OpCode.create &amp;&amp; request.type != OpCode.create2 &amp;&amp; request.type != OpCode.multi) ||</span>
+<span class="nc bnc" id="L68" title="All 2 branches missed.">            !upgradeableSessionTracker.isLocalSession(request.sessionId)) {</span>
+<span class="nc" id="L69">            return null;</span>
+        }
+
+<span class="nc bnc" id="L72" title="All 2 branches missed.">        if (OpCode.multi == request.type) {</span>
+<span class="nc" id="L73">            MultiTransactionRecord multiTransactionRecord = new MultiTransactionRecord();</span>
+<span class="nc" id="L74">            request.request.rewind();</span>
+<span class="nc" id="L75">            ByteBufferInputStream.byteBuffer2Record(request.request, multiTransactionRecord);</span>
+<span class="nc" id="L76">            request.request.rewind();</span>
+<span class="nc" id="L77">            boolean containsEphemeralCreate = false;</span>
+<span class="nc bnc" id="L78" title="All 2 branches missed.">            for (Op op : multiTransactionRecord) {</span>
+<span class="nc bnc" id="L79" title="All 4 branches missed.">                if (op.getType() == OpCode.create || op.getType() == OpCode.create2) {</span>
+<span class="nc" id="L80">                    CreateRequest createRequest = (CreateRequest)op.toRequestRecord();</span>
+<span class="nc" id="L81">                    CreateMode createMode = CreateMode.fromFlag(createRequest.getFlags());</span>
+<span class="nc bnc" id="L82" title="All 2 branches missed.">                    if (createMode.isEphemeral()) {</span>
+<span class="nc" id="L83">                        containsEphemeralCreate = true;</span>
+<span class="nc" id="L84">                        break;</span>
+                    }
+                }
+<span class="nc" id="L87">            }</span>
+<span class="nc bnc" id="L88" title="All 2 branches missed.">            if (!containsEphemeralCreate) {</span>
+<span class="nc" id="L89">                return null;</span>
+            }
+<span class="nc" id="L91">        } else {</span>
+<span class="nc" id="L92">            CreateRequest createRequest = new CreateRequest();</span>
+<span class="nc" id="L93">            request.request.rewind();</span>
+<span class="nc" id="L94">            ByteBufferInputStream.byteBuffer2Record(request.request, createRequest);</span>
+<span class="nc" id="L95">            request.request.rewind();</span>
+<span class="nc" id="L96">            CreateMode createMode = CreateMode.fromFlag(createRequest.getFlags());</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">            if (!createMode.isEphemeral()) {</span>
+<span class="nc" id="L98">                return null;</span>
+            }
+        }
+
+        // Uh oh.  We need to upgrade before we can proceed.
+<span class="nc bnc" id="L103" title="All 2 branches missed.">        if (!self.isLocalSessionsUpgradingEnabled()) {</span>
+<span class="nc" id="L104">            throw new KeeperException.EphemeralOnLocalSessionException();</span>
+        }
+
+<span class="nc" id="L107">        return makeUpgradeRequest(request.sessionId);</span>
+    }
+
+    private Request makeUpgradeRequest(long sessionId) {
+        // Make sure to atomically check local session status, upgrade
+        // session, and make the session creation request.  This is to
+        // avoid another thread upgrading the session in parallel.
+<span class="nc" id="L114">        synchronized (upgradeableSessionTracker) {</span>
+<span class="nc bnc" id="L115" title="All 2 branches missed.">            if (upgradeableSessionTracker.isLocalSession(sessionId)) {</span>
+<span class="nc" id="L116">                int timeout = upgradeableSessionTracker.upgradeSession(sessionId);</span>
+<span class="nc" id="L117">                ByteBuffer to = ByteBuffer.allocate(4);</span>
+<span class="nc" id="L118">                to.putInt(timeout);</span>
+<span class="nc" id="L119">                return new Request(</span>
+                        null, sessionId, 0, OpCode.createSession, to, null);
+            }
+<span class="nc" id="L122">        }</span>
+<span class="nc" id="L123">        return null;</span>
+    }
+
+    /**
+     * Implements the SessionUpgrader interface,
+     *
+     * @param sessionId
+     */
+    public void upgrade(long sessionId) {
+<span class="nc" id="L132">        Request request = makeUpgradeRequest(sessionId);</span>
+<span class="nc bnc" id="L133" title="All 2 branches missed.">        if (request != null) {</span>
+<span class="nc" id="L134">            LOG.info(&quot;Upgrading session 0x&quot; + Long.toHexString(sessionId));</span>
+            // This must be a global request
+<span class="nc" id="L136">            submitRequest(request);</span>
+        }
+<span class="nc" id="L138">    }</span>
+
+    @Override
+    protected void setLocalSessionFlag(Request si) {
+        // We need to set isLocalSession to tree for these type of request
+        // so that the request processor can process them correctly.
+<span class="nc bnc" id="L144" title="All 3 branches missed.">        switch (si.type) {</span>
+        case OpCode.createSession:
+<span class="nc bnc" id="L146" title="All 2 branches missed.">            if (self.areLocalSessionsEnabled()) {</span>
+                // All new sessions local by default.
+<span class="nc" id="L148">                si.setLocalSession(true);</span>
+            }
+            break;
+        case OpCode.closeSession:
+<span class="nc" id="L152">            String reqType = &quot;global&quot;;</span>
+<span class="nc bnc" id="L153" title="All 2 branches missed.">            if (upgradeableSessionTracker.isLocalSession(si.sessionId)) {</span>
+<span class="nc" id="L154">                si.setLocalSession(true);</span>
+<span class="nc" id="L155">                reqType = &quot;local&quot;;</span>
+            }
+<span class="nc" id="L157">            LOG.info(&quot;Submitting &quot; + reqType + &quot; closeSession request&quot;</span>
+<span class="nc" id="L158">                    + &quot; for session 0x&quot; + Long.toHexString(si.sessionId));</span>
+<span class="nc" id="L159">            break;</span>
+        default:
+            break;
+        }
+<span class="nc" id="L163">    }</span>
+
+    @Override
+    public void dumpConf(PrintWriter pwriter) {
+<span class="nc" id="L167">        super.dumpConf(pwriter);</span>
+
+<span class="nc" id="L169">        pwriter.print(&quot;initLimit=&quot;);</span>
+<span class="nc" id="L170">        pwriter.println(self.getInitLimit());</span>
+<span class="nc" id="L171">        pwriter.print(&quot;syncLimit=&quot;);</span>
+<span class="nc" id="L172">        pwriter.println(self.getSyncLimit());</span>
+<span class="nc" id="L173">        pwriter.print(&quot;electionAlg=&quot;);</span>
+<span class="nc" id="L174">        pwriter.println(self.getElectionType());</span>
+<span class="nc" id="L175">        pwriter.print(&quot;electionPort=&quot;);</span>
+<span class="nc" id="L176">        pwriter.println(self.getElectionAddress().getPort());</span>
+<span class="nc" id="L177">        pwriter.print(&quot;quorumPort=&quot;);</span>
+<span class="nc" id="L178">        pwriter.println(self.getQuorumAddress().getPort());</span>
+<span class="nc" id="L179">        pwriter.print(&quot;peerType=&quot;);</span>
+<span class="nc" id="L180">        pwriter.println(self.getLearnerType().ordinal());</span>
+<span class="nc" id="L181">        pwriter.println(&quot;membership: &quot;);</span>
+<span class="nc" id="L182">        pwriter.print(new String(self.getQuorumVerifier().toString().getBytes()));</span>
+<span class="nc" id="L183">    }</span>
+
+    @Override
+    protected void setState(State state) {
+<span class="nc" id="L187">        this.state = state;</span>
+<span class="nc" id="L188">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

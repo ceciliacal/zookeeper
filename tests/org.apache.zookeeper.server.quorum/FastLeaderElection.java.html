@@ -1,0 +1,1095 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FastLeaderElection.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">FastLeaderElection.java</span></div><h1>FastLeaderElection.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+
+package org.apache.zookeeper.server.quorum;
+
+import java.io.IOException;
+import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.apache.zookeeper.common.Time;
+import org.apache.zookeeper.jmx.MBeanRegistry;
+import org.apache.zookeeper.server.ZooKeeperThread;
+import org.apache.zookeeper.server.quorum.QuorumCnxManager.Message;
+import org.apache.zookeeper.server.quorum.QuorumPeer.LearnerType;
+import org.apache.zookeeper.server.quorum.QuorumPeer.ServerState;
+import org.apache.zookeeper.server.quorum.QuorumPeerConfig.ConfigException;
+import org.apache.zookeeper.server.quorum.flexible.QuorumVerifier;
+import org.apache.zookeeper.server.util.ZxidUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+
+/**
+ * Implementation of leader election using TCP. It uses an object of the class
+ * QuorumCnxManager to manage connections. Otherwise, the algorithm is push-based
+ * as with the other UDP implementations.
+ *
+ * There are a few parameters that can be tuned to change its behavior. First,
+ * finalizeWait determines the amount of time to wait until deciding upon a leader.
+ * This is part of the leader election algorithm.
+ */
+
+
+public class FastLeaderElection implements Election {
+<span class="nc" id="L56">    private static final Logger LOG = LoggerFactory.getLogger(FastLeaderElection.class);</span>
+
+    /**
+     * Determine how much time a process has to wait
+     * once it believes that it has reached the end of
+     * leader election.
+     */
+    final static int finalizeWait = 200;
+
+
+    /**
+     * Upper bound on the amount of time between two consecutive
+     * notification checks. This impacts the amount of time to get
+     * the system up again after long partitions. Currently 60 seconds.
+     */
+
+    final static int maxNotificationInterval = 60000;
+    
+    /**
+     * Connection manager. Fast leader election uses TCP for
+     * communication between peers, and QuorumCnxManager manages
+     * such connections.
+     */
+
+    QuorumCnxManager manager;
+
+
+    /**
+     * Notifications are messages that let other peers know that
+     * a given peer has changed its vote, either because it has
+     * joined leader election or because it learned of another
+     * peer with higher zxid or same zxid and higher server id
+     */
+
+<span class="nc" id="L90">    static public class Notification {</span>
+        /*
+         * Format version, introduced in 3.4.6
+         */
+
+        public final static int CURRENTVERSION = 0x2;
+        int version;
+
+        /*
+         * Proposed leader
+         */
+        long leader;
+
+        /*
+         * zxid of the proposed leader
+         */
+        long zxid;
+
+        /*
+         * Epoch
+         */
+        long electionEpoch;
+
+        /*
+         * current state of sender
+         */
+        QuorumPeer.ServerState state;
+
+        /*
+         * Address of sender
+         */
+        long sid;
+        
+        QuorumVerifier qv;
+        /*
+         * epoch of the proposed leader
+         */
+        long peerEpoch;
+    }
+
+<span class="nc" id="L130">    static byte[] dummyData = new byte[0];</span>
+
+    /**
+     * Messages that a peer wants to send to other peers.
+     * These messages can be both Notifications and Acks
+     * of reception of notification.
+     */
+    static public class ToSend {
+<span class="nc" id="L138">        static enum mType {crequest, challenge, notification, ack}</span>
+
+        ToSend(mType type,
+                long leader,
+                long zxid,
+                long electionEpoch,
+                ServerState state,
+                long sid,
+                long peerEpoch,
+<span class="nc" id="L147">                byte[] configData) {</span>
+
+<span class="nc" id="L149">            this.leader = leader;</span>
+<span class="nc" id="L150">            this.zxid = zxid;</span>
+<span class="nc" id="L151">            this.electionEpoch = electionEpoch;</span>
+<span class="nc" id="L152">            this.state = state;</span>
+<span class="nc" id="L153">            this.sid = sid;</span>
+<span class="nc" id="L154">            this.peerEpoch = peerEpoch;</span>
+<span class="nc" id="L155">            this.configData = configData;</span>
+<span class="nc" id="L156">        }</span>
+
+        /*
+         * Proposed leader in the case of notification
+         */
+        long leader;
+
+        /*
+         * id contains the tag for acks, and zxid for notifications
+         */
+        long zxid;
+
+        /*
+         * Epoch
+         */
+        long electionEpoch;
+
+        /*
+         * Current state;
+         */
+        QuorumPeer.ServerState state;
+
+        /*
+         * Address of recipient
+         */
+        long sid;
+
+        /*
+         * Used to send a QuorumVerifier (configuration info)
+         */
+<span class="nc" id="L186">        byte[] configData = dummyData;</span>
+
+        /*
+         * Leader epoch
+         */
+        long peerEpoch;
+    }
+
+    LinkedBlockingQueue&lt;ToSend&gt; sendqueue;
+    LinkedBlockingQueue&lt;Notification&gt; recvqueue;
+
+    /**
+     * Multi-threaded implementation of message handler. Messenger
+     * implements two sub-classes: WorkReceiver and  WorkSender. The
+     * functionality of each is obvious from the name. Each of these
+     * spawns a new thread.
+     */
+
+    protected class Messenger {
+
+        /**
+         * Receives messages from instance of QuorumCnxManager on
+         * method run(), and processes such messages.
+         */
+
+        class WorkerReceiver extends ZooKeeperThread  {
+            volatile boolean stop;
+            QuorumCnxManager manager;
+
+<span class="nc" id="L215">            WorkerReceiver(QuorumCnxManager manager) {</span>
+<span class="nc" id="L216">                super(&quot;WorkerReceiver&quot;);</span>
+<span class="nc" id="L217">                this.stop = false;</span>
+<span class="nc" id="L218">                this.manager = manager;</span>
+<span class="nc" id="L219">            }</span>
+
+            public void run() {
+
+                Message response;
+<span class="nc bnc" id="L224" title="All 2 branches missed.">                while (!stop) {</span>
+                    // Sleeps on receive
+                    try {
+<span class="nc" id="L227">                        response = manager.pollRecvQueue(3000, TimeUnit.MILLISECONDS);</span>
+<span class="nc bnc" id="L228" title="All 2 branches missed.">                        if(response == null) continue;</span>
+
+<span class="nc" id="L230">                        final int capacity = response.buffer.capacity();</span>
+
+                        // The current protocol and two previous generations all send at least 28 bytes
+<span class="nc bnc" id="L233" title="All 2 branches missed.">                        if (capacity &lt; 28) {</span>
+<span class="nc" id="L234">                            LOG.error(&quot;Got a short response from server {}: {}&quot;, response.sid, capacity);</span>
+<span class="nc" id="L235">                            continue;</span>
+                        }
+
+                        // this is the backwardCompatibility mode in place before ZK-107
+                        // It is for a version of the protocol in which we didn't send peer epoch
+                        // With peer epoch and version the message became 40 bytes
+<span class="nc bnc" id="L241" title="All 2 branches missed.">                        boolean backCompatibility28 = (capacity == 28);</span>
+
+                        // this is the backwardCompatibility mode for no version information
+<span class="nc bnc" id="L244" title="All 2 branches missed.">                        boolean backCompatibility40 = (capacity == 40);</span>
+
+<span class="nc" id="L246">                        response.buffer.clear();</span>
+
+                        // Instantiate Notification and set its attributes
+<span class="nc" id="L249">                        Notification n = new Notification();</span>
+
+<span class="nc" id="L251">                        int rstate = response.buffer.getInt();</span>
+<span class="nc" id="L252">                        long rleader = response.buffer.getLong();</span>
+<span class="nc" id="L253">                        long rzxid = response.buffer.getLong();</span>
+<span class="nc" id="L254">                        long relectionEpoch = response.buffer.getLong();</span>
+                        long rpeerepoch;
+
+<span class="nc" id="L257">                        int version = 0x0;</span>
+<span class="nc" id="L258">                        QuorumVerifier rqv = null;</span>
+
+                        try {
+
+<span class="nc bnc" id="L262" title="All 2 branches missed.">                            if (!backCompatibility28) {</span>
+<span class="nc" id="L263">                                rpeerepoch = response.buffer.getLong();</span>
+<span class="nc bnc" id="L264" title="All 2 branches missed.">                                if (!backCompatibility40) {</span>
+                                    /*
+                                     * Version added in 3.4.6
+                                     */
+
+<span class="nc" id="L269">                                    version = response.buffer.getInt();</span>
+                                } else {
+<span class="nc" id="L271">                                    LOG.info(&quot;Backward compatibility mode (36 bits), server id: {}&quot;, response.sid);</span>
+                                }
+                            } else {
+<span class="nc" id="L274">                                LOG.info(&quot;Backward compatibility mode (28 bits), server id: {}&quot;, response.sid);</span>
+<span class="nc" id="L275">                                rpeerepoch = ZxidUtils.getEpochFromZxid(rzxid);</span>
+                            }
+
+
+                            // check if we have a version that includes config. If so extract config info from message.
+<span class="nc bnc" id="L280" title="All 2 branches missed.">                            if (version &gt; 0x1) {</span>
+<span class="nc" id="L281">                                int configLength = response.buffer.getInt();</span>
+
+                                // we want to avoid errors caused by the allocation of a byte array with negative length
+                                // (causing NegativeArraySizeException) or huge length (causing e.g. OutOfMemoryError)
+<span class="nc bnc" id="L285" title="All 4 branches missed.">                                if (configLength &lt; 0 || configLength &gt; capacity) {</span>
+<span class="nc" id="L286">                                    throw new IOException(String.format(&quot;Invalid configLength in notification message! sid=%d, capacity=%d, version=%d, configLength=%d&quot;,</span>
+<span class="nc" id="L287">                                                          response.sid, capacity, version, configLength));</span>
+                                }
+
+<span class="nc" id="L290">                                byte b[] = new byte[configLength];</span>
+
+<span class="nc" id="L292">                                response.buffer.get(b);</span>
+
+<span class="nc" id="L294">                                synchronized (self) {</span>
+                                    try {
+<span class="nc" id="L296">                                        rqv = self.configFromString(new String(b));</span>
+<span class="nc" id="L297">                                        QuorumVerifier curQV = self.getQuorumVerifier();</span>
+<span class="nc bnc" id="L298" title="All 2 branches missed.">                                        if (rqv.getVersion() &gt; curQV.getVersion()) {</span>
+<span class="nc" id="L299">                                            LOG.info(&quot;{} Received version: {} my version: {}&quot;, self.getId(),</span>
+<span class="nc" id="L300">                                                    Long.toHexString(rqv.getVersion()),</span>
+<span class="nc" id="L301">                                                    Long.toHexString(self.getQuorumVerifier().getVersion()));</span>
+<span class="nc bnc" id="L302" title="All 2 branches missed.">                                            if (self.getPeerState() == ServerState.LOOKING) {</span>
+<span class="nc" id="L303">                                                LOG.debug(&quot;Invoking processReconfig(), state: {}&quot;, self.getServerState());</span>
+<span class="nc" id="L304">                                                self.processReconfig(rqv, null, null, false);</span>
+<span class="nc bnc" id="L305" title="All 2 branches missed.">                                                if (!rqv.equals(curQV)) {</span>
+<span class="nc" id="L306">                                                    LOG.info(&quot;restarting leader election&quot;);</span>
+<span class="nc" id="L307">                                                    self.shuttingDownLE = true;</span>
+<span class="nc" id="L308">                                                    self.getElectionAlg().shutdown();</span>
+
+<span class="nc" id="L310">                                                    break;</span>
+                                                }
+                                            } else {
+<span class="nc" id="L313">                                                LOG.debug(&quot;Skip processReconfig(), state: {}&quot;, self.getServerState());</span>
+                                            }
+                                        }
+<span class="nc" id="L316">                                    } catch (IOException | ConfigException e) {</span>
+<span class="nc" id="L317">                                        LOG.error(&quot;Something went wrong while processing config received from {}. &quot; +</span>
+<span class="nc" id="L318">                                                  &quot;Continue to process the notification message without handling the configuration.&quot;, response.sid);</span>
+<span class="nc" id="L319">                                    }</span>
+<span class="nc" id="L320">                                }</span>
+<span class="nc" id="L321">                            } else {</span>
+<span class="nc" id="L322">                                LOG.info(&quot;Backward compatibility mode (before reconfig), server id: {}&quot;, response.sid);</span>
+                            }
+<span class="nc" id="L324">                        } catch (BufferUnderflowException | IOException e) {</span>
+<span class="nc" id="L325">                            LOG.warn(&quot;Skipping the processing of a partial / malformed response message sent by sid={} (message length: {})&quot;,</span>
+<span class="nc" id="L326">                                     response.sid, capacity, e);</span>
+<span class="nc" id="L327">                            continue;</span>
+<span class="nc" id="L328">                        }</span>
+
+                        /*
+                         * If it is from a non-voting server (such as an observer or
+                         * a non-voting follower), respond right away.
+                         */
+<span class="nc bnc" id="L334" title="All 2 branches missed.">                        if(!validVoter(response.sid)) {</span>
+<span class="nc" id="L335">                            Vote current = self.getCurrentVote();</span>
+<span class="nc" id="L336">                            QuorumVerifier qv = self.getQuorumVerifier();</span>
+<span class="nc" id="L337">                            ToSend notmsg = new ToSend(ToSend.mType.notification,</span>
+<span class="nc" id="L338">                                    current.getId(),</span>
+<span class="nc" id="L339">                                    current.getZxid(),</span>
+<span class="nc" id="L340">                                    logicalclock.get(),</span>
+<span class="nc" id="L341">                                    self.getPeerState(),</span>
+                                    response.sid,
+<span class="nc" id="L343">                                    current.getPeerEpoch(),</span>
+<span class="nc" id="L344">                                    qv.toString().getBytes());</span>
+
+<span class="nc" id="L346">                            sendqueue.offer(notmsg);</span>
+<span class="nc" id="L347">                        } else {</span>
+                            // Receive new message
+<span class="nc bnc" id="L349" title="All 2 branches missed.">                            if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L350">                                LOG.debug(&quot;Receive new notification message. My id = &quot;</span>
+<span class="nc" id="L351">                                        + self.getId());</span>
+                            }
+
+                            // State of peer that sent this message
+<span class="nc" id="L355">                            QuorumPeer.ServerState ackstate = QuorumPeer.ServerState.LOOKING;</span>
+<span class="nc bnc" id="L356" title="All 5 branches missed.">                            switch (rstate) {</span>
+                            case 0:
+<span class="nc" id="L358">                                ackstate = QuorumPeer.ServerState.LOOKING;</span>
+<span class="nc" id="L359">                                break;</span>
+                            case 1:
+<span class="nc" id="L361">                                ackstate = QuorumPeer.ServerState.FOLLOWING;</span>
+<span class="nc" id="L362">                                break;</span>
+                            case 2:
+<span class="nc" id="L364">                                ackstate = QuorumPeer.ServerState.LEADING;</span>
+<span class="nc" id="L365">                                break;</span>
+                            case 3:
+<span class="nc" id="L367">                                ackstate = QuorumPeer.ServerState.OBSERVING;</span>
+<span class="nc" id="L368">                                break;</span>
+                            default:
+<span class="nc" id="L370">                                continue;</span>
+                            }
+
+<span class="nc" id="L373">                            n.leader = rleader;</span>
+<span class="nc" id="L374">                            n.zxid = rzxid;</span>
+<span class="nc" id="L375">                            n.electionEpoch = relectionEpoch;</span>
+<span class="nc" id="L376">                            n.state = ackstate;</span>
+<span class="nc" id="L377">                            n.sid = response.sid;</span>
+<span class="nc" id="L378">                            n.peerEpoch = rpeerepoch;</span>
+<span class="nc" id="L379">                            n.version = version;</span>
+<span class="nc" id="L380">                            n.qv = rqv;</span>
+                            /*
+                             * Print notification info
+                             */
+<span class="nc bnc" id="L384" title="All 2 branches missed.">                            if(LOG.isInfoEnabled()){</span>
+<span class="nc" id="L385">                                printNotification(n);</span>
+                            }
+
+                            /*
+                             * If this server is looking, then send proposed leader
+                             */
+
+<span class="nc bnc" id="L392" title="All 2 branches missed.">                            if(self.getPeerState() == QuorumPeer.ServerState.LOOKING){</span>
+<span class="nc" id="L393">                                recvqueue.offer(n);</span>
+
+                                /*
+                                 * Send a notification back if the peer that sent this
+                                 * message is also looking and its logical clock is
+                                 * lagging behind.
+                                 */
+<span class="nc bnc" id="L400" title="All 2 branches missed.">                                if((ackstate == QuorumPeer.ServerState.LOOKING)</span>
+<span class="nc bnc" id="L401" title="All 2 branches missed.">                                        &amp;&amp; (n.electionEpoch &lt; logicalclock.get())){</span>
+<span class="nc" id="L402">                                    Vote v = getVote();</span>
+<span class="nc" id="L403">                                    QuorumVerifier qv = self.getQuorumVerifier();</span>
+<span class="nc" id="L404">                                    ToSend notmsg = new ToSend(ToSend.mType.notification,</span>
+<span class="nc" id="L405">                                            v.getId(),</span>
+<span class="nc" id="L406">                                            v.getZxid(),</span>
+<span class="nc" id="L407">                                            logicalclock.get(),</span>
+<span class="nc" id="L408">                                            self.getPeerState(),</span>
+                                            response.sid,
+<span class="nc" id="L410">                                            v.getPeerEpoch(),</span>
+<span class="nc" id="L411">                                            qv.toString().getBytes());</span>
+<span class="nc" id="L412">                                    sendqueue.offer(notmsg);</span>
+<span class="nc" id="L413">                                }</span>
+                            } else {
+                                /*
+                                 * If this server is not looking, but the one that sent the ack
+                                 * is looking, then send back what it believes to be the leader.
+                                 */
+<span class="nc" id="L419">                                Vote current = self.getCurrentVote();</span>
+<span class="nc bnc" id="L420" title="All 2 branches missed.">                                if(ackstate == QuorumPeer.ServerState.LOOKING){</span>
+<span class="nc bnc" id="L421" title="All 2 branches missed.">                                    if(LOG.isDebugEnabled()){</span>
+<span class="nc" id="L422">                                        LOG.debug(&quot;Sending new notification. My id ={} recipient={} zxid=0x{} leader={} config version = {}&quot;,</span>
+<span class="nc" id="L423">                                                self.getId(),</span>
+<span class="nc" id="L424">                                                response.sid,</span>
+<span class="nc" id="L425">                                                Long.toHexString(current.getZxid()),</span>
+<span class="nc" id="L426">                                                current.getId(),</span>
+<span class="nc" id="L427">                                                Long.toHexString(self.getQuorumVerifier().getVersion()));</span>
+                                    }
+
+<span class="nc" id="L430">                                    QuorumVerifier qv = self.getQuorumVerifier();</span>
+<span class="nc" id="L431">                                    ToSend notmsg = new ToSend(</span>
+                                            ToSend.mType.notification,
+<span class="nc" id="L433">                                            current.getId(),</span>
+<span class="nc" id="L434">                                            current.getZxid(),</span>
+<span class="nc" id="L435">                                            current.getElectionEpoch(),</span>
+<span class="nc" id="L436">                                            self.getPeerState(),</span>
+                                            response.sid,
+<span class="nc" id="L438">                                            current.getPeerEpoch(),</span>
+<span class="nc" id="L439">                                            qv.toString().getBytes());</span>
+<span class="nc" id="L440">                                    sendqueue.offer(notmsg);</span>
+                                }
+                            }
+                        }
+<span class="nc" id="L444">                    } catch (InterruptedException e) {</span>
+<span class="nc" id="L445">                        LOG.warn(&quot;Interrupted Exception while waiting for new message&quot; +</span>
+<span class="nc" id="L446">                                e.toString());</span>
+<span class="nc" id="L447">                    }</span>
+                }
+<span class="nc" id="L449">                LOG.info(&quot;WorkerReceiver is down&quot;);</span>
+<span class="nc" id="L450">            }</span>
+        }
+
+        /**
+         * This worker simply dequeues a message to send and
+         * and queues it on the manager's queue.
+         */
+
+        class WorkerSender extends ZooKeeperThread {
+            volatile boolean stop;
+            QuorumCnxManager manager;
+
+<span class="nc" id="L462">            WorkerSender(QuorumCnxManager manager){</span>
+<span class="nc" id="L463">                super(&quot;WorkerSender&quot;);</span>
+<span class="nc" id="L464">                this.stop = false;</span>
+<span class="nc" id="L465">                this.manager = manager;</span>
+<span class="nc" id="L466">            }</span>
+
+            public void run() {
+<span class="nc bnc" id="L469" title="All 2 branches missed.">                while (!stop) {</span>
+                    try {
+<span class="nc" id="L471">                        ToSend m = sendqueue.poll(3000, TimeUnit.MILLISECONDS);</span>
+<span class="nc bnc" id="L472" title="All 2 branches missed.">                        if(m == null) continue;</span>
+
+<span class="nc" id="L474">                        process(m);</span>
+<span class="nc" id="L475">                    } catch (InterruptedException e) {</span>
+<span class="nc" id="L476">                        break;</span>
+<span class="nc" id="L477">                    }</span>
+                }
+<span class="nc" id="L479">                LOG.info(&quot;WorkerSender is down&quot;);</span>
+<span class="nc" id="L480">            }</span>
+
+            /**
+             * Called by run() once there is a new message to send.
+             *
+             * @param m     message to send
+             */
+            void process(ToSend m) {
+<span class="nc" id="L488">                ByteBuffer requestBuffer = buildMsg(m.state.ordinal(),</span>
+                                                    m.leader,
+                                                    m.zxid,
+                                                    m.electionEpoch,
+                                                    m.peerEpoch,
+                                                    m.configData);
+
+<span class="nc" id="L495">                manager.toSend(m.sid, requestBuffer);</span>
+
+<span class="nc" id="L497">            }</span>
+        }
+
+        WorkerSender ws;
+        WorkerReceiver wr;
+<span class="nc" id="L502">        Thread wsThread = null;</span>
+<span class="nc" id="L503">        Thread wrThread = null;</span>
+
+        /**
+         * Constructor of class Messenger.
+         *
+         * @param manager   Connection manager
+         */
+<span class="nc" id="L510">        Messenger(QuorumCnxManager manager) {</span>
+
+<span class="nc" id="L512">            this.ws = new WorkerSender(manager);</span>
+
+<span class="nc" id="L514">            this.wsThread = new Thread(this.ws,</span>
+<span class="nc" id="L515">                    &quot;WorkerSender[myid=&quot; + self.getId() + &quot;]&quot;);</span>
+<span class="nc" id="L516">            this.wsThread.setDaemon(true);</span>
+
+<span class="nc" id="L518">            this.wr = new WorkerReceiver(manager);</span>
+
+<span class="nc" id="L520">            this.wrThread = new Thread(this.wr,</span>
+<span class="nc" id="L521">                    &quot;WorkerReceiver[myid=&quot; + self.getId() + &quot;]&quot;);</span>
+<span class="nc" id="L522">            this.wrThread.setDaemon(true);</span>
+<span class="nc" id="L523">        }</span>
+
+        /**
+         * Starts instances of WorkerSender and WorkerReceiver
+         */
+        void start(){
+<span class="nc" id="L529">            this.wsThread.start();</span>
+<span class="nc" id="L530">            this.wrThread.start();</span>
+<span class="nc" id="L531">        }</span>
+
+        /**
+         * Stops instances of WorkerSender and WorkerReceiver
+         */
+        void halt(){
+<span class="nc" id="L537">            this.ws.stop = true;</span>
+<span class="nc" id="L538">            this.wr.stop = true;</span>
+<span class="nc" id="L539">        }</span>
+
+    }
+
+    QuorumPeer self;
+    Messenger messenger;
+<span class="nc" id="L545">    AtomicLong logicalclock = new AtomicLong(); /* Election instance */</span>
+    long proposedLeader;
+    long proposedZxid;
+    long proposedEpoch;
+
+
+    /**
+     * Returns the current vlue of the logical clock counter
+     */
+    public long getLogicalClock(){
+<span class="nc" id="L555">        return logicalclock.get();</span>
+    }
+
+    static ByteBuffer buildMsg(int state,
+            long leader,
+            long zxid,
+            long electionEpoch,
+            long epoch) {
+<span class="nc" id="L563">        byte requestBytes[] = new byte[40];</span>
+<span class="nc" id="L564">        ByteBuffer requestBuffer = ByteBuffer.wrap(requestBytes);</span>
+
+        /*
+         * Building notification packet to send, this is called directly only in tests
+         */
+
+<span class="nc" id="L570">        requestBuffer.clear();</span>
+<span class="nc" id="L571">        requestBuffer.putInt(state);</span>
+<span class="nc" id="L572">        requestBuffer.putLong(leader);</span>
+<span class="nc" id="L573">        requestBuffer.putLong(zxid);</span>
+<span class="nc" id="L574">        requestBuffer.putLong(electionEpoch);</span>
+<span class="nc" id="L575">        requestBuffer.putLong(epoch);</span>
+<span class="nc" id="L576">        requestBuffer.putInt(0x1);</span>
+
+<span class="nc" id="L578">        return requestBuffer;</span>
+    }
+
+    static ByteBuffer buildMsg(int state,
+            long leader,
+            long zxid,
+            long electionEpoch,
+            long epoch,
+            byte[] configData) {
+<span class="nc" id="L587">        byte requestBytes[] = new byte[44 + configData.length];</span>
+<span class="nc" id="L588">        ByteBuffer requestBuffer = ByteBuffer.wrap(requestBytes);</span>
+
+        /*
+         * Building notification packet to send
+         */
+
+<span class="nc" id="L594">        requestBuffer.clear();</span>
+<span class="nc" id="L595">        requestBuffer.putInt(state);</span>
+<span class="nc" id="L596">        requestBuffer.putLong(leader);</span>
+<span class="nc" id="L597">        requestBuffer.putLong(zxid);</span>
+<span class="nc" id="L598">        requestBuffer.putLong(electionEpoch);</span>
+<span class="nc" id="L599">        requestBuffer.putLong(epoch);</span>
+<span class="nc" id="L600">        requestBuffer.putInt(Notification.CURRENTVERSION);</span>
+<span class="nc" id="L601">        requestBuffer.putInt(configData.length);</span>
+<span class="nc" id="L602">        requestBuffer.put(configData);</span>
+
+<span class="nc" id="L604">        return requestBuffer;</span>
+    }
+
+    /**
+     * Constructor of FastLeaderElection. It takes two parameters, one
+     * is the QuorumPeer object that instantiated this object, and the other
+     * is the connection manager. Such an object should be created only once
+     * by each peer during an instance of the ZooKeeper service.
+     *
+     * @param self  QuorumPeer that created this object
+     * @param manager   Connection manager
+     */
+<span class="nc" id="L616">    public FastLeaderElection(QuorumPeer self, QuorumCnxManager manager){</span>
+<span class="nc" id="L617">        this.stop = false;</span>
+<span class="nc" id="L618">        this.manager = manager;</span>
+<span class="nc" id="L619">        starter(self, manager);</span>
+<span class="nc" id="L620">    }</span>
+
+    /**
+     * This method is invoked by the constructor. Because it is a
+     * part of the starting procedure of the object that must be on
+     * any constructor of this class, it is probably best to keep as
+     * a separate method. As we have a single constructor currently,
+     * it is not strictly necessary to have it separate.
+     *
+     * @param self      QuorumPeer that created this object
+     * @param manager   Connection manager
+     */
+    private void starter(QuorumPeer self, QuorumCnxManager manager) {
+<span class="nc" id="L633">        this.self = self;</span>
+<span class="nc" id="L634">        proposedLeader = -1;</span>
+<span class="nc" id="L635">        proposedZxid = -1;</span>
+
+<span class="nc" id="L637">        sendqueue = new LinkedBlockingQueue&lt;ToSend&gt;();</span>
+<span class="nc" id="L638">        recvqueue = new LinkedBlockingQueue&lt;Notification&gt;();</span>
+<span class="nc" id="L639">        this.messenger = new Messenger(manager);</span>
+<span class="nc" id="L640">    }</span>
+
+    /**
+     * This method starts the sender and receiver threads.
+     */
+    public void start() {
+<span class="nc" id="L646">        this.messenger.start();</span>
+<span class="nc" id="L647">    }</span>
+
+    private void leaveInstance(Vote v) {
+<span class="nc bnc" id="L650" title="All 2 branches missed.">        if(LOG.isDebugEnabled()){</span>
+<span class="nc" id="L651">            LOG.debug(&quot;About to leave FLE instance: leader={}, zxid=0x{}, my id={}, my state={}&quot;,</span>
+<span class="nc" id="L652">                v.getId(), Long.toHexString(v.getZxid()), self.getId(), self.getPeerState());</span>
+        }
+<span class="nc" id="L654">        recvqueue.clear();</span>
+<span class="nc" id="L655">    }</span>
+
+    public QuorumCnxManager getCnxManager(){
+<span class="nc" id="L658">        return manager;</span>
+    }
+
+    volatile boolean stop;
+    public void shutdown(){
+<span class="nc" id="L663">        stop = true;</span>
+<span class="nc" id="L664">        proposedLeader = -1;</span>
+<span class="nc" id="L665">        proposedZxid = -1;</span>
+<span class="nc" id="L666">        LOG.debug(&quot;Shutting down connection manager&quot;);</span>
+<span class="nc" id="L667">        manager.halt();</span>
+<span class="nc" id="L668">        LOG.debug(&quot;Shutting down messenger&quot;);</span>
+<span class="nc" id="L669">        messenger.halt();</span>
+<span class="nc" id="L670">        LOG.debug(&quot;FLE is down&quot;);</span>
+<span class="nc" id="L671">    }</span>
+
+    /**
+     * Send notifications to all peers upon a change in our vote
+     */
+    private void sendNotifications() {
+<span class="nc bnc" id="L677" title="All 2 branches missed.">        for (long sid : self.getCurrentAndNextConfigVoters()) {</span>
+<span class="nc" id="L678">            QuorumVerifier qv = self.getQuorumVerifier();</span>
+<span class="nc" id="L679">            ToSend notmsg = new ToSend(ToSend.mType.notification,</span>
+                    proposedLeader,
+                    proposedZxid,
+<span class="nc" id="L682">                    logicalclock.get(),</span>
+                    QuorumPeer.ServerState.LOOKING,
+                    sid,
+<span class="nc" id="L685">                    proposedEpoch, qv.toString().getBytes());</span>
+<span class="nc bnc" id="L686" title="All 2 branches missed.">            if(LOG.isDebugEnabled()){</span>
+<span class="nc" id="L687">                LOG.debug(&quot;Sending Notification: &quot; + proposedLeader + &quot; (n.leader), 0x&quot;  +</span>
+<span class="nc" id="L688">                      Long.toHexString(proposedZxid) + &quot; (n.zxid), 0x&quot; + Long.toHexString(logicalclock.get())  +</span>
+<span class="nc" id="L689">                      &quot; (n.round), &quot; + sid + &quot; (recipient), &quot; + self.getId() +</span>
+<span class="nc" id="L690">                      &quot; (myid), 0x&quot; + Long.toHexString(proposedEpoch) + &quot; (n.peerEpoch)&quot;);</span>
+            }
+<span class="nc" id="L692">            sendqueue.offer(notmsg);</span>
+<span class="nc" id="L693">        }</span>
+<span class="nc" id="L694">    }</span>
+
+    private void printNotification(Notification n){
+<span class="nc" id="L697">        LOG.info(&quot;Notification: &quot;</span>
+<span class="nc" id="L698">                + Long.toHexString(n.version) + &quot; (message format version), &quot;</span>
+                + n.leader + &quot; (n.leader), 0x&quot;
+<span class="nc" id="L700">                + Long.toHexString(n.zxid) + &quot; (n.zxid), 0x&quot;</span>
+<span class="nc" id="L701">                + Long.toHexString(n.electionEpoch) + &quot; (n.round), &quot; + n.state</span>
+                + &quot; (n.state), &quot; + n.sid + &quot; (n.sid), 0x&quot;
+<span class="nc" id="L703">                + Long.toHexString(n.peerEpoch) + &quot; (n.peerEPoch), &quot;</span>
+<span class="nc" id="L704">                + self.getPeerState() + &quot; (my state)&quot;</span>
+<span class="nc bnc" id="L705" title="All 2 branches missed.">                + (n.qv!=null ? (Long.toHexString(n.qv.getVersion()) + &quot; (n.config version)&quot;):&quot;&quot;));</span>
+<span class="nc" id="L706">    }</span>
+
+
+    /**
+     * Check if a pair (server id, zxid) succeeds our
+     * current vote.
+     *
+     * @param id    Server identifier
+     * @param zxid  Last zxid observed by the issuer of this vote
+     */
+    protected boolean totalOrderPredicate(long newId, long newZxid, long newEpoch, long curId, long curZxid, long curEpoch) {
+<span class="nc" id="L717">        LOG.debug(&quot;id: &quot; + newId + &quot;, proposed id: &quot; + curId + &quot;, zxid: 0x&quot; +</span>
+<span class="nc" id="L718">                Long.toHexString(newZxid) + &quot;, proposed zxid: 0x&quot; + Long.toHexString(curZxid));</span>
+<span class="nc bnc" id="L719" title="All 2 branches missed.">        if(self.getQuorumVerifier().getWeight(newId) == 0){</span>
+<span class="nc" id="L720">            return false;</span>
+        }
+
+        /*
+         * We return true if one of the following three cases hold:
+         * 1- New epoch is higher
+         * 2- New epoch is the same as current epoch, but new zxid is higher
+         * 3- New epoch is the same as current epoch, new zxid is the same
+         *  as current zxid, but server id is higher.
+         */
+
+<span class="nc bnc" id="L731" title="All 10 branches missed.">        return ((newEpoch &gt; curEpoch) ||</span>
+                ((newEpoch == curEpoch) &amp;&amp;
+                ((newZxid &gt; curZxid) || ((newZxid == curZxid) &amp;&amp; (newId &gt; curId)))));
+    }
+
+    /**
+     * Termination predicate. Given a set of votes, determines if have
+     * sufficient to declare the end of the election round.
+     * 
+     * @param votes
+     *            Set of votes
+     * @param vote
+     *            Identifier of the vote received last
+     */
+    protected boolean termPredicate(Map&lt;Long, Vote&gt; votes, Vote vote) {
+<span class="nc" id="L746">        SyncedLearnerTracker voteSet = new SyncedLearnerTracker();</span>
+<span class="nc" id="L747">        voteSet.addQuorumVerifier(self.getQuorumVerifier());</span>
+<span class="nc bnc" id="L748" title="All 2 branches missed.">        if (self.getLastSeenQuorumVerifier() != null</span>
+<span class="nc" id="L749">                &amp;&amp; self.getLastSeenQuorumVerifier().getVersion() &gt; self</span>
+<span class="nc bnc" id="L750" title="All 2 branches missed.">                        .getQuorumVerifier().getVersion()) {</span>
+<span class="nc" id="L751">            voteSet.addQuorumVerifier(self.getLastSeenQuorumVerifier());</span>
+        }
+
+        /*
+         * First make the views consistent. Sometimes peers will have different
+         * zxids for a server depending on timing.
+         */
+<span class="nc bnc" id="L758" title="All 2 branches missed.">        for (Map.Entry&lt;Long, Vote&gt; entry : votes.entrySet()) {</span>
+<span class="nc bnc" id="L759" title="All 2 branches missed.">            if (vote.equals(entry.getValue())) {</span>
+<span class="nc" id="L760">                voteSet.addAck(entry.getKey());</span>
+            }
+<span class="nc" id="L762">        }</span>
+
+<span class="nc" id="L764">        return voteSet.hasAllQuorums();</span>
+    }
+
+    /**
+     * In the case there is a leader elected, and a quorum supporting
+     * this leader, we have to check if the leader has voted and acked
+     * that it is leading. We need this check to avoid that peers keep
+     * electing over and over a peer that has crashed and it is no
+     * longer leading.
+     *
+     * @param votes set of votes
+     * @param   leader  leader id
+     * @param   electionEpoch   epoch id
+     */
+    protected boolean checkLeader(
+            Map&lt;Long, Vote&gt; votes,
+            long leader,
+            long electionEpoch){
+
+<span class="nc" id="L783">        boolean predicate = true;</span>
+
+        /*
+         * If everyone else thinks I'm the leader, I must be the leader.
+         * The other two checks are just for the case in which I'm not the
+         * leader. If I'm not the leader and I haven't received a message
+         * from leader stating that it is leading, then predicate is false.
+         */
+
+<span class="nc bnc" id="L792" title="All 2 branches missed.">        if(leader != self.getId()){</span>
+<span class="nc bnc" id="L793" title="All 2 branches missed.">            if(votes.get(leader) == null) predicate = false;</span>
+<span class="nc bnc" id="L794" title="All 2 branches missed.">            else if(votes.get(leader).getState() != ServerState.LEADING) predicate = false;</span>
+<span class="nc bnc" id="L795" title="All 2 branches missed.">        } else if(logicalclock.get() != electionEpoch) {</span>
+<span class="nc" id="L796">            predicate = false;</span>
+        }
+
+<span class="nc" id="L799">        return predicate;</span>
+    }
+
+    synchronized void updateProposal(long leader, long zxid, long epoch){
+<span class="nc bnc" id="L803" title="All 2 branches missed.">        if(LOG.isDebugEnabled()){</span>
+<span class="nc" id="L804">            LOG.debug(&quot;Updating proposal: &quot; + leader + &quot; (newleader), 0x&quot;</span>
+<span class="nc" id="L805">                    + Long.toHexString(zxid) + &quot; (newzxid), &quot; + proposedLeader</span>
+<span class="nc" id="L806">                    + &quot; (oldleader), 0x&quot; + Long.toHexString(proposedZxid) + &quot; (oldzxid)&quot;);</span>
+        }
+<span class="nc" id="L808">        proposedLeader = leader;</span>
+<span class="nc" id="L809">        proposedZxid = zxid;</span>
+<span class="nc" id="L810">        proposedEpoch = epoch;</span>
+<span class="nc" id="L811">    }</span>
+
+    synchronized public Vote getVote(){
+<span class="nc" id="L814">        return new Vote(proposedLeader, proposedZxid, proposedEpoch);</span>
+    }
+
+    /**
+     * A learning state can be either FOLLOWING or OBSERVING.
+     * This method simply decides which one depending on the
+     * role of the server.
+     *
+     * @return ServerState
+     */
+    private ServerState learningState(){
+<span class="nc bnc" id="L825" title="All 2 branches missed.">        if(self.getLearnerType() == LearnerType.PARTICIPANT){</span>
+<span class="nc" id="L826">            LOG.debug(&quot;I'm a participant: &quot; + self.getId());</span>
+<span class="nc" id="L827">            return ServerState.FOLLOWING;</span>
+        }
+        else{
+<span class="nc" id="L830">            LOG.debug(&quot;I'm an observer: &quot; + self.getId());</span>
+<span class="nc" id="L831">            return ServerState.OBSERVING;</span>
+        }
+    }
+
+    /**
+     * Returns the initial vote value of server identifier.
+     *
+     * @return long
+     */
+    private long getInitId(){
+<span class="nc bnc" id="L841" title="All 2 branches missed.">        if(self.getQuorumVerifier().getVotingMembers().containsKey(self.getId()))       </span>
+<span class="nc" id="L842">            return self.getId();</span>
+<span class="nc" id="L843">        else return Long.MIN_VALUE;</span>
+    }
+
+    /**
+     * Returns initial last logged zxid.
+     *
+     * @return long
+     */
+    private long getInitLastLoggedZxid(){
+<span class="nc bnc" id="L852" title="All 2 branches missed.">        if(self.getLearnerType() == LearnerType.PARTICIPANT)</span>
+<span class="nc" id="L853">            return self.getLastLoggedZxid();</span>
+<span class="nc" id="L854">        else return Long.MIN_VALUE;</span>
+    }
+
+    /**
+     * Returns the initial vote value of the peer epoch.
+     *
+     * @return long
+     */
+    private long getPeerEpoch(){
+<span class="nc bnc" id="L863" title="All 2 branches missed.">        if(self.getLearnerType() == LearnerType.PARTICIPANT)</span>
+        	try {
+<span class="nc" id="L865">        		return self.getCurrentEpoch();</span>
+<span class="nc" id="L866">        	} catch(IOException e) {</span>
+<span class="nc" id="L867">        		RuntimeException re = new RuntimeException(e.getMessage());</span>
+<span class="nc" id="L868">        		re.setStackTrace(e.getStackTrace());</span>
+<span class="nc" id="L869">        		throw re;</span>
+        	}
+<span class="nc" id="L871">        else return Long.MIN_VALUE;</span>
+    }
+
+    /**
+     * Starts a new round of leader election. Whenever our QuorumPeer
+     * changes its state to LOOKING, this method is invoked, and it
+     * sends notifications to all other peers.
+     */
+    public Vote lookForLeader() throws InterruptedException {
+        try {
+<span class="nc" id="L881">            self.jmxLeaderElectionBean = new LeaderElectionBean();</span>
+<span class="nc" id="L882">            MBeanRegistry.getInstance().register(</span>
+                    self.jmxLeaderElectionBean, self.jmxLocalPeerBean);
+<span class="nc" id="L884">        } catch (Exception e) {</span>
+<span class="nc" id="L885">            LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L886">            self.jmxLeaderElectionBean = null;</span>
+<span class="nc" id="L887">        }</span>
+<span class="nc bnc" id="L888" title="All 2 branches missed.">        if (self.start_fle == 0) {</span>
+<span class="nc" id="L889">           self.start_fle = Time.currentElapsedTime();</span>
+        }
+        try {
+<span class="nc" id="L892">            HashMap&lt;Long, Vote&gt; recvset = new HashMap&lt;Long, Vote&gt;();</span>
+
+<span class="nc" id="L894">            HashMap&lt;Long, Vote&gt; outofelection = new HashMap&lt;Long, Vote&gt;();</span>
+
+<span class="nc" id="L896">            int notTimeout = finalizeWait;</span>
+
+<span class="nc" id="L898">            synchronized(this){</span>
+<span class="nc" id="L899">                logicalclock.incrementAndGet();</span>
+<span class="nc" id="L900">                updateProposal(getInitId(), getInitLastLoggedZxid(), getPeerEpoch());</span>
+<span class="nc" id="L901">            }</span>
+
+<span class="nc" id="L903">            LOG.info(&quot;New election. My id =  &quot; + self.getId() +</span>
+<span class="nc" id="L904">                    &quot;, proposed zxid=0x&quot; + Long.toHexString(proposedZxid));</span>
+<span class="nc" id="L905">            sendNotifications();</span>
+
+            /*
+             * Loop in which we exchange notifications until we find a leader
+             */
+
+<span class="nc bnc" id="L911" title="All 4 branches missed.">            while ((self.getPeerState() == ServerState.LOOKING) &amp;&amp;</span>
+                    (!stop)){
+                /*
+                 * Remove next notification from queue, times out after 2 times
+                 * the termination time
+                 */
+<span class="nc" id="L917">                Notification n = recvqueue.poll(notTimeout,</span>
+                        TimeUnit.MILLISECONDS);
+
+                /*
+                 * Sends more notifications if haven't received enough.
+                 * Otherwise processes new notification.
+                 */
+<span class="nc bnc" id="L924" title="All 2 branches missed.">                if(n == null){</span>
+<span class="nc bnc" id="L925" title="All 2 branches missed.">                    if(manager.haveDelivered()){</span>
+<span class="nc" id="L926">                        sendNotifications();</span>
+                    } else {
+<span class="nc" id="L928">                        manager.connectAll();</span>
+                    }
+
+                    /*
+                     * Exponential backoff
+                     */
+<span class="nc" id="L934">                    int tmpTimeOut = notTimeout*2;</span>
+<span class="nc bnc" id="L935" title="All 2 branches missed.">                    notTimeout = (tmpTimeOut &lt; maxNotificationInterval?</span>
+<span class="nc" id="L936">                            tmpTimeOut : maxNotificationInterval);</span>
+<span class="nc" id="L937">                    LOG.info(&quot;Notification time out: &quot; + notTimeout);</span>
+<span class="nc" id="L938">                } </span>
+<span class="nc bnc" id="L939" title="All 4 branches missed.">                else if (validVoter(n.sid) &amp;&amp; validVoter(n.leader)) {</span>
+                    /*
+                     * Only proceed if the vote comes from a replica in the current or next
+                     * voting view for a replica in the current or next voting view.
+                     */
+<span class="nc bnc" id="L944" title="All 4 branches missed.">                    switch (n.state) {</span>
+                    case LOOKING:
+                        // If notification &gt; current, replace and send messages out
+<span class="nc bnc" id="L947" title="All 2 branches missed.">                        if (n.electionEpoch &gt; logicalclock.get()) {</span>
+<span class="nc" id="L948">                            logicalclock.set(n.electionEpoch);</span>
+<span class="nc" id="L949">                            recvset.clear();</span>
+<span class="nc bnc" id="L950" title="All 2 branches missed.">                            if(totalOrderPredicate(n.leader, n.zxid, n.peerEpoch,</span>
+<span class="nc" id="L951">                                    getInitId(), getInitLastLoggedZxid(), getPeerEpoch())) {</span>
+<span class="nc" id="L952">                                updateProposal(n.leader, n.zxid, n.peerEpoch);</span>
+                            } else {
+<span class="nc" id="L954">                                updateProposal(getInitId(),</span>
+<span class="nc" id="L955">                                        getInitLastLoggedZxid(),</span>
+<span class="nc" id="L956">                                        getPeerEpoch());</span>
+                            }
+<span class="nc" id="L958">                            sendNotifications();</span>
+<span class="nc bnc" id="L959" title="All 2 branches missed.">                        } else if (n.electionEpoch &lt; logicalclock.get()) {</span>
+<span class="nc bnc" id="L960" title="All 2 branches missed.">                            if(LOG.isDebugEnabled()){</span>
+<span class="nc" id="L961">                                LOG.debug(&quot;Notification election epoch is smaller than logicalclock. n.electionEpoch = 0x&quot;</span>
+<span class="nc" id="L962">                                        + Long.toHexString(n.electionEpoch)</span>
+<span class="nc" id="L963">                                        + &quot;, logicalclock=0x&quot; + Long.toHexString(logicalclock.get()));</span>
+                            }
+                            break;
+<span class="nc bnc" id="L966" title="All 2 branches missed.">                        } else if (totalOrderPredicate(n.leader, n.zxid, n.peerEpoch,</span>
+                                proposedLeader, proposedZxid, proposedEpoch)) {
+<span class="nc" id="L968">                            updateProposal(n.leader, n.zxid, n.peerEpoch);</span>
+<span class="nc" id="L969">                            sendNotifications();</span>
+                        }
+
+<span class="nc bnc" id="L972" title="All 2 branches missed.">                        if(LOG.isDebugEnabled()){</span>
+<span class="nc" id="L973">                            LOG.debug(&quot;Adding vote: from=&quot; + n.sid +</span>
+                                    &quot;, proposed leader=&quot; + n.leader +
+<span class="nc" id="L975">                                    &quot;, proposed zxid=0x&quot; + Long.toHexString(n.zxid) +</span>
+<span class="nc" id="L976">                                    &quot;, proposed election epoch=0x&quot; + Long.toHexString(n.electionEpoch));</span>
+                        }
+
+                        // don't care about the version if it's in LOOKING state
+<span class="nc" id="L980">                        recvset.put(n.sid, new Vote(n.leader, n.zxid, n.electionEpoch, n.peerEpoch));</span>
+
+<span class="nc bnc" id="L982" title="All 2 branches missed.">                        if (termPredicate(recvset,</span>
+                                new Vote(proposedLeader, proposedZxid,
+<span class="nc" id="L984">                                        logicalclock.get(), proposedEpoch))) {</span>
+
+                            // Verify if there is any change in the proposed leader
+<span class="nc bnc" id="L987" title="All 2 branches missed.">                            while((n = recvqueue.poll(finalizeWait,</span>
+                                    TimeUnit.MILLISECONDS)) != null){
+<span class="nc bnc" id="L989" title="All 2 branches missed.">                                if(totalOrderPredicate(n.leader, n.zxid, n.peerEpoch,</span>
+                                        proposedLeader, proposedZxid, proposedEpoch)){
+<span class="nc" id="L991">                                    recvqueue.put(n);</span>
+<span class="nc" id="L992">                                    break;</span>
+                                }
+                            }
+
+                            /*
+                             * This predicate is true once we don't read any new
+                             * relevant message from the reception queue
+                             */
+<span class="nc bnc" id="L1000" title="All 2 branches missed.">                            if (n == null) {</span>
+<span class="nc bnc" id="L1001" title="All 2 branches missed.">                                self.setPeerState((proposedLeader == self.getId()) ?</span>
+<span class="nc" id="L1002">                                        ServerState.LEADING: learningState());</span>
+<span class="nc" id="L1003">                                Vote endVote = new Vote(proposedLeader,</span>
+<span class="nc" id="L1004">                                        proposedZxid, logicalclock.get(), </span>
+                                        proposedEpoch);
+<span class="nc" id="L1006">                                leaveInstance(endVote);</span>
+<span class="nc" id="L1007">                                return endVote;</span>
+                            }
+                        }
+                        break;
+                    case OBSERVING:
+<span class="nc" id="L1012">                        LOG.debug(&quot;Notification from observer: &quot; + n.sid);</span>
+<span class="nc" id="L1013">                        break;</span>
+                    case FOLLOWING:
+                    case LEADING:
+                        /*
+                         * Consider all notifications from the same epoch
+                         * together.
+                         */
+<span class="nc bnc" id="L1020" title="All 2 branches missed.">                        if(n.electionEpoch == logicalclock.get()){</span>
+<span class="nc" id="L1021">                            recvset.put(n.sid, new Vote(n.leader, n.zxid, n.electionEpoch, n.peerEpoch));</span>
+<span class="nc bnc" id="L1022" title="All 2 branches missed.">                            if(termPredicate(recvset, new Vote(n.version, n.leader,</span>
+                                            n.zxid, n.electionEpoch, n.peerEpoch, n.state))
+<span class="nc bnc" id="L1024" title="All 2 branches missed.">                                            &amp;&amp; checkLeader(outofelection, n.leader, n.electionEpoch)) {</span>
+<span class="nc bnc" id="L1025" title="All 2 branches missed.">                                self.setPeerState((n.leader == self.getId()) ?</span>
+<span class="nc" id="L1026">                                        ServerState.LEADING: learningState());</span>
+<span class="nc" id="L1027">                                Vote endVote = new Vote(n.leader, </span>
+                                        n.zxid, n.electionEpoch, n.peerEpoch);
+<span class="nc" id="L1029">                                leaveInstance(endVote);</span>
+<span class="nc" id="L1030">                                return endVote;</span>
+                            }
+                        }
+
+                        /*
+                         * Before joining an established ensemble, verify that
+                         * a majority are following the same leader.
+                         */
+<span class="nc" id="L1038">                        outofelection.put(n.sid, new Vote(n.version, n.leader, </span>
+                                n.zxid, n.electionEpoch, n.peerEpoch, n.state));
+<span class="nc bnc" id="L1040" title="All 2 branches missed.">                        if (termPredicate(outofelection, new Vote(n.version, n.leader,</span>
+                                n.zxid, n.electionEpoch, n.peerEpoch, n.state))
+<span class="nc bnc" id="L1042" title="All 2 branches missed.">                                &amp;&amp; checkLeader(outofelection, n.leader, n.electionEpoch)) {</span>
+<span class="nc" id="L1043">                            synchronized(this){</span>
+<span class="nc" id="L1044">                                logicalclock.set(n.electionEpoch);</span>
+<span class="nc bnc" id="L1045" title="All 2 branches missed.">                                self.setPeerState((n.leader == self.getId()) ?</span>
+<span class="nc" id="L1046">                                        ServerState.LEADING: learningState());</span>
+<span class="nc" id="L1047">                            }</span>
+<span class="nc" id="L1048">                            Vote endVote = new Vote(n.leader, n.zxid, </span>
+                                    n.electionEpoch, n.peerEpoch);
+<span class="nc" id="L1050">                            leaveInstance(endVote);</span>
+<span class="nc" id="L1051">                            return endVote;</span>
+                        }
+                        break;
+                    default:
+<span class="nc" id="L1055">                        LOG.warn(&quot;Notification state unrecoginized: &quot; + n.state</span>
+                              + &quot; (n.state), &quot; + n.sid + &quot; (n.sid)&quot;);
+<span class="nc" id="L1057">                        break;</span>
+                    }
+                } else {
+<span class="nc bnc" id="L1060" title="All 2 branches missed.">                    if (!validVoter(n.leader)) {</span>
+<span class="nc" id="L1061">                        LOG.warn(&quot;Ignoring notification for non-cluster member sid {} from sid {}&quot;, n.leader, n.sid);</span>
+                    }
+<span class="nc bnc" id="L1063" title="All 2 branches missed.">                    if (!validVoter(n.sid)) {</span>
+<span class="nc" id="L1064">                        LOG.warn(&quot;Ignoring notification for sid {} from non-quorum member sid {}&quot;, n.leader, n.sid);</span>
+                    }
+                }
+<span class="nc" id="L1067">            }</span>
+<span class="nc" id="L1068">            return null;</span>
+        } finally {
+            try {
+<span class="nc bnc" id="L1071" title="All 2 branches missed.">                if(self.jmxLeaderElectionBean != null){</span>
+<span class="nc" id="L1072">                    MBeanRegistry.getInstance().unregister(</span>
+                            self.jmxLeaderElectionBean);
+                }
+<span class="nc" id="L1075">            } catch (Exception e) {</span>
+<span class="nc" id="L1076">                LOG.warn(&quot;Failed to unregister with JMX&quot;, e);</span>
+<span class="nc" id="L1077">            }</span>
+<span class="nc" id="L1078">            self.jmxLeaderElectionBean = null;</span>
+<span class="nc" id="L1079">            LOG.debug(&quot;Number of connection processing threads: {}&quot;,</span>
+<span class="nc" id="L1080">                    manager.getConnectionThreadCount());</span>
+        }
+    }
+
+    /**
+     * Check if a given sid is represented in either the current or
+     * the next voting view
+     *
+     * @param sid     Server identifier
+     * @return boolean
+     */
+    private boolean validVoter(long sid) {
+<span class="nc" id="L1092">        return self.getCurrentAndNextConfigVoters().contains(sid);</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

@@ -1,0 +1,239 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LeaderZooKeeperServer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">LeaderZooKeeperServer.java</span></div><h1>LeaderZooKeeperServer.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.quorum;
+
+import org.apache.zookeeper.KeeperException.SessionExpiredException;
+import org.apache.zookeeper.jmx.MBeanRegistry;
+import org.apache.zookeeper.server.ContainerManager;
+import org.apache.zookeeper.server.DataTreeBean;
+import org.apache.zookeeper.server.FinalRequestProcessor;
+import org.apache.zookeeper.server.PrepRequestProcessor;
+import org.apache.zookeeper.server.Request;
+import org.apache.zookeeper.server.RequestProcessor;
+import org.apache.zookeeper.server.ServerCnxn;
+import org.apache.zookeeper.server.ZKDatabase;
+import org.apache.zookeeper.server.persistence.FileTxnSnapLog;
+
+import java.io.IOException;
+import java.util.concurrent.TimeUnit;
+
+/**
+ *
+ * Just like the standard ZooKeeperServer. We just replace the request
+ * processors: PrepRequestProcessor -&gt; ProposalRequestProcessor -&gt;
+ * CommitProcessor -&gt; Leader.ToBeAppliedRequestProcessor -&gt;
+ * FinalRequestProcessor
+ */
+public class LeaderZooKeeperServer extends QuorumZooKeeperServer {
+    private ContainerManager containerManager;  // guarded by sync
+
+
+    CommitProcessor commitProcessor;
+
+    PrepRequestProcessor prepRequestProcessor;
+
+    /**
+     * @param port
+     * @param dataDir
+     * @throws IOException
+     */
+    LeaderZooKeeperServer(FileTxnSnapLog logFactory, QuorumPeer self, ZKDatabase zkDb) throws IOException {
+<span class="nc" id="L57">        super(logFactory, self.tickTime, self.minSessionTimeout, self.maxSessionTimeout, zkDb, self);</span>
+<span class="nc" id="L58">    }</span>
+
+    public Leader getLeader(){
+<span class="nc" id="L61">        return self.leader;</span>
+    }
+
+    @Override
+    protected void setupRequestProcessors() {
+<span class="nc" id="L66">        RequestProcessor finalProcessor = new FinalRequestProcessor(this);</span>
+<span class="nc" id="L67">        RequestProcessor toBeAppliedProcessor = new Leader.ToBeAppliedRequestProcessor(finalProcessor, getLeader());</span>
+<span class="nc" id="L68">        commitProcessor = new CommitProcessor(toBeAppliedProcessor,</span>
+<span class="nc" id="L69">                Long.toString(getServerId()), false,</span>
+<span class="nc" id="L70">                getZooKeeperServerListener());</span>
+<span class="nc" id="L71">        commitProcessor.start();</span>
+<span class="nc" id="L72">        ProposalRequestProcessor proposalProcessor = new ProposalRequestProcessor(this,</span>
+                commitProcessor);
+<span class="nc" id="L74">        proposalProcessor.initialize();</span>
+<span class="nc" id="L75">        prepRequestProcessor = new PrepRequestProcessor(this, proposalProcessor);</span>
+<span class="nc" id="L76">        prepRequestProcessor.start();</span>
+<span class="nc" id="L77">        firstProcessor = new LeaderRequestProcessor(this, prepRequestProcessor);</span>
+
+<span class="nc" id="L79">        setupContainerManager();</span>
+<span class="nc" id="L80">    }</span>
+
+    private synchronized void setupContainerManager() {
+<span class="nc" id="L83">        containerManager = new ContainerManager(getZKDatabase(), prepRequestProcessor,</span>
+<span class="nc" id="L84">                Integer.getInteger(&quot;znode.container.checkIntervalMs&quot;, (int) TimeUnit.MINUTES.toMillis(1)),</span>
+<span class="nc" id="L85">                Integer.getInteger(&quot;znode.container.maxPerMinute&quot;, 10000)</span>
+                );
+<span class="nc" id="L87">    }</span>
+
+    @Override
+    public synchronized void startup() {
+<span class="nc" id="L91">        super.startup();</span>
+<span class="nc bnc" id="L92" title="All 2 branches missed.">        if (containerManager != null) {</span>
+<span class="nc" id="L93">            containerManager.start();</span>
+        }
+<span class="nc" id="L95">    }</span>
+
+    @Override
+    public synchronized void shutdown() {
+<span class="nc bnc" id="L99" title="All 2 branches missed.">        if (containerManager != null) {</span>
+<span class="nc" id="L100">            containerManager.stop();</span>
+        }
+<span class="nc" id="L102">        super.shutdown();</span>
+<span class="nc" id="L103">    }</span>
+
+    @Override
+    public int getGlobalOutstandingLimit() {
+<span class="nc bnc" id="L107" title="All 2 branches missed.">        int divisor = self.getQuorumSize() &gt; 2 ? self.getQuorumSize() - 1 : 1;</span>
+<span class="nc" id="L108">        return super.getGlobalOutstandingLimit() / divisor;</span>
+    }
+
+    @Override
+    public void createSessionTracker() {
+<span class="nc" id="L113">        sessionTracker = new LeaderSessionTracker(</span>
+<span class="nc" id="L114">                this, getZKDatabase().getSessionWithTimeOuts(),</span>
+<span class="nc" id="L115">                tickTime, self.getId(), self.areLocalSessionsEnabled(), </span>
+<span class="nc" id="L116">                getZooKeeperServerListener());</span>
+<span class="nc" id="L117">    }</span>
+
+    public boolean touch(long sess, int to) {
+<span class="nc" id="L120">        return sessionTracker.touchSession(sess, to);</span>
+    }
+
+    public boolean checkIfValidGlobalSession(long sess, int to) {
+<span class="nc bnc" id="L124" title="All 2 branches missed.">        if (self.areLocalSessionsEnabled() &amp;&amp;</span>
+<span class="nc bnc" id="L125" title="All 2 branches missed.">            !upgradeableSessionTracker.isGlobalSession(sess)) {</span>
+<span class="nc" id="L126">            return false;</span>
+        }
+<span class="nc" id="L128">        return sessionTracker.touchSession(sess, to);</span>
+    }
+
+    /**
+     * Requests coming from the learner should go directly to
+     * PrepRequestProcessor
+     *
+     * @param request
+     */
+    public void submitLearnerRequest(Request request) {
+        /*
+         * Requests coming from the learner should have gone through
+         * submitRequest() on each server which already perform some request
+         * validation, so we don't need to do it again.
+         *
+         * Additionally, LearnerHandler should start submitting requests into
+         * the leader's pipeline only when the leader's server is started, so we
+         * can submit the request directly into PrepRequestProcessor.
+         *
+         * This is done so that requests from learners won't go through
+         * LeaderRequestProcessor which perform local session upgrade.
+         */
+<span class="nc" id="L150">        prepRequestProcessor.processRequest(request);</span>
+<span class="nc" id="L151">    }</span>
+
+    @Override
+    protected void registerJMX() {
+        // register with JMX
+        try {
+<span class="nc" id="L157">            jmxDataTreeBean = new DataTreeBean(getZKDatabase().getDataTree());</span>
+<span class="nc" id="L158">            MBeanRegistry.getInstance().register(jmxDataTreeBean, jmxServerBean);</span>
+<span class="nc" id="L159">        } catch (Exception e) {</span>
+<span class="nc" id="L160">            LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L161">            jmxDataTreeBean = null;</span>
+<span class="nc" id="L162">        }</span>
+<span class="nc" id="L163">    }</span>
+
+    public void registerJMX(LeaderBean leaderBean,
+            LocalPeerBean localPeerBean)
+    {
+        // register with JMX
+<span class="nc bnc" id="L169" title="All 2 branches missed.">        if (self.jmxLeaderElectionBean != null) {</span>
+            try {
+<span class="nc" id="L171">                MBeanRegistry.getInstance().unregister(self.jmxLeaderElectionBean);</span>
+<span class="nc" id="L172">            } catch (Exception e) {</span>
+<span class="nc" id="L173">                LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L174">            }</span>
+<span class="nc" id="L175">            self.jmxLeaderElectionBean = null;</span>
+        }
+
+        try {
+<span class="nc" id="L179">            jmxServerBean = leaderBean;</span>
+<span class="nc" id="L180">            MBeanRegistry.getInstance().register(leaderBean, localPeerBean);</span>
+<span class="nc" id="L181">        } catch (Exception e) {</span>
+<span class="nc" id="L182">            LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L183">            jmxServerBean = null;</span>
+<span class="nc" id="L184">        }</span>
+<span class="nc" id="L185">    }</span>
+
+    @Override
+    protected void unregisterJMX() {
+        // unregister from JMX
+        try {
+<span class="nc bnc" id="L191" title="All 2 branches missed.">            if (jmxDataTreeBean != null) {</span>
+<span class="nc" id="L192">                MBeanRegistry.getInstance().unregister(jmxDataTreeBean);</span>
+            }
+<span class="nc" id="L194">        } catch (Exception e) {</span>
+<span class="nc" id="L195">            LOG.warn(&quot;Failed to unregister with JMX&quot;, e);</span>
+<span class="nc" id="L196">        }</span>
+<span class="nc" id="L197">        jmxDataTreeBean = null;</span>
+<span class="nc" id="L198">    }</span>
+
+    protected void unregisterJMX(Leader leader) {
+        // unregister from JMX
+        try {
+<span class="nc bnc" id="L203" title="All 2 branches missed.">            if (jmxServerBean != null) {</span>
+<span class="nc" id="L204">                MBeanRegistry.getInstance().unregister(jmxServerBean);</span>
+            }
+<span class="nc" id="L206">        } catch (Exception e) {</span>
+<span class="nc" id="L207">            LOG.warn(&quot;Failed to unregister with JMX&quot;, e);</span>
+<span class="nc" id="L208">        }</span>
+<span class="nc" id="L209">        jmxServerBean = null;</span>
+<span class="nc" id="L210">    }</span>
+
+    @Override
+    public String getState() {
+<span class="nc" id="L214">        return &quot;leader&quot;;</span>
+    }
+
+    /**
+     * Returns the id of the associated QuorumPeer, which will do for a unique
+     * id of this server.
+     */
+    @Override
+    public long getServerId() {
+<span class="nc" id="L223">        return self.getId();</span>
+    }
+
+    @Override
+    protected void revalidateSession(ServerCnxn cnxn, long sessionId,
+        int sessionTimeout) throws IOException {
+<span class="nc" id="L229">        super.revalidateSession(cnxn, sessionId, sessionTimeout);</span>
+        try {
+            // setowner as the leader itself, unless updated
+            // via the follower handlers
+<span class="nc" id="L233">            setOwner(sessionId, ServerCnxn.me);</span>
+<span class="nc" id="L234">        } catch (SessionExpiredException e) {</span>
+            // this is ok, it just means that the session revalidation failed.
+<span class="nc" id="L236">        }</span>
+<span class="nc" id="L237">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

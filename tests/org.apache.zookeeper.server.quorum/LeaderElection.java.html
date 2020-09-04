@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LeaderElection.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">LeaderElection.java</span></div><h1>LeaderElection.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.quorum;
+
+import java.io.IOException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
+import java.net.SocketException;
+import java.nio.ByteBuffer;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Random;
+import java.util.Map.Entry;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.zookeeper.jmx.MBeanRegistry;
+import org.apache.zookeeper.server.quorum.Vote;
+import org.apache.zookeeper.server.quorum.QuorumPeer.LearnerType;
+import org.apache.zookeeper.server.quorum.QuorumPeer.QuorumServer;
+import org.apache.zookeeper.server.quorum.QuorumPeer.ServerState;
+
+/**
+ * @deprecated This class has been deprecated as of release 3.4.0. 
+ */
+@Deprecated
+public class LeaderElection implements Election  {
+<span class="nc" id="L47">    private static final Logger LOG = LoggerFactory.getLogger(LeaderElection.class);</span>
+<span class="nc" id="L48">    protected static final Random epochGen = new Random();</span>
+
+    protected QuorumPeer self;
+
+<span class="nc" id="L52">    public LeaderElection(QuorumPeer self) {</span>
+<span class="nc" id="L53">        this.self = self;</span>
+<span class="nc" id="L54">    }</span>
+
+<span class="nc" id="L56">    protected static class ElectionResult {</span>
+        public Vote vote;
+
+        public int count;
+
+        public Vote winner;
+
+        public int winningCount;
+
+        public int numValidVotes;
+    }
+
+    protected ElectionResult countVotes(HashMap&lt;InetSocketAddress, Vote&gt; votes, HashSet&lt;Long&gt; heardFrom) {
+<span class="nc" id="L69">        final ElectionResult result = new ElectionResult();</span>
+        // Initialize with null vote
+<span class="nc" id="L71">        result.vote = new Vote(Long.MIN_VALUE, Long.MIN_VALUE);</span>
+<span class="nc" id="L72">        result.winner = new Vote(Long.MIN_VALUE, Long.MIN_VALUE);</span>
+
+        // First, filter out votes from unheard-from machines. Then
+        // make the views consistent. Sometimes peers will have
+        // different zxids for a server depending on timing.
+<span class="nc" id="L77">        final HashMap&lt;InetSocketAddress, Vote&gt; validVotes = new HashMap&lt;InetSocketAddress, Vote&gt;();</span>
+<span class="nc" id="L78">        final Map&lt;Long, Long&gt; maxZxids = new HashMap&lt;Long,Long&gt;();</span>
+<span class="nc bnc" id="L79" title="All 2 branches missed.">        for (Map.Entry&lt;InetSocketAddress, Vote&gt; e : votes.entrySet()) {</span>
+            // Only include votes from machines that we heard from
+<span class="nc" id="L81">            final Vote v = e.getValue();</span>
+<span class="nc bnc" id="L82" title="All 2 branches missed.">            if (heardFrom.contains(v.getId())) {</span>
+<span class="nc" id="L83">                validVotes.put(e.getKey(), v);</span>
+<span class="nc" id="L84">                Long val = maxZxids.get(v.getId());</span>
+<span class="nc bnc" id="L85" title="All 4 branches missed.">                if (val == null || val &lt; v.getZxid()) {</span>
+<span class="nc" id="L86">                    maxZxids.put(v.getId(), v.getZxid());</span>
+            }
+                    }
+<span class="nc" id="L89">                }</span>
+
+        // Make all zxids for a given vote id equal to the largest zxid seen for
+        // that id
+<span class="nc bnc" id="L93" title="All 2 branches missed.">        for (Map.Entry&lt;InetSocketAddress, Vote&gt; e : validVotes.entrySet()) {</span>
+<span class="nc" id="L94">            final Vote v = e.getValue();</span>
+<span class="nc" id="L95">            Long zxid = maxZxids.get(v.getId());</span>
+<span class="nc bnc" id="L96" title="All 2 branches missed.">            if (v.getZxid() &lt; zxid) {</span>
+                // This is safe inside an iterator as per
+                // http://download.oracle.com/javase/1.5.0/docs/api/java/util/Map.Entry.html
+<span class="nc" id="L99">                e.setValue(new Vote(v.getId(), zxid, v.getElectionEpoch(), v.getPeerEpoch(), v.getState()));</span>
+            }
+<span class="nc" id="L101">        }</span>
+
+<span class="nc" id="L103">        result.numValidVotes = validVotes.size();</span>
+
+<span class="nc" id="L105">        final HashMap&lt;Vote, Integer&gt; countTable = new HashMap&lt;Vote, Integer&gt;();</span>
+        // Now do the tally
+<span class="nc bnc" id="L107" title="All 2 branches missed.">        for (Vote v : validVotes.values()) {</span>
+<span class="nc" id="L108">            Integer count = countTable.get(v);</span>
+<span class="nc bnc" id="L109" title="All 2 branches missed.">            if (count == null) {</span>
+<span class="nc" id="L110">                count = 0;</span>
+            }
+<span class="nc" id="L112">            countTable.put(v, count + 1);</span>
+<span class="nc bnc" id="L113" title="All 2 branches missed.">            if (v.getId() == result.vote.getId()) {</span>
+<span class="nc" id="L114">                result.count++;</span>
+<span class="nc bnc" id="L115" title="All 2 branches missed.">            } else if (v.getZxid() &gt; result.vote.getZxid()</span>
+<span class="nc bnc" id="L116" title="All 4 branches missed.">                    || (v.getZxid() == result.vote.getZxid() &amp;&amp; v.getId() &gt; result.vote.getId())) {</span>
+<span class="nc" id="L117">                result.vote = v;</span>
+<span class="nc" id="L118">                result.count = 1;</span>
+            }
+<span class="nc" id="L120">        }</span>
+<span class="nc" id="L121">        result.winningCount = 0;</span>
+<span class="nc" id="L122">        LOG.info(&quot;Election tally: &quot;);</span>
+<span class="nc bnc" id="L123" title="All 2 branches missed.">        for (Entry&lt;Vote, Integer&gt; entry : countTable.entrySet()) {</span>
+<span class="nc bnc" id="L124" title="All 2 branches missed.">            if (entry.getValue() &gt; result.winningCount) {</span>
+<span class="nc" id="L125">                result.winningCount = entry.getValue();</span>
+<span class="nc" id="L126">                result.winner = entry.getKey();</span>
+            }
+<span class="nc" id="L128">            LOG.info(entry.getKey().getId() + &quot;\t-&gt; &quot; + entry.getValue());</span>
+<span class="nc" id="L129">        }</span>
+<span class="nc" id="L130">        return result;</span>
+    }
+
+    /**
+     * There is nothing to shutdown in this implementation of
+     * leader election, so we simply have an empty method.
+     */
+<span class="nc" id="L137">    public void shutdown(){}</span>
+    
+    /**
+     * Invoked in QuorumPeer to find or elect a new leader.
+     * 
+     * @throws InterruptedException
+     */
+    public Vote lookForLeader() throws InterruptedException {
+        try {
+<span class="nc" id="L146">            self.jmxLeaderElectionBean = new LeaderElectionBean();</span>
+<span class="nc" id="L147">            MBeanRegistry.getInstance().register(</span>
+                    self.jmxLeaderElectionBean, self.jmxLocalPeerBean);
+<span class="nc" id="L149">        } catch (Exception e) {</span>
+<span class="nc" id="L150">            LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L151">            self.jmxLeaderElectionBean = null;</span>
+<span class="nc" id="L152">        }</span>
+
+        try {
+<span class="nc" id="L155">            self.setCurrentVote(new Vote(self.getId(),</span>
+<span class="nc" id="L156">                    self.getLastLoggedZxid()));</span>
+            // We are going to look for a leader by casting a vote for ourself
+<span class="nc" id="L158">            byte requestBytes[] = new byte[4];</span>
+<span class="nc" id="L159">            ByteBuffer requestBuffer = ByteBuffer.wrap(requestBytes);</span>
+<span class="nc" id="L160">            byte responseBytes[] = new byte[28];</span>
+<span class="nc" id="L161">            ByteBuffer responseBuffer = ByteBuffer.wrap(responseBytes);</span>
+            /* The current vote for the leader. Initially me! */
+<span class="nc" id="L163">            DatagramSocket s = null;</span>
+            try {
+<span class="nc" id="L165">                s = new DatagramSocket();</span>
+<span class="nc" id="L166">                s.setSoTimeout(200);</span>
+<span class="nc" id="L167">            } catch (SocketException e1) {</span>
+<span class="nc" id="L168">                LOG.error(&quot;Socket exception when creating socket for leader election&quot;, e1);</span>
+<span class="nc" id="L169">                System.exit(4);</span>
+<span class="nc" id="L170">            }</span>
+<span class="nc" id="L171">            DatagramPacket requestPacket = new DatagramPacket(requestBytes,</span>
+                    requestBytes.length);
+<span class="nc" id="L173">            DatagramPacket responsePacket = new DatagramPacket(responseBytes,</span>
+                    responseBytes.length);
+<span class="nc" id="L175">            int xid = epochGen.nextInt();</span>
+<span class="nc bnc" id="L176" title="All 2 branches missed.">            while (self.isRunning()) {</span>
+<span class="nc" id="L177">                HashMap&lt;InetSocketAddress, Vote&gt; votes =</span>
+<span class="nc" id="L178">                    new HashMap&lt;InetSocketAddress, Vote&gt;(self.getVotingView().size());</span>
+
+<span class="nc" id="L180">                requestBuffer.clear();</span>
+<span class="nc" id="L181">                requestBuffer.putInt(xid);</span>
+<span class="nc" id="L182">                requestPacket.setLength(4);</span>
+<span class="nc" id="L183">                HashSet&lt;Long&gt; heardFrom = new HashSet&lt;Long&gt;();</span>
+<span class="nc bnc" id="L184" title="All 2 branches missed.">                for (QuorumServer server : self.getVotingView().values()) {</span>
+<span class="nc" id="L185">                    LOG.info(&quot;Server address: &quot; + server.addr);</span>
+                    try {
+<span class="nc" id="L187">                        requestPacket.setSocketAddress(server.addr);</span>
+<span class="nc" id="L188">                    } catch (IllegalArgumentException e) {</span>
+                        // Sun doesn't include the address that causes this
+                        // exception to be thrown, so we wrap the exception
+                        // in order to capture this critical detail.
+<span class="nc" id="L192">                        throw new IllegalArgumentException(</span>
+                                &quot;Unable to set socket address on packet, msg:&quot;
+<span class="nc" id="L194">                                + e.getMessage() + &quot; with addr:&quot; + server.addr,</span>
+                                e);
+<span class="nc" id="L196">                    }</span>
+
+                    try {
+<span class="nc" id="L199">                        s.send(requestPacket);</span>
+<span class="nc" id="L200">                        responsePacket.setLength(responseBytes.length);</span>
+<span class="nc" id="L201">                        s.receive(responsePacket);</span>
+<span class="nc bnc" id="L202" title="All 2 branches missed.">                        if (responsePacket.getLength() != responseBytes.length) {</span>
+<span class="nc" id="L203">                            LOG.error(&quot;Got a short response: &quot;</span>
+<span class="nc" id="L204">                                    + responsePacket.getLength());</span>
+<span class="nc" id="L205">                            continue;</span>
+                        }
+<span class="nc" id="L207">                        responseBuffer.clear();</span>
+<span class="nc" id="L208">                        int recvedXid = responseBuffer.getInt();</span>
+<span class="nc bnc" id="L209" title="All 2 branches missed.">                        if (recvedXid != xid) {</span>
+<span class="nc" id="L210">                            LOG.error(&quot;Got bad xid: expected &quot; + xid</span>
+                                    + &quot; got &quot; + recvedXid);
+<span class="nc" id="L212">                            continue;</span>
+                        }
+<span class="nc" id="L214">                        long peerId = responseBuffer.getLong();</span>
+<span class="nc" id="L215">                        heardFrom.add(peerId);</span>
+                        //if(server.id != peerId){
+<span class="nc" id="L217">                            Vote vote = new Vote(responseBuffer.getLong(),</span>
+<span class="nc" id="L218">                                responseBuffer.getLong());</span>
+<span class="nc" id="L219">                            InetSocketAddress addr =</span>
+                                (InetSocketAddress) responsePacket
+<span class="nc" id="L221">                                .getSocketAddress();</span>
+<span class="nc" id="L222">                            votes.put(addr, vote);</span>
+                        //}
+<span class="nc" id="L224">                    } catch (IOException e) {</span>
+<span class="nc" id="L225">                        LOG.warn(&quot;Ignoring exception while looking for leader&quot;,</span>
+                                e);
+                        // Errors are okay, since hosts may be
+                        // down
+<span class="nc" id="L229">                    }</span>
+<span class="nc" id="L230">                }</span>
+
+<span class="nc" id="L232">                ElectionResult result = countVotes(votes, heardFrom);</span>
+                // ZOOKEEPER-569:
+                // If no votes are received for live peers, reset to voting 
+                // for ourselves as otherwise we may hang on to a vote 
+                // for a dead peer                 
+<span class="nc bnc" id="L237" title="All 2 branches missed.">                if (result.numValidVotes == 0) {</span>
+<span class="nc" id="L238">                    self.setCurrentVote(new Vote(self.getId(),</span>
+<span class="nc" id="L239">                            self.getLastLoggedZxid()));</span>
+                } else {
+<span class="nc bnc" id="L241" title="All 2 branches missed.">                    if (result.winner.getId() &gt;= 0) {</span>
+<span class="nc" id="L242">                        self.setCurrentVote(result.vote);</span>
+                        // To do: this doesn't use a quorum verifier
+<span class="nc bnc" id="L244" title="All 2 branches missed.">                        if (result.winningCount &gt; (self.getVotingView().size() / 2)) {</span>
+<span class="nc" id="L245">                            self.setCurrentVote(result.winner);</span>
+<span class="nc" id="L246">                            s.close();</span>
+<span class="nc" id="L247">                            Vote current = self.getCurrentVote();</span>
+<span class="nc" id="L248">                            LOG.info(&quot;Found leader: my type is: &quot; + self.getLearnerType());</span>
+                            /*
+                             * We want to make sure we implement the state machine
+                             * correctly. If we are a PARTICIPANT, once a leader
+                             * is elected we can move either to LEADING or 
+                             * FOLLOWING. However if we are an OBSERVER, it is an
+                             * error to be elected as a Leader.
+                             */
+<span class="nc bnc" id="L256" title="All 2 branches missed.">                            if (self.getLearnerType() == LearnerType.OBSERVER) {</span>
+<span class="nc bnc" id="L257" title="All 2 branches missed.">                                if (current.getId() == self.getId()) {</span>
+                                    // This should never happen!
+<span class="nc" id="L259">                                    LOG.error(&quot;OBSERVER elected as leader!&quot;);</span>
+<span class="nc" id="L260">                                    Thread.sleep(100);</span>
+                                }
+                                else {
+<span class="nc" id="L263">                                    self.setPeerState(ServerState.OBSERVING);</span>
+<span class="nc" id="L264">                                    Thread.sleep(100);</span>
+<span class="nc" id="L265">                                    return current;</span>
+                                }
+                            } else {
+<span class="nc bnc" id="L268" title="All 2 branches missed.">                                self.setPeerState((current.getId() == self.getId())</span>
+<span class="nc" id="L269">                                        ? ServerState.LEADING: ServerState.FOLLOWING);</span>
+<span class="nc bnc" id="L270" title="All 2 branches missed.">                                if (self.getPeerState() == ServerState.FOLLOWING) {</span>
+<span class="nc" id="L271">                                    Thread.sleep(100);</span>
+                                }                            
+<span class="nc" id="L273">                                return current;</span>
+                            }
+                        }
+                    }
+                }
+<span class="nc" id="L278">                Thread.sleep(1000);</span>
+<span class="nc" id="L279">            }</span>
+<span class="nc" id="L280">            return null;</span>
+        } finally {
+            try {
+<span class="nc bnc" id="L283" title="All 2 branches missed.">                if(self.jmxLeaderElectionBean != null){</span>
+<span class="nc" id="L284">                    MBeanRegistry.getInstance().unregister(</span>
+                            self.jmxLeaderElectionBean);
+                }
+<span class="nc" id="L287">            } catch (Exception e) {</span>
+<span class="nc" id="L288">                LOG.warn(&quot;Failed to unregister with JMX&quot;, e);</span>
+<span class="nc" id="L289">            }</span>
+<span class="nc" id="L290">            self.jmxLeaderElectionBean = null;</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

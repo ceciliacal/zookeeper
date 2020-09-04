@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ZKTestCase.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">ZKTestCase.java</span></div><h1>ZKTestCase.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper;
+
+import static org.junit.Assert.fail;
+import java.time.LocalDateTime;
+import org.junit.Rule;
+import org.junit.rules.TestWatcher;
+import org.junit.runner.Description;
+import org.junit.runner.RunWith;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+
+/**
+ * Base class for a non-parameterized ZK test.
+ *
+ * Basic utilities shared by all tests. Also logging of various events during
+ * the test execution (start/stop/success/failure/etc...)
+ */
+@SuppressWarnings(&quot;deprecation&quot;)
+@RunWith(JUnit4ZKTestRunner.class)
+<span class="fc" id="L39">public class ZKTestCase {</span>
+<span class="fc" id="L40">    private static final Logger LOG = LoggerFactory.getLogger(ZKTestCase.class);</span>
+
+    private String testName;
+
+    protected String getTestName() {
+<span class="nc" id="L45">        return testName;</span>
+    }
+
+<span class="fc" id="L48">    @Rule</span>
+<span class="fc" id="L49">    public TestWatcher watchman= new TestWatcher() {</span>
+        
+        @Override
+        public void starting(Description method) {
+            // By default, disable starting a JettyAdminServer in tests to avoid
+            // accidentally attempting to start multiple admin servers on the
+            // same port.
+<span class="fc" id="L56">            System.setProperty(&quot;zookeeper.admin.enableServer&quot;, &quot;false&quot;);</span>
+            // ZOOKEEPER-2693 disables all 4lw by default.
+            // Here we enable the 4lw which ZooKeeper tests depends.
+<span class="fc" id="L59">            System.setProperty(&quot;zookeeper.4lw.commands.whitelist&quot;, &quot;*&quot;);</span>
+<span class="fc" id="L60">            testName = method.getMethodName();</span>
+<span class="fc" id="L61">            LOG.info(&quot;STARTING &quot; + testName);</span>
+<span class="fc" id="L62">        }</span>
+
+        @Override
+        public void finished(Description method) {
+<span class="fc" id="L66">            LOG.info(&quot;FINISHED &quot; + testName);</span>
+<span class="fc" id="L67">        }</span>
+
+        @Override
+        public void succeeded(Description method) {
+<span class="fc" id="L71">            LOG.info(&quot;SUCCEEDED &quot; + testName);</span>
+<span class="fc" id="L72">        }</span>
+
+        @Override
+        public void failed(Throwable e, Description method) {
+<span class="nc" id="L76">            LOG.info(&quot;FAILED &quot; + testName, e);</span>
+<span class="nc" id="L77">        }</span>
+
+    };
+    public interface WaitForCondition {
+        /**
+         * @return true when success
+         */
+        boolean evaluate();
+    }
+
+    /**
+     * Wait for condition to be true; otherwise fail the test if it exceed
+     * timeout
+     * @param msg       error message to print when fail
+     * @param condition condition to evaluate
+     * @param timeout   timeout in seconds
+     * @throws InterruptedException
+     */
+    public void waitFor(String msg, WaitForCondition condition, int timeout) throws InterruptedException {
+<span class="nc" id="L96">        final LocalDateTime deadline = LocalDateTime.now().plusSeconds(timeout);</span>
+<span class="nc bnc" id="L97" title="All 2 branches missed.">        while (LocalDateTime.now().isBefore(deadline)) {</span>
+<span class="nc bnc" id="L98" title="All 2 branches missed.">            if (condition.evaluate()) {</span>
+<span class="nc" id="L99">                return;</span>
+            }
+<span class="nc" id="L101">            Thread.sleep(100);</span>
+        }
+<span class="nc" id="L103">        fail(msg);</span>
+<span class="nc" id="L104">    }</span>
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

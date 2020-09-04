@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LearnerZooKeeperServer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">LearnerZooKeeperServer.java</span></div><h1>LearnerZooKeeperServer.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.server.quorum;
+
+import java.io.IOException;
+import java.util.Collections;
+import java.util.Map;
+
+import org.apache.zookeeper.jmx.MBeanRegistry;
+import org.apache.zookeeper.server.DataTreeBean;
+import org.apache.zookeeper.server.quorum.LearnerSessionTracker;
+import org.apache.zookeeper.server.ServerCnxn;
+import org.apache.zookeeper.server.SyncRequestProcessor;
+import org.apache.zookeeper.server.ZKDatabase;
+import org.apache.zookeeper.server.ZooKeeperServerBean;
+import org.apache.zookeeper.server.persistence.FileTxnSnapLog;
+
+/**
+ * Parent class for all ZooKeeperServers for Learners
+ */
+public abstract class LearnerZooKeeperServer extends QuorumZooKeeperServer {
+
+    /*
+     * Request processors
+     */
+    protected CommitProcessor commitProcessor;
+    protected SyncRequestProcessor syncProcessor;
+
+    public LearnerZooKeeperServer(FileTxnSnapLog logFactory, int tickTime,
+            int minSessionTimeout, int maxSessionTimeout,
+            ZKDatabase zkDb, QuorumPeer self)
+        throws IOException
+    {
+<span class="nc" id="L49">        super(logFactory, tickTime, minSessionTimeout, maxSessionTimeout, zkDb, self);</span>
+<span class="nc" id="L50">    }</span>
+
+    /**
+     * Abstract method to return the learner associated with this server.
+     * Since the Learner may change under our feet (when QuorumPeer reassigns
+     * it) we can't simply take a reference here. Instead, we need the
+     * subclasses to implement this.
+     */
+    abstract public Learner getLearner();
+
+    /**
+     * Returns the current state of the session tracker. This is only currently
+     * used by a Learner to build a ping response packet.
+     *
+     */
+    protected Map&lt;Long, Integer&gt; getTouchSnapshot() {
+<span class="nc bnc" id="L66" title="All 2 branches missed.">        if (sessionTracker != null) {</span>
+<span class="nc" id="L67">            return ((LearnerSessionTracker) sessionTracker).snapshot();</span>
+        }
+<span class="nc" id="L69">        Map&lt;Long, Integer&gt; map = Collections.emptyMap();</span>
+<span class="nc" id="L70">        return map;</span>
+    }
+
+    /**
+     * Returns the id of the associated QuorumPeer, which will do for a unique
+     * id of this server.
+     */
+    @Override
+    public long getServerId() {
+<span class="nc" id="L79">        return self.getId();</span>
+    }
+
+    @Override
+    public void createSessionTracker() {
+<span class="nc" id="L84">        sessionTracker = new LearnerSessionTracker(</span>
+<span class="nc" id="L85">                this, getZKDatabase().getSessionWithTimeOuts(),</span>
+<span class="nc" id="L86">                this.tickTime, self.getId(), self.areLocalSessionsEnabled(),</span>
+<span class="nc" id="L87">                getZooKeeperServerListener());</span>
+<span class="nc" id="L88">    }</span>
+
+    @Override
+    protected void revalidateSession(ServerCnxn cnxn, long sessionId,
+            int sessionTimeout) throws IOException {
+<span class="nc bnc" id="L93" title="All 2 branches missed.">        if (upgradeableSessionTracker.isLocalSession(sessionId)) {</span>
+<span class="nc" id="L94">            super.revalidateSession(cnxn, sessionId, sessionTimeout);</span>
+        } else {
+<span class="nc" id="L96">            getLearner().validateSession(cnxn, sessionId, sessionTimeout);</span>
+        }
+<span class="nc" id="L98">    }</span>
+
+    @Override
+    protected void registerJMX() {
+        // register with JMX
+        try {
+<span class="nc" id="L104">            jmxDataTreeBean = new DataTreeBean(getZKDatabase().getDataTree());</span>
+<span class="nc" id="L105">            MBeanRegistry.getInstance().register(jmxDataTreeBean, jmxServerBean);</span>
+<span class="nc" id="L106">        } catch (Exception e) {</span>
+<span class="nc" id="L107">            LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L108">            jmxDataTreeBean = null;</span>
+<span class="nc" id="L109">        }</span>
+<span class="nc" id="L110">    }</span>
+
+    public void registerJMX(ZooKeeperServerBean serverBean,
+            LocalPeerBean localPeerBean)
+    {
+        // register with JMX
+<span class="nc bnc" id="L116" title="All 2 branches missed.">        if (self.jmxLeaderElectionBean != null) {</span>
+            try {
+<span class="nc" id="L118">                MBeanRegistry.getInstance().unregister(self.jmxLeaderElectionBean);</span>
+<span class="nc" id="L119">            } catch (Exception e) {</span>
+<span class="nc" id="L120">                LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L121">            }</span>
+<span class="nc" id="L122">            self.jmxLeaderElectionBean = null;</span>
+        }
+
+        try {
+<span class="nc" id="L126">            jmxServerBean = serverBean;</span>
+<span class="nc" id="L127">            MBeanRegistry.getInstance().register(serverBean, localPeerBean);</span>
+<span class="nc" id="L128">        } catch (Exception e) {</span>
+<span class="nc" id="L129">            LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L130">            jmxServerBean = null;</span>
+<span class="nc" id="L131">        }</span>
+<span class="nc" id="L132">    }</span>
+
+    @Override
+    protected void unregisterJMX() {
+        // unregister from JMX
+        try {
+<span class="nc bnc" id="L138" title="All 2 branches missed.">            if (jmxDataTreeBean != null) {</span>
+<span class="nc" id="L139">                MBeanRegistry.getInstance().unregister(jmxDataTreeBean);</span>
+            }
+<span class="nc" id="L141">        } catch (Exception e) {</span>
+<span class="nc" id="L142">            LOG.warn(&quot;Failed to unregister with JMX&quot;, e);</span>
+<span class="nc" id="L143">        }</span>
+<span class="nc" id="L144">        jmxDataTreeBean = null;</span>
+<span class="nc" id="L145">    }</span>
+
+    protected void unregisterJMX(Learner peer) {
+        // unregister from JMX
+        try {
+<span class="nc bnc" id="L150" title="All 2 branches missed.">            if (jmxServerBean != null) {</span>
+<span class="nc" id="L151">                MBeanRegistry.getInstance().unregister(jmxServerBean);</span>
+            }
+<span class="nc" id="L153">        } catch (Exception e) {</span>
+<span class="nc" id="L154">            LOG.warn(&quot;Failed to unregister with JMX&quot;, e);</span>
+<span class="nc" id="L155">        }</span>
+<span class="nc" id="L156">        jmxServerBean = null;</span>
+<span class="nc" id="L157">    }</span>
+
+    @Override
+    public synchronized void shutdown() {
+<span class="nc bnc" id="L161" title="All 2 branches missed.">        if (!canShutdown()) {</span>
+<span class="nc" id="L162">            LOG.debug(&quot;ZooKeeper server is not running, so not proceeding to shutdown!&quot;);</span>
+<span class="nc" id="L163">            return;</span>
+        }
+<span class="nc" id="L165">        LOG.info(&quot;Shutting down&quot;);</span>
+        try {
+<span class="nc" id="L167">            super.shutdown();</span>
+<span class="nc" id="L168">        } catch (Exception e) {</span>
+<span class="nc" id="L169">            LOG.warn(&quot;Ignoring unexpected exception during shutdown&quot;, e);</span>
+<span class="nc" id="L170">        }</span>
+        try {
+<span class="nc bnc" id="L172" title="All 2 branches missed.">            if (syncProcessor != null) {</span>
+<span class="nc" id="L173">                syncProcessor.shutdown();</span>
+            }
+<span class="nc" id="L175">        } catch (Exception e) {</span>
+<span class="nc" id="L176">            LOG.warn(&quot;Ignoring unexpected exception in syncprocessor shutdown&quot;,</span>
+                    e);
+<span class="nc" id="L178">        }</span>
+<span class="nc" id="L179">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

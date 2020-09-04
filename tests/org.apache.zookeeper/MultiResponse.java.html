@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MultiResponse.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">MultiResponse.java</span></div><h1>MultiResponse.java</h1><pre class="source lang-java linenums">/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the &quot;License&quot;); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper;
+
+import org.apache.jute.InputArchive;
+import org.apache.jute.OutputArchive;
+import org.apache.jute.Record;
+import org.apache.zookeeper.proto.Create2Response;
+import org.apache.zookeeper.proto.CreateResponse;
+import org.apache.zookeeper.proto.MultiHeader;
+import org.apache.zookeeper.proto.SetDataResponse;
+import org.apache.zookeeper.proto.ErrorResponse;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+
+/**
+ * Handles the response from a multi request.  Such a response consists of
+ * a sequence of responses each prefixed by a MultiResponse that indicates
+ * the type of the response.  The end of the list is indicated by a MultiHeader
+ * with a negative type.  Each individual response is in the same format as
+ * with the corresponding operation in the original request list.
+ */
+<span class="nc" id="L41">public class MultiResponse implements Record, Iterable&lt;OpResult&gt; {</span>
+<span class="nc" id="L42">    private List&lt;OpResult&gt; results = new ArrayList&lt;OpResult&gt;();</span>
+
+    public void add(OpResult x) {
+<span class="nc" id="L45">        results.add(x);</span>
+<span class="nc" id="L46">    }</span>
+
+    @Override
+    public Iterator&lt;OpResult&gt; iterator() {
+<span class="nc" id="L50">        return results.iterator();</span>
+    }
+
+    public int size() {
+<span class="nc" id="L54">        return results.size();</span>
+    }
+
+    @Override
+    public void serialize(OutputArchive archive, String tag) throws IOException {
+<span class="nc" id="L59">        archive.startRecord(this, tag);</span>
+
+<span class="nc bnc" id="L61" title="All 2 branches missed.">        for (OpResult result : results) {</span>
+<span class="nc bnc" id="L62" title="All 2 branches missed.">            int err = result.getType() == ZooDefs.OpCode.error ? ((OpResult.ErrorResult)result).getErr() : 0;</span>
+
+<span class="nc" id="L64">            new MultiHeader(result.getType(), false, err).serialize(archive, tag);</span>
+
+<span class="nc bnc" id="L66" title="All 6 branches missed.">            switch (result.getType()) {</span>
+                case ZooDefs.OpCode.create:
+<span class="nc" id="L68">                    new CreateResponse(((OpResult.CreateResult) result).getPath()).serialize(archive, tag);</span>
+<span class="nc" id="L69">                    break;</span>
+                case ZooDefs.OpCode.create2:
+<span class="nc" id="L71">                	OpResult.CreateResult createResult = (OpResult.CreateResult) result;</span>
+<span class="nc" id="L72">                    new Create2Response(createResult.getPath(),</span>
+<span class="nc" id="L73">                    		createResult.getStat()).serialize(archive, tag);</span>
+<span class="nc" id="L74">                    break;</span>
+                case ZooDefs.OpCode.delete:
+                case ZooDefs.OpCode.check:
+<span class="nc" id="L77">                    break;</span>
+                case ZooDefs.OpCode.setData:
+<span class="nc" id="L79">                    new SetDataResponse(((OpResult.SetDataResult) result).getStat()).serialize(archive, tag);</span>
+<span class="nc" id="L80">                    break;</span>
+                case ZooDefs.OpCode.error:
+<span class="nc" id="L82">                    new ErrorResponse(((OpResult.ErrorResult) result).getErr()).serialize(archive, tag);</span>
+<span class="nc" id="L83">                    break;</span>
+                default:
+<span class="nc" id="L85">                    throw new IOException(&quot;Invalid type &quot; + result.getType() + &quot; in MultiResponse&quot;);</span>
+            }
+<span class="nc" id="L87">        }</span>
+<span class="nc" id="L88">        new MultiHeader(-1, true, -1).serialize(archive, tag);</span>
+<span class="nc" id="L89">        archive.endRecord(this, tag);</span>
+<span class="nc" id="L90">    }</span>
+
+    @Override
+    public void deserialize(InputArchive archive, String tag) throws IOException {
+<span class="nc" id="L94">        results = new ArrayList&lt;OpResult&gt;();</span>
+
+<span class="nc" id="L96">        archive.startRecord(tag);</span>
+<span class="nc" id="L97">        MultiHeader h = new MultiHeader();</span>
+<span class="nc" id="L98">        h.deserialize(archive, tag);</span>
+<span class="nc bnc" id="L99" title="All 2 branches missed.">        while (!h.getDone()) {</span>
+<span class="nc bnc" id="L100" title="All 7 branches missed.">            switch (h.getType()) {</span>
+                case ZooDefs.OpCode.create:
+<span class="nc" id="L102">                    CreateResponse cr = new CreateResponse();</span>
+<span class="nc" id="L103">                    cr.deserialize(archive, tag);</span>
+<span class="nc" id="L104">                    results.add(new OpResult.CreateResult(cr.getPath()));</span>
+<span class="nc" id="L105">                    break;</span>
+
+                case ZooDefs.OpCode.create2:
+<span class="nc" id="L108">                    Create2Response cr2 = new Create2Response();</span>
+<span class="nc" id="L109">                    cr2.deserialize(archive, tag);</span>
+<span class="nc" id="L110">                    results.add(new OpResult.CreateResult(cr2.getPath(), cr2.getStat()));</span>
+<span class="nc" id="L111">                    break;</span>
+
+                case ZooDefs.OpCode.delete:
+<span class="nc" id="L114">                    results.add(new OpResult.DeleteResult());</span>
+<span class="nc" id="L115">                    break;</span>
+
+                case ZooDefs.OpCode.setData:
+<span class="nc" id="L118">                    SetDataResponse sdr = new SetDataResponse();</span>
+<span class="nc" id="L119">                    sdr.deserialize(archive, tag);</span>
+<span class="nc" id="L120">                    results.add(new OpResult.SetDataResult(sdr.getStat()));</span>
+<span class="nc" id="L121">                    break;</span>
+
+                case ZooDefs.OpCode.check:
+<span class="nc" id="L124">                    results.add(new OpResult.CheckResult());</span>
+<span class="nc" id="L125">                    break;</span>
+
+                case ZooDefs.OpCode.error:
+                    //FIXME: need way to more cleanly serialize/deserialize exceptions
+<span class="nc" id="L129">                    ErrorResponse er = new ErrorResponse();</span>
+<span class="nc" id="L130">                    er.deserialize(archive, tag);</span>
+<span class="nc" id="L131">                    results.add(new OpResult.ErrorResult(er.getErr()));</span>
+<span class="nc" id="L132">                    break;</span>
+
+                default:
+<span class="nc" id="L135">                    throw new IOException(&quot;Invalid type &quot; + h.getType() + &quot; in MultiResponse&quot;);</span>
+            }
+<span class="nc" id="L137">            h.deserialize(archive, tag);</span>
+        }
+<span class="nc" id="L139">        archive.endRecord(tag);</span>
+<span class="nc" id="L140">    }</span>
+
+    public List&lt;OpResult&gt; getResultList() {
+<span class="nc" id="L143">        return results;</span>
+    }
+
+    @Override
+    public boolean equals(Object o) {
+<span class="nc bnc" id="L148" title="All 2 branches missed.">        if (this == o) return true;</span>
+<span class="nc bnc" id="L149" title="All 2 branches missed.">        if (!(o instanceof MultiResponse)) return false;</span>
+
+<span class="nc" id="L151">        MultiResponse other = (MultiResponse) o;</span>
+
+<span class="nc bnc" id="L153" title="All 2 branches missed.">        if (results != null) {</span>
+<span class="nc" id="L154">            Iterator&lt;OpResult&gt; i = other.results.iterator();</span>
+<span class="nc bnc" id="L155" title="All 2 branches missed.">            for (OpResult result : results) {</span>
+<span class="nc bnc" id="L156" title="All 2 branches missed.">                if (i.hasNext()) {</span>
+<span class="nc bnc" id="L157" title="All 2 branches missed.">                    if (!result.equals(i.next())) {</span>
+<span class="nc" id="L158">                        return false;</span>
+                    }
+                } else {
+<span class="nc" id="L161">                    return false;</span>
+                }
+<span class="nc" id="L163">            }</span>
+<span class="nc bnc" id="L164" title="All 2 branches missed.">            return !i.hasNext();</span>
+        }
+<span class="nc bnc" id="L166" title="All 2 branches missed.">        else return other.results == null;</span>
+    }
+
+    @Override
+    public int hashCode() {
+<span class="nc" id="L171">        int hash = results.size();</span>
+<span class="nc bnc" id="L172" title="All 2 branches missed.">        for (OpResult result : results) {</span>
+<span class="nc" id="L173">            hash = (hash * 35) + result.hashCode();</span>
+<span class="nc" id="L174">        }</span>
+<span class="nc" id="L175">        return hash;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

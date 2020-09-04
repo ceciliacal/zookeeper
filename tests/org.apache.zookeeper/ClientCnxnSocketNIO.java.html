@@ -1,0 +1,433 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ClientCnxnSocketNIO.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">ClientCnxnSocketNIO.java</span></div><h1>ClientCnxnSocketNIO.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.SelectionKey;
+import java.nio.channels.Selector;
+import java.nio.channels.SocketChannel;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.LinkedBlockingDeque;
+
+import org.apache.zookeeper.ClientCnxn.EndOfStreamException;
+import org.apache.zookeeper.ClientCnxn.Packet;
+import org.apache.zookeeper.ZooDefs.OpCode;
+import org.apache.zookeeper.client.ZKClientConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class ClientCnxnSocketNIO extends ClientCnxnSocket {
+<span class="fc" id="L42">    private static final Logger LOG = LoggerFactory</span>
+<span class="fc" id="L43">            .getLogger(ClientCnxnSocketNIO.class);</span>
+
+<span class="fc" id="L45">    private final Selector selector = Selector.open();</span>
+
+    private SelectionKey sockKey;
+
+    private SocketAddress localSocketAddress;
+
+    private SocketAddress remoteSocketAddress;
+
+<span class="fc" id="L53">    ClientCnxnSocketNIO(ZKClientConfig clientConfig) throws IOException {</span>
+<span class="fc" id="L54">        this.clientConfig = clientConfig;</span>
+<span class="fc" id="L55">        initProperties();</span>
+<span class="fc" id="L56">    }</span>
+
+    @Override
+    boolean isConnected() {
+<span class="fc bfc" id="L60" title="All 2 branches covered.">        return sockKey != null;</span>
+    }
+    
+    /**
+     * @return true if a packet was received
+     * @throws InterruptedException
+     * @throws IOException
+     */
+    void doIO(List&lt;Packet&gt; pendingQueue, ClientCnxn cnxn)
+      throws InterruptedException, IOException {
+<span class="fc" id="L70">        SocketChannel sock = (SocketChannel) sockKey.channel();</span>
+<span class="pc bpc" id="L71" title="1 of 2 branches missed.">        if (sock == null) {</span>
+<span class="nc" id="L72">            throw new IOException(&quot;Socket is null!&quot;);</span>
+        }
+<span class="fc bfc" id="L74" title="All 2 branches covered.">        if (sockKey.isReadable()) {</span>
+<span class="fc" id="L75">            int rc = sock.read(incomingBuffer);</span>
+<span class="pc bpc" id="L76" title="1 of 2 branches missed.">            if (rc &lt; 0) {</span>
+<span class="nc" id="L77">                throw new EndOfStreamException(</span>
+                        &quot;Unable to read additional data from server sessionid 0x&quot;
+<span class="nc" id="L79">                                + Long.toHexString(sessionId)</span>
+                                + &quot;, likely server has closed socket&quot;);
+            }
+<span class="pc bpc" id="L82" title="1 of 2 branches missed.">            if (!incomingBuffer.hasRemaining()) {</span>
+<span class="fc" id="L83">                incomingBuffer.flip();</span>
+<span class="fc bfc" id="L84" title="All 2 branches covered.">                if (incomingBuffer == lenBuffer) {</span>
+<span class="fc" id="L85">                    recvCount.getAndIncrement();</span>
+<span class="fc" id="L86">                    readLength();</span>
+<span class="fc bfc" id="L87" title="All 2 branches covered.">                } else if (!initialized) {</span>
+<span class="fc" id="L88">                    readConnectResult();</span>
+<span class="fc" id="L89">                    enableRead();</span>
+<span class="pc bpc" id="L90" title="1 of 2 branches missed.">                    if (findSendablePacket(outgoingQueue,</span>
+<span class="fc" id="L91">                            sendThread.tunnelAuthInProgress()) != null) {</span>
+                        // Since SASL authentication has completed (if client is configured to do so),
+                        // outgoing packets waiting in the outgoingQueue can now be sent.
+<span class="nc" id="L94">                        enableWrite();</span>
+                    }
+<span class="fc" id="L96">                    lenBuffer.clear();</span>
+<span class="fc" id="L97">                    incomingBuffer = lenBuffer;</span>
+<span class="fc" id="L98">                    updateLastHeard();</span>
+<span class="fc" id="L99">                    initialized = true;</span>
+                } else {
+<span class="fc" id="L101">                    sendThread.readResponse(incomingBuffer);</span>
+<span class="fc" id="L102">                    lenBuffer.clear();</span>
+<span class="fc" id="L103">                    incomingBuffer = lenBuffer;</span>
+<span class="fc" id="L104">                    updateLastHeard();</span>
+                }
+            }
+        }
+<span class="fc bfc" id="L108" title="All 2 branches covered.">        if (sockKey.isWritable()) {</span>
+<span class="fc" id="L109">            Packet p = findSendablePacket(outgoingQueue,</span>
+<span class="fc" id="L110">                    sendThread.tunnelAuthInProgress());</span>
+
+<span class="pc bpc" id="L112" title="1 of 2 branches missed.">            if (p != null) {</span>
+<span class="fc" id="L113">                updateLastSend();</span>
+                // If we already started writing p, p.bb will already exist
+<span class="pc bpc" id="L115" title="1 of 2 branches missed.">                if (p.bb == null) {</span>
+<span class="fc bfc" id="L116" title="All 2 branches covered.">                    if ((p.requestHeader != null) &amp;&amp;</span>
+<span class="pc bpc" id="L117" title="1 of 2 branches missed.">                            (p.requestHeader.getType() != OpCode.ping) &amp;&amp;</span>
+<span class="pc bpc" id="L118" title="1 of 2 branches missed.">                            (p.requestHeader.getType() != OpCode.auth)) {</span>
+<span class="fc" id="L119">                        p.requestHeader.setXid(cnxn.getXid());</span>
+                    }
+<span class="fc" id="L121">                    p.createBB();</span>
+                }
+<span class="fc" id="L123">                sock.write(p.bb);</span>
+<span class="pc bpc" id="L124" title="1 of 2 branches missed.">                if (!p.bb.hasRemaining()) {</span>
+<span class="fc" id="L125">                    sentCount.getAndIncrement();</span>
+<span class="fc" id="L126">                    outgoingQueue.removeFirstOccurrence(p);</span>
+<span class="fc bfc" id="L127" title="All 2 branches covered.">                    if (p.requestHeader != null</span>
+<span class="pc bpc" id="L128" title="1 of 2 branches missed.">                            &amp;&amp; p.requestHeader.getType() != OpCode.ping</span>
+<span class="pc bpc" id="L129" title="1 of 2 branches missed.">                            &amp;&amp; p.requestHeader.getType() != OpCode.auth) {</span>
+<span class="fc" id="L130">                        synchronized (pendingQueue) {</span>
+<span class="fc" id="L131">                            pendingQueue.add(p);</span>
+<span class="fc" id="L132">                        }</span>
+                    }
+                }
+            }
+<span class="pc bpc" id="L136" title="1 of 2 branches missed.">            if (outgoingQueue.isEmpty()) {</span>
+                // No more packets to send: turn off write interest flag.
+                // Will be turned on later by a later call to enableWrite(),
+                // from within ZooKeeperSaslClient (if client is configured
+                // to attempt SASL authentication), or in either doIO() or
+                // in doTransport() if not.
+<span class="fc" id="L142">                disableWrite();</span>
+<span class="nc bnc" id="L143" title="All 6 branches missed.">            } else if (!initialized &amp;&amp; p != null &amp;&amp; !p.bb.hasRemaining()) {</span>
+                // On initial connection, write the complete connect request
+                // packet, but then disable further writes until after
+                // receiving a successful connection response.  If the
+                // session is expired, then the server sends the expiration
+                // response and immediately closes its end of the socket.  If
+                // the client is simultaneously writing on its end, then the
+                // TCP stack may choose to abort with RST, in which case the
+                // client would never receive the session expired event.  See
+                // http://docs.oracle.com/javase/6/docs/technotes/guides/net/articles/connection_release.html
+<span class="nc" id="L153">                disableWrite();</span>
+            } else {
+                // Just in case
+<span class="nc" id="L156">                enableWrite();</span>
+            }
+        }
+<span class="fc" id="L159">    }</span>
+
+    private Packet findSendablePacket(LinkedBlockingDeque&lt;Packet&gt; outgoingQueue,
+                                      boolean tunneledAuthInProgres) {
+<span class="fc bfc" id="L163" title="All 2 branches covered.">        if (outgoingQueue.isEmpty()) {</span>
+<span class="fc" id="L164">            return null;</span>
+        }
+        // If we've already starting sending the first packet, we better finish
+<span class="pc bpc" id="L167" title="2 of 4 branches missed.">        if (outgoingQueue.getFirst().bb != null || !tunneledAuthInProgres) {</span>
+<span class="fc" id="L168">            return outgoingQueue.getFirst();</span>
+        }
+        // Since client's authentication with server is in progress,
+        // send only the null-header packet queued by primeConnection().
+        // This packet must be sent so that the SASL authentication process
+        // can proceed, but all other packets should wait until
+        // SASL authentication completes.
+<span class="nc" id="L175">        Iterator&lt;Packet&gt; iter = outgoingQueue.iterator();</span>
+<span class="nc bnc" id="L176" title="All 2 branches missed.">        while (iter.hasNext()) {</span>
+<span class="nc" id="L177">            Packet p = iter.next();</span>
+<span class="nc bnc" id="L178" title="All 2 branches missed.">            if (p.requestHeader == null) {</span>
+                // We've found the priming-packet. Move it to the beginning of the queue.
+<span class="nc" id="L180">                iter.remove();</span>
+<span class="nc" id="L181">                outgoingQueue.addFirst(p);</span>
+<span class="nc" id="L182">                return p;</span>
+            } else {
+                // Non-priming packet: defer it until later, leaving it in the queue
+                // until authentication completes.
+<span class="nc" id="L186">                LOG.debug(&quot;deferring non-priming packet {} until SASL authentation completes.&quot;, p);</span>
+            }
+<span class="nc" id="L188">        }</span>
+<span class="nc" id="L189">        return null;</span>
+    }
+
+    @Override
+    void cleanup() {
+<span class="pc bpc" id="L194" title="1 of 2 branches missed.">        if (sockKey != null) {</span>
+<span class="fc" id="L195">            SocketChannel sock = (SocketChannel) sockKey.channel();</span>
+<span class="fc" id="L196">            sockKey.cancel();</span>
+            try {
+<span class="fc" id="L198">                sock.socket().shutdownInput();</span>
+<span class="nc" id="L199">            } catch (IOException e) {</span>
+<span class="nc bnc" id="L200" title="All 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L201">                    LOG.debug(&quot;Ignoring exception during shutdown input&quot;, e);</span>
+                }
+<span class="fc" id="L203">            }</span>
+            try {
+<span class="fc" id="L205">                sock.socket().shutdownOutput();</span>
+<span class="nc" id="L206">            } catch (IOException e) {</span>
+<span class="nc bnc" id="L207" title="All 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L208">                    LOG.debug(&quot;Ignoring exception during shutdown output&quot;,</span>
+                            e);
+                }
+<span class="fc" id="L211">            }</span>
+            try {
+<span class="fc" id="L213">                sock.socket().close();</span>
+<span class="nc" id="L214">            } catch (IOException e) {</span>
+<span class="nc bnc" id="L215" title="All 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L216">                    LOG.debug(&quot;Ignoring exception during socket close&quot;, e);</span>
+                }
+<span class="fc" id="L218">            }</span>
+            try {
+<span class="fc" id="L220">                sock.close();</span>
+<span class="nc" id="L221">            } catch (IOException e) {</span>
+<span class="nc bnc" id="L222" title="All 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L223">                    LOG.debug(&quot;Ignoring exception during channel close&quot;, e);</span>
+                }
+<span class="fc" id="L225">            }</span>
+        }
+        try {
+<span class="fc" id="L228">            Thread.sleep(100);</span>
+<span class="nc" id="L229">        } catch (InterruptedException e) {</span>
+<span class="nc bnc" id="L230" title="All 2 branches missed.">            if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L231">                LOG.debug(&quot;SendThread interrupted during sleep, ignoring&quot;);</span>
+            }
+<span class="fc" id="L233">        }</span>
+<span class="fc" id="L234">        sockKey = null;</span>
+<span class="fc" id="L235">    }</span>
+ 
+    @Override
+    void close() {
+        try {
+<span class="pc bpc" id="L240" title="1 of 2 branches missed.">            if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L241">                LOG.trace(&quot;Doing client selector close&quot;);</span>
+            }
+<span class="fc" id="L243">            selector.close();</span>
+<span class="pc bpc" id="L244" title="1 of 2 branches missed.">            if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L245">                LOG.trace(&quot;Closed client selector&quot;);</span>
+            }
+<span class="nc" id="L247">        } catch (IOException e) {</span>
+<span class="nc" id="L248">            LOG.warn(&quot;Ignoring exception during selector close&quot;, e);</span>
+<span class="fc" id="L249">        }</span>
+<span class="fc" id="L250">    }</span>
+    
+    /**
+     * create a socket channel.
+     * @return the created socket channel
+     * @throws IOException
+     */
+    SocketChannel createSock() throws IOException {
+        SocketChannel sock;
+<span class="fc" id="L259">        sock = SocketChannel.open();</span>
+<span class="fc" id="L260">        sock.configureBlocking(false);</span>
+<span class="fc" id="L261">        sock.socket().setSoLinger(false, -1);</span>
+<span class="fc" id="L262">        sock.socket().setTcpNoDelay(true);</span>
+<span class="fc" id="L263">        return sock;</span>
+    }
+
+    /**
+     * register with the selection and connect
+     * @param sock the {@link SocketChannel} 
+     * @param addr the address of remote host
+     * @throws IOException
+     */
+    void registerAndConnect(SocketChannel sock, InetSocketAddress addr) 
+    throws IOException {
+<span class="fc" id="L274">        sockKey = sock.register(selector, SelectionKey.OP_CONNECT);</span>
+<span class="fc" id="L275">        boolean immediateConnect = sock.connect(addr);</span>
+<span class="pc bpc" id="L276" title="1 of 2 branches missed.">        if (immediateConnect) {</span>
+<span class="nc" id="L277">            sendThread.primeConnection();</span>
+        }
+<span class="fc" id="L279">    }</span>
+    
+    @Override
+    void connect(InetSocketAddress addr) throws IOException {
+<span class="fc" id="L283">        SocketChannel sock = createSock();</span>
+        try {
+<span class="fc" id="L285">           registerAndConnect(sock, addr);</span>
+<span class="nc" id="L286">      } catch (IOException e) {</span>
+<span class="nc" id="L287">            LOG.error(&quot;Unable to open socket to &quot; + addr);</span>
+<span class="nc" id="L288">            sock.close();</span>
+<span class="nc" id="L289">            throw e;</span>
+<span class="fc" id="L290">        }</span>
+<span class="fc" id="L291">        initialized = false;</span>
+
+        /*
+         * Reset incomingBuffer
+         */
+<span class="fc" id="L296">        lenBuffer.clear();</span>
+<span class="fc" id="L297">        incomingBuffer = lenBuffer;</span>
+<span class="fc" id="L298">    }</span>
+
+    /**
+     * Returns the address to which the socket is connected.
+     * 
+     * @return ip address of the remote side of the connection or null if not
+     *         connected
+     */
+    @Override
+    SocketAddress getRemoteSocketAddress() {
+<span class="fc" id="L308">        return remoteSocketAddress;</span>
+    }
+
+    /**
+     * Returns the local address to which the socket is bound.
+     * 
+     * @return ip address of the remote side of the connection or null if not
+     *         connected
+     */
+    @Override
+    SocketAddress getLocalSocketAddress() {
+<span class="fc" id="L319">        return localSocketAddress;</span>
+    }
+    
+    private void updateSocketAddresses() {
+<span class="fc" id="L323">        Socket socket = ((SocketChannel) sockKey.channel()).socket();</span>
+<span class="fc" id="L324">        localSocketAddress = socket.getLocalSocketAddress();</span>
+<span class="fc" id="L325">        remoteSocketAddress = socket.getRemoteSocketAddress();</span>
+<span class="fc" id="L326">    }</span>
+
+    @Override
+    void packetAdded() {
+<span class="fc" id="L330">        wakeupCnxn();</span>
+<span class="fc" id="L331">    }</span>
+
+    @Override
+    void onClosing() {
+<span class="fc" id="L335">        wakeupCnxn();</span>
+<span class="fc" id="L336">    }</span>
+
+    private synchronized void wakeupCnxn() {
+<span class="fc" id="L339">        selector.wakeup();</span>
+<span class="fc" id="L340">    }</span>
+    
+    @Override
+    void doTransport(int waitTimeOut, List&lt;Packet&gt; pendingQueue, ClientCnxn cnxn)
+            throws IOException, InterruptedException {
+<span class="fc" id="L345">        selector.select(waitTimeOut);</span>
+        Set&lt;SelectionKey&gt; selected;
+<span class="fc" id="L347">        synchronized (this) {</span>
+<span class="fc" id="L348">            selected = selector.selectedKeys();</span>
+<span class="fc" id="L349">        }</span>
+        // Everything below and until we get back to the select is
+        // non blocking, so time is effectively a constant. That is
+        // Why we just have to do this once, here
+<span class="fc" id="L353">        updateNow();</span>
+<span class="fc bfc" id="L354" title="All 2 branches covered.">        for (SelectionKey k : selected) {</span>
+<span class="fc" id="L355">            SocketChannel sc = ((SocketChannel) k.channel());</span>
+<span class="fc bfc" id="L356" title="All 2 branches covered.">            if ((k.readyOps() &amp; SelectionKey.OP_CONNECT) != 0) {</span>
+<span class="pc bpc" id="L357" title="1 of 2 branches missed.">                if (sc.finishConnect()) {</span>
+<span class="fc" id="L358">                    updateLastSendAndHeard();</span>
+<span class="fc" id="L359">                    updateSocketAddresses();</span>
+<span class="fc" id="L360">                    sendThread.primeConnection();</span>
+                }
+<span class="pc bpc" id="L362" title="1 of 2 branches missed.">            } else if ((k.readyOps() &amp; (SelectionKey.OP_READ | SelectionKey.OP_WRITE)) != 0) {</span>
+<span class="fc" id="L363">                doIO(pendingQueue, cnxn);</span>
+            }
+<span class="fc" id="L365">        }</span>
+<span class="fc bfc" id="L366" title="All 2 branches covered.">        if (sendThread.getZkState().isConnected()) {</span>
+<span class="fc bfc" id="L367" title="All 2 branches covered.">            if (findSendablePacket(outgoingQueue,</span>
+<span class="fc" id="L368">                    sendThread.tunnelAuthInProgress()) != null) {</span>
+<span class="fc" id="L369">                enableWrite();</span>
+            }
+        }
+<span class="fc" id="L372">        selected.clear();</span>
+<span class="fc" id="L373">    }</span>
+
+    //TODO should this be synchronized?
+    @Override
+    void testableCloseSocket() throws IOException {
+<span class="nc" id="L378">        LOG.info(&quot;testableCloseSocket() called&quot;);</span>
+        // sockKey may be concurrently accessed by multiple
+        // threads. We use tmp here to avoid a race condition
+<span class="nc" id="L381">        SelectionKey tmp = sockKey;</span>
+<span class="nc bnc" id="L382" title="All 2 branches missed.">        if (tmp!=null) {</span>
+<span class="nc" id="L383">           ((SocketChannel) tmp.channel()).socket().close();</span>
+        }
+<span class="nc" id="L385">    }</span>
+
+    @Override
+    void saslCompleted() {
+<span class="nc" id="L389">        enableWrite();</span>
+<span class="nc" id="L390">    }</span>
+
+    synchronized void enableWrite() {
+<span class="fc" id="L393">        int i = sockKey.interestOps();</span>
+<span class="pc bpc" id="L394" title="1 of 2 branches missed.">        if ((i &amp; SelectionKey.OP_WRITE) == 0) {</span>
+<span class="fc" id="L395">            sockKey.interestOps(i | SelectionKey.OP_WRITE);</span>
+        }
+<span class="fc" id="L397">    }</span>
+
+    private synchronized void disableWrite() {
+<span class="fc" id="L400">        int i = sockKey.interestOps();</span>
+<span class="pc bpc" id="L401" title="1 of 2 branches missed.">        if ((i &amp; SelectionKey.OP_WRITE) != 0) {</span>
+<span class="fc" id="L402">            sockKey.interestOps(i &amp; (~SelectionKey.OP_WRITE));</span>
+        }
+<span class="fc" id="L404">    }</span>
+
+    synchronized private void enableRead() {
+<span class="fc" id="L407">        int i = sockKey.interestOps();</span>
+<span class="pc bpc" id="L408" title="1 of 2 branches missed.">        if ((i &amp; SelectionKey.OP_READ) == 0) {</span>
+<span class="nc" id="L409">            sockKey.interestOps(i | SelectionKey.OP_READ);</span>
+        }
+<span class="fc" id="L411">    }</span>
+
+    @Override
+    void connectionPrimed() {
+<span class="fc" id="L415">        sockKey.interestOps(SelectionKey.OP_READ | SelectionKey.OP_WRITE);</span>
+<span class="fc" id="L416">    }</span>
+
+    Selector getSelector() {
+<span class="nc" id="L419">        return selector;</span>
+    }
+
+    @Override
+    void sendPacket(Packet p) throws IOException {
+<span class="nc" id="L424">        SocketChannel sock = (SocketChannel) sockKey.channel();</span>
+<span class="nc bnc" id="L425" title="All 2 branches missed.">        if (sock == null) {</span>
+<span class="nc" id="L426">            throw new IOException(&quot;Socket is null!&quot;);</span>
+        }
+<span class="nc" id="L428">        p.createBB();</span>
+<span class="nc" id="L429">        ByteBuffer pbb = p.bb;</span>
+<span class="nc" id="L430">        sock.write(pbb);</span>
+<span class="nc" id="L431">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

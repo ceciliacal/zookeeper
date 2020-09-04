@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ServerConfig.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server</a> &gt; <span class="el_source">ServerConfig.java</span></div><h1>ServerConfig.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server;
+
+import java.io.File;
+import java.net.InetSocketAddress;
+import java.util.Arrays;
+
+import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.zookeeper.server.quorum.QuorumPeerConfig;
+import org.apache.zookeeper.server.quorum.QuorumPeerConfig.ConfigException;
+
+/**
+ * Server configuration storage.
+ *
+ * We use this instead of Properties as it's typed.
+ *
+ */
+@InterfaceAudience.Public
+<span class="nc" id="L36">public class ServerConfig {</span>
+    ////
+    //// If you update the configuration parameters be sure
+    //// to update the &quot;conf&quot; 4letter word
+    ////
+    protected InetSocketAddress clientPortAddress;
+    protected InetSocketAddress secureClientPortAddress;
+    protected File dataDir;
+    protected File dataLogDir;
+<span class="nc" id="L45">    protected int tickTime = ZooKeeperServer.DEFAULT_TICK_TIME;</span>
+    protected int maxClientCnxns;
+    /** defaults to -1 if not set explicitly */
+<span class="nc" id="L48">    protected int minSessionTimeout = -1;</span>
+    /** defaults to -1 if not set explicitly */
+<span class="nc" id="L50">    protected int maxSessionTimeout = -1;</span>
+
+    /**
+     * Parse arguments for server configuration
+     * @param args clientPort dataDir and optional tickTime and maxClientCnxns
+     * @return ServerConfig configured wrt arguments
+     * @throws IllegalArgumentException on invalid usage
+     */
+    public void parse(String[] args) {
+<span class="nc bnc" id="L59" title="All 4 branches missed.">        if (args.length &lt; 2 || args.length &gt; 4) {</span>
+<span class="nc" id="L60">            throw new IllegalArgumentException(&quot;Invalid number of arguments:&quot; + Arrays.toString(args));</span>
+        }
+
+<span class="nc" id="L63">        clientPortAddress = new InetSocketAddress(Integer.parseInt(args[0]));</span>
+<span class="nc" id="L64">        dataDir = new File(args[1]);</span>
+<span class="nc" id="L65">        dataLogDir = dataDir;</span>
+<span class="nc bnc" id="L66" title="All 2 branches missed.">        if (args.length &gt;= 3) {</span>
+<span class="nc" id="L67">            tickTime = Integer.parseInt(args[2]);</span>
+        }
+<span class="nc bnc" id="L69" title="All 2 branches missed.">        if (args.length == 4) {</span>
+<span class="nc" id="L70">            maxClientCnxns = Integer.parseInt(args[3]);</span>
+        }
+<span class="nc" id="L72">    }</span>
+
+    /**
+     * Parse a ZooKeeper configuration file
+     * @param path the patch of the configuration file
+     * @return ServerConfig configured wrt arguments
+     * @throws ConfigException error processing configuration
+     */
+    public void parse(String path) throws ConfigException {
+<span class="nc" id="L81">        QuorumPeerConfig config = new QuorumPeerConfig();</span>
+<span class="nc" id="L82">        config.parse(path);</span>
+
+        // let qpconfig parse the file and then pull the stuff we are
+        // interested in
+<span class="nc" id="L86">        readFrom(config);</span>
+<span class="nc" id="L87">    }</span>
+
+    /**
+     * Read attributes from a QuorumPeerConfig.
+     * @param config
+     */
+    public void readFrom(QuorumPeerConfig config) {
+<span class="nc" id="L94">        clientPortAddress = config.getClientPortAddress();</span>
+<span class="nc" id="L95">        secureClientPortAddress = config.getSecureClientPortAddress();</span>
+<span class="nc" id="L96">        dataDir = config.getDataDir();</span>
+<span class="nc" id="L97">        dataLogDir = config.getDataLogDir();</span>
+<span class="nc" id="L98">        tickTime = config.getTickTime();</span>
+<span class="nc" id="L99">        maxClientCnxns = config.getMaxClientCnxns();</span>
+<span class="nc" id="L100">        minSessionTimeout = config.getMinSessionTimeout();</span>
+<span class="nc" id="L101">        maxSessionTimeout = config.getMaxSessionTimeout();</span>
+<span class="nc" id="L102">    }</span>
+
+    public InetSocketAddress getClientPortAddress() {
+<span class="nc" id="L105">        return clientPortAddress;</span>
+    }
+    public InetSocketAddress getSecureClientPortAddress() {
+<span class="nc" id="L108">        return secureClientPortAddress;</span>
+    }
+<span class="nc" id="L110">    public File getDataDir() { return dataDir; }</span>
+<span class="nc" id="L111">    public File getDataLogDir() { return dataLogDir; }</span>
+<span class="nc" id="L112">    public int getTickTime() { return tickTime; }</span>
+<span class="nc" id="L113">    public int getMaxClientCnxns() { return maxClientCnxns; }</span>
+    /** minimum session timeout in milliseconds, -1 if unset */
+<span class="nc" id="L115">    public int getMinSessionTimeout() { return minSessionTimeout; }</span>
+    /** maximum session timeout in milliseconds, -1 if unset */
+<span class="nc" id="L117">    public int getMaxSessionTimeout() { return maxSessionTimeout; }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

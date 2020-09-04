@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ObserverZooKeeperServer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">ObserverZooKeeperServer.java</span></div><h1>ObserverZooKeeperServer.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.server.quorum;
+
+import java.io.IOException;
+import java.util.concurrent.ConcurrentLinkedQueue;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.zookeeper.server.FinalRequestProcessor;
+import org.apache.zookeeper.server.Request;
+import org.apache.zookeeper.server.RequestProcessor;
+import org.apache.zookeeper.server.SyncRequestProcessor;
+import org.apache.zookeeper.server.ZKDatabase;
+import org.apache.zookeeper.server.persistence.FileTxnSnapLog;
+
+/**
+ * A ZooKeeperServer for the Observer node type. Not much is different, but
+ * we anticipate specializing the request processors in the future. 
+ *
+ */
+public class ObserverZooKeeperServer extends LearnerZooKeeperServer {
+<span class="nc" id="L38">    private static final Logger LOG =</span>
+<span class="nc" id="L39">        LoggerFactory.getLogger(ObserverZooKeeperServer.class);        </span>
+    
+    /**
+     * Enable since request processor for writing txnlog to disk and
+     * take periodic snapshot. Default is ON.
+     */
+    
+<span class="nc" id="L46">    private boolean syncRequestProcessorEnabled = this.self.getSyncEnabled();</span>
+    
+    /*
+     * Pending sync requests
+     */
+<span class="nc" id="L51">    ConcurrentLinkedQueue&lt;Request&gt; pendingSyncs = </span>
+        new ConcurrentLinkedQueue&lt;Request&gt;();
+
+    ObserverZooKeeperServer(FileTxnSnapLog logFactory, QuorumPeer self, ZKDatabase zkDb) throws IOException {
+<span class="nc" id="L55">        super(logFactory, self.tickTime, self.minSessionTimeout, self.maxSessionTimeout, zkDb, self);</span>
+<span class="nc" id="L56">        LOG.info(&quot;syncEnabled =&quot; + syncRequestProcessorEnabled);</span>
+<span class="nc" id="L57">    }</span>
+    
+    public Observer getObserver() {
+<span class="nc" id="L60">        return self.observer;</span>
+    }
+    
+    @Override
+    public Learner getLearner() {
+<span class="nc" id="L65">        return self.observer;</span>
+    }       
+    
+    /**
+     * Unlike a Follower, which sees a full request only during the PROPOSAL
+     * phase, Observers get all the data required with the INFORM packet. 
+     * This method commits a request that has been unpacked by from an INFORM
+     * received from the Leader. 
+     *      
+     * @param request
+     */
+    public void commitRequest(Request request) {     
+<span class="nc bnc" id="L77" title="All 2 branches missed.">        if (syncRequestProcessorEnabled) {</span>
+            // Write to txnlog and take periodic snapshot
+<span class="nc" id="L79">            syncProcessor.processRequest(request);</span>
+        }
+<span class="nc" id="L81">        commitProcessor.commit(request);        </span>
+<span class="nc" id="L82">    }</span>
+    
+    /**
+     * Set up the request processors for an Observer:
+     * firstProcesor-&gt;commitProcessor-&gt;finalProcessor
+     */
+    @Override
+    protected void setupRequestProcessors() {      
+        // We might consider changing the processor behaviour of 
+        // Observers to, for example, remove the disk sync requirements.
+        // Currently, they behave almost exactly the same as followers.
+<span class="nc" id="L93">        RequestProcessor finalProcessor = new FinalRequestProcessor(this);</span>
+<span class="nc" id="L94">        commitProcessor = new CommitProcessor(finalProcessor,</span>
+<span class="nc" id="L95">                Long.toString(getServerId()), true,</span>
+<span class="nc" id="L96">                getZooKeeperServerListener());</span>
+<span class="nc" id="L97">        commitProcessor.start();</span>
+<span class="nc" id="L98">        firstProcessor = new ObserverRequestProcessor(this, commitProcessor);</span>
+<span class="nc" id="L99">        ((ObserverRequestProcessor) firstProcessor).start();</span>
+
+        /*
+         * Observer should write to disk, so that the it won't request
+         * too old txn from the leader which may lead to getting an entire
+         * snapshot.
+         *
+         * However, this may degrade performance as it has to write to disk
+         * and do periodic snapshot which may double the memory requirements
+         */
+<span class="nc bnc" id="L109" title="All 2 branches missed.">        if (syncRequestProcessorEnabled) {</span>
+<span class="nc" id="L110">            syncProcessor = new SyncRequestProcessor(this, null);</span>
+<span class="nc" id="L111">            syncProcessor.start();</span>
+        }
+<span class="nc" id="L113">    }</span>
+
+    /*
+     * Process a sync request
+     */
+    synchronized public void sync(){
+<span class="nc bnc" id="L119" title="All 2 branches missed.">        if(pendingSyncs.size() ==0){</span>
+<span class="nc" id="L120">            LOG.warn(&quot;Not expecting a sync.&quot;);</span>
+<span class="nc" id="L121">            return;</span>
+        }
+                
+<span class="nc" id="L124">        Request r = pendingSyncs.remove();</span>
+<span class="nc" id="L125">        commitProcessor.commit(r);</span>
+<span class="nc" id="L126">    }</span>
+    
+    @Override
+    public String getState() {
+<span class="nc" id="L130">        return &quot;observer&quot;;</span>
+    };    
+
+    @Override
+    public synchronized void shutdown() {
+<span class="nc bnc" id="L135" title="All 2 branches missed.">        if (!canShutdown()) {</span>
+<span class="nc" id="L136">            LOG.debug(&quot;ZooKeeper server is not running, so not proceeding to shutdown!&quot;);</span>
+<span class="nc" id="L137">            return;</span>
+        }
+<span class="nc" id="L139">        super.shutdown();</span>
+<span class="nc bnc" id="L140" title="All 4 branches missed.">        if (syncRequestProcessorEnabled &amp;&amp; syncProcessor != null) {</span>
+<span class="nc" id="L141">            syncProcessor.shutdown();</span>
+        }
+<span class="nc" id="L143">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

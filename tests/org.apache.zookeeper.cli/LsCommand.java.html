@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LsCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.cli</a> &gt; <span class="el_source">LsCommand.java</span></div><h1>LsCommand.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements. See the NOTICE file distributed with this
+ * work for additional information regarding copyright ownership. The ASF
+ * licenses this file to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations under
+ * the License.
+ */
+package org.apache.zookeeper.cli;
+
+import java.util.Collections;
+import java.util.List;
+import org.apache.commons.cli.*;
+import org.apache.zookeeper.AsyncCallback.StringCallback;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.ZKUtil;
+import org.apache.zookeeper.data.Stat;
+
+/**
+ * ls command for cli
+ */
+public class LsCommand extends CliCommand {
+
+<span class="nc" id="L32">    private static Options options = new Options();</span>
+    private String args[];
+    private CommandLine cl;
+
+    static {
+<span class="nc" id="L37">        options.addOption(&quot;?&quot;, false, &quot;help&quot;);</span>
+<span class="nc" id="L38">        options.addOption(&quot;s&quot;, false, &quot;stat&quot;);</span>
+<span class="nc" id="L39">        options.addOption(&quot;w&quot;, false, &quot;watch&quot;);</span>
+<span class="nc" id="L40">        options.addOption(&quot;R&quot;, false, &quot;recurse&quot;);</span>
+<span class="nc" id="L41">    }</span>
+
+    public LsCommand() {
+<span class="nc" id="L44">        super(&quot;ls&quot;, &quot;[-s] [-w] [-R] path&quot;);</span>
+<span class="nc" id="L45">    }</span>
+
+    private void printHelp() {
+<span class="nc" id="L48">        HelpFormatter formatter = new HelpFormatter();</span>
+<span class="nc" id="L49">        formatter.printHelp(&quot;ls [options] path&quot;, options);</span>
+<span class="nc" id="L50">    }</span>
+
+    @Override
+    public CliCommand parse(String[] cmdArgs) throws CliParseException {
+<span class="nc" id="L54">        Parser parser = new PosixParser();</span>
+        try {
+<span class="nc" id="L56">            cl = parser.parse(options, cmdArgs);</span>
+<span class="nc" id="L57">        } catch (ParseException ex) {</span>
+<span class="nc" id="L58">            throw new CliParseException(ex);</span>
+<span class="nc" id="L59">        }</span>
+
+<span class="nc" id="L61">        args = cl.getArgs();</span>
+<span class="nc bnc" id="L62" title="All 2 branches missed.">        if (cl.hasOption(&quot;?&quot;)) {</span>
+<span class="nc" id="L63">            printHelp();</span>
+        }
+
+<span class="nc" id="L66">        retainCompatibility(cmdArgs);</span>
+
+<span class="nc" id="L68">        return this;</span>
+    }
+
+    private void retainCompatibility(String[] cmdArgs) throws CliParseException {
+        // get path [watch]
+<span class="nc bnc" id="L73" title="All 2 branches missed.">        if (args.length &gt; 2) {</span>
+            // rewrite to option
+<span class="nc" id="L75">            cmdArgs[2] = &quot;-w&quot;;</span>
+<span class="nc" id="L76">            err.println(&quot;'ls path [watch]' has been deprecated. &quot;</span>
+                    + &quot;Please use 'ls [-w] path' instead.&quot;);
+<span class="nc" id="L78">            Parser parser = new PosixParser();</span>
+            try {
+<span class="nc" id="L80">                cl = parser.parse(options, cmdArgs);</span>
+<span class="nc" id="L81">            } catch (ParseException ex) {</span>
+<span class="nc" id="L82">                throw new CliParseException(ex);</span>
+<span class="nc" id="L83">            }</span>
+<span class="nc" id="L84">            args = cl.getArgs();</span>
+        }
+<span class="nc" id="L86">    }</span>
+
+    @Override
+    public boolean exec() throws CliException {
+<span class="nc bnc" id="L90" title="All 2 branches missed.">        if (args.length &lt; 2) {</span>
+<span class="nc" id="L91">            throw new MalformedCommandException(getUsageStr());</span>
+        }
+
+<span class="nc" id="L94">        String path = args[1];</span>
+<span class="nc" id="L95">        boolean watch = cl.hasOption(&quot;w&quot;);</span>
+<span class="nc" id="L96">        boolean withStat = cl.hasOption(&quot;s&quot;);</span>
+<span class="nc" id="L97">        boolean recursive = cl.hasOption(&quot;R&quot;);</span>
+        try {
+<span class="nc bnc" id="L99" title="All 2 branches missed.">            if (recursive) {</span>
+<span class="nc" id="L100">                ZKUtil.visitSubTreeDFS(zk, path, watch, new StringCallback() {</span>
+                    @Override
+                    public void processResult(int rc, String path, Object ctx, String name) {
+<span class="nc" id="L103">                        out.println(path);</span>
+<span class="nc" id="L104">                    }</span>
+                });
+            } else {
+<span class="nc bnc" id="L107" title="All 2 branches missed.">                Stat stat = withStat ? new Stat() : null;</span>
+<span class="nc" id="L108">                List&lt;String&gt; children = zk.getChildren(path, watch, stat);</span>
+<span class="nc" id="L109">                printChildren(children, stat);</span>
+            }
+<span class="nc" id="L111">        } catch (IllegalArgumentException ex) {</span>
+<span class="nc" id="L112">            throw new MalformedPathException(ex.getMessage());</span>
+<span class="nc" id="L113">        } catch (KeeperException|InterruptedException ex) {</span>
+<span class="nc" id="L114">            throw new CliWrapperException(ex);</span>
+<span class="nc" id="L115">        }</span>
+<span class="nc" id="L116">        return watch;</span>
+    }
+
+    private void printChildren(List&lt;String&gt; children, Stat stat) {
+<span class="nc" id="L120">        Collections.sort(children);</span>
+<span class="nc" id="L121">        out.append(&quot;[&quot;);</span>
+<span class="nc" id="L122">        boolean first = true;</span>
+<span class="nc bnc" id="L123" title="All 2 branches missed.">        for (String child : children) {</span>
+<span class="nc bnc" id="L124" title="All 2 branches missed.">            if (!first) {</span>
+<span class="nc" id="L125">                out.append(&quot;, &quot;);</span>
+            } else {
+<span class="nc" id="L127">                first = false;</span>
+            }
+<span class="nc" id="L129">            out.append(child);</span>
+<span class="nc" id="L130">        }</span>
+<span class="nc" id="L131">        out.append(&quot;]&quot;);</span>
+<span class="nc bnc" id="L132" title="All 2 branches missed.">        if (stat != null) {</span>
+<span class="nc" id="L133">            new StatPrinter(out).print(stat);</span>
+        }
+<span class="nc" id="L135">        out.append(&quot;\n&quot;);</span>
+<span class="nc" id="L136">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

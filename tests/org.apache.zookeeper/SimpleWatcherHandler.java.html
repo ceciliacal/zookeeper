@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SimpleWatcherHandler.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">SimpleWatcherHandler.java</span></div><h1>SimpleWatcherHandler.java</h1><pre class="source lang-java linenums">package org.apache.zookeeper;
+
+import org.junit.Assert;
+
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+
+public class SimpleWatcherHandler implements  Watcher{
+
+    //Classe di supporto per il test MyZookeeperSetDataTest
+
+
+<span class="nc" id="L15">        private LinkedBlockingQueue&lt;WatchedEvent&gt; events =</span>
+                new LinkedBlockingQueue&lt;WatchedEvent&gt;();
+        private CountDownLatch latch;       //controllo sync: aspetta che altre
+        //operazioni siano terminate
+
+<span class="nc" id="L20">        public SimpleWatcherHandler(CountDownLatch latch) {</span>
+<span class="nc" id="L21">            this.latch = latch;</span>
+<span class="nc" id="L22">        }</span>
+
+        public void process(WatchedEvent event) {
+            //client è connesso al server
+
+            //poi prova a commentare questo pezzo
+<span class="nc bnc" id="L28" title="All 2 branches missed.">            if (event.getState() == Event.KeeperState.SyncConnected) {</span>
+<span class="nc bnc" id="L29" title="All 2 branches missed.">                if (latch != null) {</span>
+<span class="nc" id="L30">                    latch.countDown();  //decrementa il count del latch, finche</span>
+                                        //stato di wait non termina
+                }
+            }
+
+<span class="nc bnc" id="L35" title="All 2 branches missed.">            if (event.getType() == Event.EventType.None) {</span>
+<span class="nc" id="L36">                return;</span>
+            }
+            try {
+                //aggiungi evento che triggera watcher
+<span class="nc" id="L40">                events.put(event);</span>
+<span class="nc" id="L41">            } catch (InterruptedException e) {</span>
+<span class="nc" id="L42">                Assert.assertTrue(&quot;interruption unexpected&quot;, false);</span>
+<span class="nc" id="L43">            }</span>
+<span class="nc" id="L44">        }</span>
+
+        //verifica che watcher contiene gli eventi presenti in expected
+        public boolean verify(List&lt;Event.EventType&gt; expected) throws InterruptedException{
+            WatchedEvent event;
+<span class="nc" id="L49">            int count = 0;</span>
+<span class="nc" id="L50">            boolean res = false;</span>
+<span class="nc bnc" id="L51" title="All 2 branches missed.">            while (count &lt; expected.size()</span>
+<span class="nc bnc" id="L52" title="All 2 branches missed.">                    &amp;&amp; (event = events.poll(30, TimeUnit.SECONDS)) != null)</span>
+            {
+
+<span class="nc bnc" id="L55" title="All 2 branches missed.">                if (expected.get(count).equals(event.getType())){</span>
+<span class="nc" id="L56">                    count++;</span>
+                }
+
+            }
+<span class="nc bnc" id="L60" title="All 2 branches missed.">            if (expected.size() == count){</span>
+<span class="nc" id="L61">                res = true;</span>
+            }
+
+<span class="nc" id="L64">            events.clear();</span>
+<span class="nc" id="L65">            return res;</span>
+        }
+    }
+
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

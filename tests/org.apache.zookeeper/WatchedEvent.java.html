@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>WatchedEvent.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">WatchedEvent.java</span></div><h1>WatchedEvent.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper;
+
+import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.zookeeper.proto.WatcherEvent;
+import org.apache.zookeeper.Watcher.Event.EventType;
+import org.apache.zookeeper.Watcher.Event.KeeperState;
+
+/**
+ *  A WatchedEvent represents a change on the ZooKeeper that a Watcher
+ *  is able to respond to.  The WatchedEvent includes exactly what happened,
+ *  the current state of the ZooKeeper, and the path of the znode that
+ *  was involved in the event.
+ */
+@InterfaceAudience.Public
+public class WatchedEvent {
+    final private KeeperState keeperState;
+    final private EventType eventType;
+    private String path;
+    
+    /**
+     * Create a WatchedEvent with specified type, state and path
+     */
+<span class="fc" id="L40">    public WatchedEvent(EventType eventType, KeeperState keeperState, String path) {</span>
+<span class="fc" id="L41">        this.keeperState = keeperState;</span>
+<span class="fc" id="L42">        this.eventType = eventType;</span>
+<span class="fc" id="L43">        this.path = path;</span>
+<span class="fc" id="L44">    }</span>
+    
+    /**
+     * Convert a WatcherEvent sent over the wire into a full-fledged WatcherEvent
+     */
+<span class="nc" id="L49">    public WatchedEvent(WatcherEvent eventMessage) {</span>
+<span class="nc" id="L50">        keeperState = KeeperState.fromInt(eventMessage.getState());</span>
+<span class="nc" id="L51">        eventType = EventType.fromInt(eventMessage.getType());</span>
+<span class="nc" id="L52">        path = eventMessage.getPath();</span>
+<span class="nc" id="L53">    }</span>
+    
+    public KeeperState getState() {
+<span class="fc" id="L56">        return keeperState;</span>
+    }
+    
+    public EventType getType() {
+<span class="fc" id="L60">        return eventType;</span>
+    }
+    
+    public String getPath() {
+<span class="fc" id="L64">        return path;</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="nc" id="L69">        return &quot;WatchedEvent state:&quot; + keeperState</span>
+            + &quot; type:&quot; + eventType + &quot; path:&quot; + path;
+    }
+
+    /**
+     *  Convert WatchedEvent to type that can be sent over network
+     */
+    public WatcherEvent getWrapper() {
+<span class="nc" id="L77">        return new WatcherEvent(eventType.getIntValue(), </span>
+<span class="nc" id="L78">                                keeperState.getIntValue(), </span>
+                                path);
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

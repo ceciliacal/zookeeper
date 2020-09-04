@@ -1,0 +1,281 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ServerAdminClient.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">ServerAdminClient.java</span></div><h1>ServerAdminClient.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.nio.ByteBuffer;
+
+import org.apache.yetus.audience.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+<span class="nc bnc" id="L32" title="All 2 branches missed.">@InterfaceAudience.Public</span>
+<span class="nc" id="L33">public class ServerAdminClient {</span>
+<span class="nc" id="L34">    private static final Logger LOG = LoggerFactory.getLogger(ServerAdminClient.class);</span>
+
+    public static void ruok(String host, int port) {
+<span class="nc" id="L37">        Socket s = null;</span>
+        try {
+<span class="nc" id="L39">            byte[] reqBytes = new byte[4];</span>
+<span class="nc" id="L40">            ByteBuffer req = ByteBuffer.wrap(reqBytes);</span>
+<span class="nc" id="L41">            req.putInt(ByteBuffer.wrap(&quot;ruok&quot;.getBytes()).getInt());</span>
+<span class="nc" id="L42">            s = new Socket();</span>
+<span class="nc" id="L43">            s.setSoLinger(false, 10);</span>
+<span class="nc" id="L44">            s.setSoTimeout(20000);</span>
+<span class="nc" id="L45">            s.connect(new InetSocketAddress(host, port));</span>
+
+<span class="nc" id="L47">            InputStream is = s.getInputStream();</span>
+<span class="nc" id="L48">            OutputStream os = s.getOutputStream();</span>
+
+<span class="nc" id="L50">            os.write(reqBytes);</span>
+
+<span class="nc" id="L52">            byte[] resBytes = new byte[4];</span>
+
+<span class="nc" id="L54">            int rc = is.read(resBytes);</span>
+<span class="nc" id="L55">            String retv = new String(resBytes);</span>
+<span class="nc" id="L56">            System.out.println(&quot;rc=&quot; + rc + &quot; retv=&quot; + retv);</span>
+<span class="nc" id="L57">        } catch (IOException e) {</span>
+<span class="nc" id="L58">            LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+        } finally {
+<span class="nc bnc" id="L60" title="All 2 branches missed.">            if (s != null) {</span>
+                try {
+<span class="nc" id="L62">                    s.close();</span>
+<span class="nc" id="L63">                } catch (IOException e) {</span>
+<span class="nc" id="L64">                    LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+<span class="nc" id="L65">                }</span>
+            }
+        }
+<span class="nc" id="L68">    }</span>
+
+    public static void dump(String host, int port) {
+<span class="nc" id="L71">        Socket s = null;</span>
+        try {
+<span class="nc" id="L73">            byte[] reqBytes = new byte[4];</span>
+<span class="nc" id="L74">            ByteBuffer req = ByteBuffer.wrap(reqBytes);</span>
+<span class="nc" id="L75">            req.putInt(ByteBuffer.wrap(&quot;dump&quot;.getBytes()).getInt());</span>
+<span class="nc" id="L76">            s = new Socket();</span>
+<span class="nc" id="L77">            s.setSoLinger(false, 10);</span>
+<span class="nc" id="L78">            s.setSoTimeout(20000);</span>
+<span class="nc" id="L79">            s.connect(new InetSocketAddress(host, port));</span>
+
+<span class="nc" id="L81">            InputStream is = s.getInputStream();</span>
+<span class="nc" id="L82">            OutputStream os = s.getOutputStream();</span>
+
+<span class="nc" id="L84">            os.write(reqBytes);</span>
+
+<span class="nc" id="L86">            byte[] resBytes = new byte[1024];</span>
+
+<span class="nc" id="L88">            int rc = is.read(resBytes);</span>
+<span class="nc" id="L89">            String retv = new String(resBytes);</span>
+<span class="nc" id="L90">            System.out.println(&quot;rc=&quot; + rc + &quot; retv=&quot; + retv);</span>
+<span class="nc" id="L91">        } catch (IOException e) {</span>
+<span class="nc" id="L92">            LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+        } finally {
+<span class="nc bnc" id="L94" title="All 2 branches missed.">            if (s != null) {</span>
+                try {
+<span class="nc" id="L96">                    s.close();</span>
+<span class="nc" id="L97">                } catch (IOException e) {</span>
+<span class="nc" id="L98">                    LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+<span class="nc" id="L99">                }</span>
+            }
+        }
+<span class="nc" id="L102">    }</span>
+
+    public static void stat(String host, int port) {
+<span class="nc" id="L105">        Socket s = null;</span>
+        try {
+<span class="nc" id="L107">            byte[] reqBytes = new byte[4];</span>
+<span class="nc" id="L108">            ByteBuffer req = ByteBuffer.wrap(reqBytes);</span>
+<span class="nc" id="L109">            req.putInt(ByteBuffer.wrap(&quot;stat&quot;.getBytes()).getInt());</span>
+<span class="nc" id="L110">            s = new Socket();</span>
+<span class="nc" id="L111">            s.setSoLinger(false, 10);</span>
+<span class="nc" id="L112">            s.setSoTimeout(20000);</span>
+<span class="nc" id="L113">            s.connect(new InetSocketAddress(host, port));</span>
+
+<span class="nc" id="L115">            InputStream is = s.getInputStream();</span>
+<span class="nc" id="L116">            OutputStream os = s.getOutputStream();</span>
+
+<span class="nc" id="L118">            os.write(reqBytes);</span>
+
+<span class="nc" id="L120">            byte[] resBytes = new byte[1024];</span>
+
+<span class="nc" id="L122">            int rc = is.read(resBytes);</span>
+<span class="nc" id="L123">            String retv = new String(resBytes);</span>
+<span class="nc" id="L124">            System.out.println(&quot;rc=&quot; + rc + &quot; retv=&quot; + retv);</span>
+<span class="nc" id="L125">        } catch (IOException e) {</span>
+<span class="nc" id="L126">            LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+        } finally {
+<span class="nc bnc" id="L128" title="All 2 branches missed.">            if (s != null) {</span>
+                try {
+<span class="nc" id="L130">                    s.close();</span>
+<span class="nc" id="L131">                } catch (IOException e) {</span>
+<span class="nc" id="L132">                    LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+<span class="nc" id="L133">                }</span>
+            }
+        }
+<span class="nc" id="L136">    }</span>
+
+    public static void kill(String host, int port) {
+<span class="nc" id="L139">        Socket s = null;</span>
+        try {
+<span class="nc" id="L141">            byte[] reqBytes = new byte[4];</span>
+<span class="nc" id="L142">            ByteBuffer req = ByteBuffer.wrap(reqBytes);</span>
+<span class="nc" id="L143">            req.putInt(ByteBuffer.wrap(&quot;kill&quot;.getBytes()).getInt());</span>
+<span class="nc" id="L144">            s = new Socket();</span>
+<span class="nc" id="L145">            s.setSoLinger(false, 10);</span>
+<span class="nc" id="L146">            s.setSoTimeout(20000);</span>
+<span class="nc" id="L147">            s.connect(new InetSocketAddress(host, port));</span>
+
+<span class="nc" id="L149">            InputStream is = s.getInputStream();</span>
+<span class="nc" id="L150">            OutputStream os = s.getOutputStream();</span>
+
+<span class="nc" id="L152">            os.write(reqBytes);</span>
+<span class="nc" id="L153">            byte[] resBytes = new byte[4];</span>
+
+<span class="nc" id="L155">            int rc = is.read(resBytes);</span>
+<span class="nc" id="L156">            String retv = new String(resBytes);</span>
+<span class="nc" id="L157">            System.out.println(&quot;rc=&quot; + rc + &quot; retv=&quot; + retv);</span>
+<span class="nc" id="L158">        } catch (IOException e) {</span>
+<span class="nc" id="L159">            LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+        } finally {
+<span class="nc bnc" id="L161" title="All 2 branches missed.">            if (s != null) {</span>
+                try {
+<span class="nc" id="L163">                    s.close();</span>
+<span class="nc" id="L164">                } catch (IOException e) {</span>
+<span class="nc" id="L165">                    LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+<span class="nc" id="L166">                }</span>
+            }
+        }
+<span class="nc" id="L169">    }</span>
+
+    public static void setTraceMask(String host, int port, String traceMaskStr) {
+<span class="nc" id="L172">        Socket s = null;</span>
+        try {
+<span class="nc" id="L174">            byte[] reqBytes = new byte[12];</span>
+<span class="nc" id="L175">            ByteBuffer req = ByteBuffer.wrap(reqBytes);</span>
+<span class="nc" id="L176">            long traceMask = Long.parseLong(traceMaskStr, 8);</span>
+<span class="nc" id="L177">            req.putInt(ByteBuffer.wrap(&quot;stmk&quot;.getBytes()).getInt());</span>
+<span class="nc" id="L178">            req.putLong(traceMask);</span>
+
+<span class="nc" id="L180">            s = new Socket();</span>
+<span class="nc" id="L181">            s.setSoLinger(false, 10);</span>
+<span class="nc" id="L182">            s.setSoTimeout(20000);</span>
+<span class="nc" id="L183">            s.connect(new InetSocketAddress(host, port));</span>
+
+<span class="nc" id="L185">            InputStream is = s.getInputStream();</span>
+<span class="nc" id="L186">            OutputStream os = s.getOutputStream();</span>
+
+<span class="nc" id="L188">            os.write(reqBytes);</span>
+
+<span class="nc" id="L190">            byte[] resBytes = new byte[8];</span>
+
+<span class="nc" id="L192">            int rc = is.read(resBytes);</span>
+<span class="nc" id="L193">            ByteBuffer res = ByteBuffer.wrap(resBytes);</span>
+<span class="nc" id="L194">            long retv = res.getLong();</span>
+<span class="nc" id="L195">            System.out.println(&quot;rc=&quot; + rc + &quot; retv=0&quot;</span>
+<span class="nc" id="L196">                    + Long.toOctalString(retv) + &quot; masks=0&quot;</span>
+<span class="nc" id="L197">                    + Long.toOctalString(traceMask));</span>
+<span class="nc bnc" id="L198" title="All 4 branches missed.">            assert (retv == traceMask);</span>
+<span class="nc" id="L199">        } catch (IOException e) {</span>
+<span class="nc" id="L200">            LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+        } finally {
+<span class="nc bnc" id="L202" title="All 2 branches missed.">            if (s != null) {</span>
+                try {
+<span class="nc" id="L204">                    s.close();</span>
+<span class="nc" id="L205">                } catch (IOException e) {</span>
+<span class="nc" id="L206">                    LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+<span class="nc" id="L207">                }</span>
+            }
+        }
+<span class="nc" id="L210">    }</span>
+
+    public static void getTraceMask(String host, int port) {
+<span class="nc" id="L213">        Socket s = null;</span>
+        try {
+<span class="nc" id="L215">            byte[] reqBytes = new byte[12];</span>
+<span class="nc" id="L216">            ByteBuffer req = ByteBuffer.wrap(reqBytes);</span>
+<span class="nc" id="L217">            req.putInt(ByteBuffer.wrap(&quot;gtmk&quot;.getBytes()).getInt());</span>
+
+<span class="nc" id="L219">            s = new Socket();</span>
+<span class="nc" id="L220">            s.setSoLinger(false, 10);</span>
+<span class="nc" id="L221">            s.setSoTimeout(20000);</span>
+<span class="nc" id="L222">            s.connect(new InetSocketAddress(host, port));</span>
+
+<span class="nc" id="L224">            InputStream is = s.getInputStream();</span>
+<span class="nc" id="L225">            OutputStream os = s.getOutputStream();</span>
+
+<span class="nc" id="L227">            os.write(reqBytes);</span>
+
+<span class="nc" id="L229">            byte[] resBytes = new byte[8];</span>
+
+<span class="nc" id="L231">            int rc = is.read(resBytes);</span>
+<span class="nc" id="L232">            ByteBuffer res = ByteBuffer.wrap(resBytes);</span>
+<span class="nc" id="L233">            long retv = res.getLong();</span>
+<span class="nc" id="L234">            System.out.println(&quot;rc=&quot; + rc + &quot; retv=0&quot;</span>
+<span class="nc" id="L235">                    + Long.toOctalString(retv));</span>
+<span class="nc" id="L236">        } catch (IOException e) {</span>
+<span class="nc" id="L237">            LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+        } finally {
+<span class="nc bnc" id="L239" title="All 2 branches missed.">            if (s != null) {</span>
+                try {
+<span class="nc" id="L241">                    s.close();</span>
+<span class="nc" id="L242">                } catch (IOException e) {</span>
+<span class="nc" id="L243">                    LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+<span class="nc" id="L244">                }</span>
+            }
+        }
+<span class="nc" id="L247">    }</span>
+
+    private static void usage() {
+<span class="nc" id="L250">        System.out</span>
+<span class="nc" id="L251">                .println(&quot;usage: java [-cp CLASSPATH] org.apache.zookeeper.ServerAdminClient &quot;</span>
+                        + &quot;host port op (ruok|stat|dump|kill|gettracemask|settracemask) [arguments]&quot;);
+
+<span class="nc" id="L254">    }</span>
+
+    public static void main(String[] args) {
+<span class="nc bnc" id="L257" title="All 2 branches missed.">        if (args.length &lt; 3) {</span>
+<span class="nc" id="L258">            usage();</span>
+<span class="nc" id="L259">            return;</span>
+        }
+<span class="nc" id="L261">        String host = args[0];</span>
+<span class="nc" id="L262">        int port = Integer.parseInt(args[1]);</span>
+<span class="nc" id="L263">        String op = args[2];</span>
+<span class="nc bnc" id="L264" title="All 2 branches missed.">        if (op.equalsIgnoreCase(&quot;gettracemask&quot;)) {</span>
+<span class="nc" id="L265">            getTraceMask(host, port);</span>
+<span class="nc bnc" id="L266" title="All 2 branches missed.">        } else if (op.equalsIgnoreCase(&quot;settracemask&quot;)) {</span>
+<span class="nc" id="L267">            setTraceMask(host, port, args[3]);</span>
+<span class="nc bnc" id="L268" title="All 2 branches missed.">        } else if (op.equalsIgnoreCase(&quot;ruok&quot;)) {</span>
+<span class="nc" id="L269">            ruok(host, port);</span>
+<span class="nc bnc" id="L270" title="All 2 branches missed.">        } else if (op.equalsIgnoreCase(&quot;kill&quot;)) {</span>
+<span class="nc" id="L271">            kill(host, port);</span>
+<span class="nc bnc" id="L272" title="All 2 branches missed.">        } else if (op.equalsIgnoreCase(&quot;stat&quot;)) {</span>
+<span class="nc" id="L273">            stat(host, port);</span>
+<span class="nc bnc" id="L274" title="All 2 branches missed.">        } else if (op.equalsIgnoreCase(&quot;dump&quot;)) {</span>
+<span class="nc" id="L275">            dump(host, port);</span>
+        } else {
+<span class="nc" id="L277">            System.out.println(&quot;Unrecognized op: &quot; + op);</span>
+        }
+<span class="nc" id="L279">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

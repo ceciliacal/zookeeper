@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ZooDefs.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">ZooDefs.java</span></div><h1>ZooDefs.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper;
+
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import java.util.ArrayList;
+import java.util.Collections;
+
+import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Id;
+
+@InterfaceAudience.Public
+<span class="nc" id="L30">public class ZooDefs {</span>
+   
+   final public static String CONFIG_NODE = &quot;/zookeeper/config&quot;;
+
+   @InterfaceAudience.Public
+    public interface OpCode {
+        public final int notification = 0;
+
+        public final int create = 1;
+
+        public final int delete = 2;
+
+        public final int exists = 3;
+
+        public final int getData = 4;
+
+        public final int setData = 5;
+
+        public final int getACL = 6;
+
+        public final int setACL = 7;
+
+        public final int getChildren = 8;
+
+        public final int sync = 9;
+
+        public final int ping = 11;
+
+        public final int getChildren2 = 12;
+
+        public final int check = 13;
+
+        public final int multi = 14;
+        
+        public final int create2 = 15;
+
+        public final int reconfig = 16;
+
+        public final int checkWatches = 17;
+
+        public final int removeWatches = 18;
+
+        public final int createContainer = 19;
+
+        public final int deleteContainer = 20;
+
+        public final int createTTL = 21;
+
+        public final int auth = 100;
+
+        public final int setWatches = 101;
+
+        public final int sasl = 102;
+
+        public final int createSession = -10;
+
+        public final int closeSession = -11;
+
+        public final int error = -1;
+    }
+
+    @InterfaceAudience.Public
+    public interface Perms {
+        int READ = 1 &lt;&lt; 0;
+
+        int WRITE = 1 &lt;&lt; 1;
+
+        int CREATE = 1 &lt;&lt; 2;
+
+        int DELETE = 1 &lt;&lt; 3;
+
+        int ADMIN = 1 &lt;&lt; 4;
+
+        int ALL = READ | WRITE | CREATE | DELETE | ADMIN;
+    }
+
+    @InterfaceAudience.Public
+    public interface Ids {
+        /**
+         * This Id represents anyone.
+         */
+<span class="fc" id="L111">        public final Id ANYONE_ID_UNSAFE = new Id(&quot;world&quot;, &quot;anyone&quot;);</span>
+
+        /**
+         * This Id is only usable to set ACLs. It will get substituted with the
+         * Id's the client authenticated with.
+         */
+<span class="fc" id="L117">        public final Id AUTH_IDS = new Id(&quot;auth&quot;, &quot;&quot;);</span>
+
+        /**
+         * This is a completely open ACL .
+         */
+        @SuppressFBWarnings(value = &quot;MS_MUTABLE_COLLECTION&quot;, justification = &quot;Cannot break API&quot;)
+<span class="fc" id="L123">        public final ArrayList&lt;ACL&gt; OPEN_ACL_UNSAFE = new ArrayList&lt;ACL&gt;(</span>
+<span class="fc" id="L124">                Collections.singletonList(new ACL(Perms.ALL, ANYONE_ID_UNSAFE)));</span>
+
+        /**
+         * This ACL gives the creators authentication id's all permissions.
+         */
+        @SuppressFBWarnings(value = &quot;MS_MUTABLE_COLLECTION&quot;, justification = &quot;Cannot break API&quot;)
+<span class="fc" id="L130">        public final ArrayList&lt;ACL&gt; CREATOR_ALL_ACL = new ArrayList&lt;ACL&gt;(</span>
+<span class="fc" id="L131">                Collections.singletonList(new ACL(Perms.ALL, AUTH_IDS)));</span>
+
+        /**
+         * This ACL gives the world the ability to read.
+         */
+        @SuppressFBWarnings(value = &quot;MS_MUTABLE_COLLECTION&quot;, justification = &quot;Cannot break API&quot;)
+<span class="fc" id="L137">        public final ArrayList&lt;ACL&gt; READ_ACL_UNSAFE = new ArrayList&lt;ACL&gt;(</span>
+                Collections
+<span class="fc" id="L139">                        .singletonList(new ACL(Perms.READ, ANYONE_ID_UNSAFE)));</span>
+    }
+
+<span class="nc" id="L142">    final public static String[] opNames = { &quot;notification&quot;, &quot;create&quot;,</span>
+            &quot;delete&quot;, &quot;exists&quot;, &quot;getData&quot;, &quot;setData&quot;, &quot;getACL&quot;, &quot;setACL&quot;,
+            &quot;getChildren&quot;, &quot;getChildren2&quot;, &quot;getMaxChildren&quot;, &quot;setMaxChildren&quot;, &quot;ping&quot;, &quot;reconfig&quot;, &quot;getConfig&quot; };
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>StatCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.cli</a> &gt; <span class="el_source">StatCommand.java</span></div><h1>StatCommand.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.cli;
+
+import org.apache.commons.cli.*;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.data.Stat;
+
+/**
+ * stat command for cli
+ */
+public class StatCommand extends CliCommand {
+
+<span class="nc" id="L29">    private static final Options options = new Options();</span>
+    private String[] args;
+    private CommandLine cl;
+
+    static {
+<span class="nc" id="L34">        options.addOption(&quot;w&quot;, false, &quot;watch&quot;);</span>
+<span class="nc" id="L35">    }</span>
+    
+    public StatCommand() {
+<span class="nc" id="L38">        super(&quot;stat&quot;, &quot;[-w] path&quot;);</span>
+<span class="nc" id="L39">    }</span>
+
+    
+    @Override
+    public CliCommand parse(String[] cmdArgs) throws CliParseException {
+<span class="nc" id="L44">        Parser parser = new PosixParser();</span>
+        try {
+<span class="nc" id="L46">            cl = parser.parse(options, cmdArgs);</span>
+<span class="nc" id="L47">        } catch (ParseException ex) {</span>
+<span class="nc" id="L48">            throw new CliParseException(ex);</span>
+<span class="nc" id="L49">        }</span>
+<span class="nc" id="L50">        args = cl.getArgs();</span>
+<span class="nc bnc" id="L51" title="All 2 branches missed.">        if(args.length &lt; 2) {</span>
+<span class="nc" id="L52">            throw new CliParseException(getUsageStr());</span>
+        }    
+        
+<span class="nc" id="L55">        retainCompatibility(cmdArgs);</span>
+
+<span class="nc" id="L57">        return this;</span>
+    }
+
+    private void retainCompatibility(String[] cmdArgs) throws CliParseException {
+        // stat path [watch]
+<span class="nc bnc" id="L62" title="All 2 branches missed.">        if (args.length &gt; 2) {</span>
+            // rewrite to option
+<span class="nc" id="L64">            cmdArgs[2] = &quot;-w&quot;;</span>
+<span class="nc" id="L65">            err.println(&quot;'stat path [watch]' has been deprecated. &quot;</span>
+                    + &quot;Please use 'stat [-w] path' instead.&quot;);
+<span class="nc" id="L67">            Parser parser = new PosixParser();</span>
+            try {
+<span class="nc" id="L69">                cl = parser.parse(options, cmdArgs);</span>
+<span class="nc" id="L70">            } catch (ParseException ex) {</span>
+<span class="nc" id="L71">                throw new CliParseException(ex);</span>
+<span class="nc" id="L72">            }</span>
+<span class="nc" id="L73">            args = cl.getArgs();</span>
+        }
+<span class="nc" id="L75">    }</span>
+    
+    @Override
+    public boolean exec() throws CliException {
+<span class="nc" id="L79">        String path = args[1];</span>
+<span class="nc" id="L80">        boolean watch = cl.hasOption(&quot;w&quot;);</span>
+        Stat stat;
+        try {
+<span class="nc" id="L83">            stat = zk.exists(path, watch);</span>
+<span class="nc" id="L84">        } catch (IllegalArgumentException ex) {</span>
+<span class="nc" id="L85">            throw new MalformedPathException(ex.getMessage());</span>
+<span class="nc" id="L86">        } catch (KeeperException|InterruptedException ex) {</span>
+<span class="nc" id="L87">            throw new CliWrapperException(ex);</span>
+<span class="nc" id="L88">        }</span>
+<span class="nc bnc" id="L89" title="All 2 branches missed.">        if (stat == null) {</span>
+<span class="nc" id="L90">            throw new CliWrapperException(new KeeperException.NoNodeException(path));</span>
+        }
+<span class="nc" id="L92">        new StatPrinter(out).print(stat);</span>
+<span class="nc" id="L93">        return watch;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

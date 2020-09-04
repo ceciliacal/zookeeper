@@ -1,0 +1,555 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Commands.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.admin</a> &gt; <span class="el_source">Commands.java</span></div><h1>Commands.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.admin;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.apache.zookeeper.Environment;
+import org.apache.zookeeper.Environment.Entry;
+import org.apache.zookeeper.Version;
+import org.apache.zookeeper.server.DataTree;
+import org.apache.zookeeper.server.ServerCnxnFactory;
+import org.apache.zookeeper.server.ServerStats;
+import org.apache.zookeeper.server.ZKDatabase;
+import org.apache.zookeeper.server.ZooKeeperServer;
+import org.apache.zookeeper.server.ZooTrace;
+import org.apache.zookeeper.server.quorum.Leader;
+import org.apache.zookeeper.server.quorum.LeaderZooKeeperServer;
+import org.apache.zookeeper.server.quorum.ReadOnlyZooKeeperServer;
+import org.apache.zookeeper.server.util.OSMXBean;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Class containing static methods for registering and running Commands, as well
+ * as default Command definitions.
+ *
+ * @see Command
+ * @see JettyAdminServer
+ */
+public class Commands {
+<span class="nc" id="L54">    static final Logger LOG = LoggerFactory.getLogger(Commands.class);</span>
+
+    /** Maps command names to Command instances */
+<span class="nc" id="L57">    private static Map&lt;String, Command&gt; commands = new HashMap&lt;String, Command&gt;();</span>
+<span class="nc" id="L58">    private static Set&lt;String&gt; primaryNames = new HashSet&lt;String&gt;();</span>
+
+    /**
+     * Registers the given command. Registered commands can be run by passing
+     * any of their names to runCommand.
+     */
+    public static void registerCommand(Command command) {
+<span class="nc bnc" id="L65" title="All 2 branches missed.">        for (String name : command.getNames()) {</span>
+<span class="nc" id="L66">            Command prev = commands.put(name, command);</span>
+<span class="nc bnc" id="L67" title="All 2 branches missed.">            if (prev != null) {</span>
+<span class="nc" id="L68">                LOG.warn(&quot;Re-registering command %s (primary name = %s)&quot;, name, command.getPrimaryName());</span>
+            }
+<span class="nc" id="L70">        }</span>
+<span class="nc" id="L71">        primaryNames.add(command.getPrimaryName());</span>
+<span class="nc" id="L72">    }</span>
+
+    /**
+     * Run the registered command with name cmdName. Commands should not produce
+     * any exceptions; any (anticipated) errors should be reported in the
+     * &quot;error&quot; entry of the returned map. Likewise, if no command with the given
+     * name is registered, this will be noted in the &quot;error&quot; entry.
+     *
+     * @param cmdName
+     * @param zkServer
+     * @param kwargs String-valued keyword arguments to the command
+     *        (may be null if command requires no additional arguments)
+     * @return Map representing response to command containing at minimum:
+     *    - &quot;command&quot; key containing the command's primary name
+     *    - &quot;error&quot; key containing a String error message or null if no error
+     */
+    public static CommandResponse runCommand(String cmdName, ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc bnc" id="L89" title="All 2 branches missed.">        if (!commands.containsKey(cmdName)) {</span>
+<span class="nc" id="L90">            return new CommandResponse(cmdName, &quot;Unknown command: &quot; + cmdName);</span>
+        }
+<span class="nc bnc" id="L92" title="All 4 branches missed.">        if (zkServer == null || !zkServer.isRunning()) {</span>
+<span class="nc" id="L93">            return new CommandResponse(cmdName, &quot;This ZooKeeper instance is not currently serving requests&quot;);</span>
+        }
+<span class="nc" id="L95">        return commands.get(cmdName).run(zkServer, kwargs);</span>
+    }
+
+    /**
+     * Returns the primary names of all registered commands.
+     */
+    public static Set&lt;String&gt; getPrimaryNames() {
+<span class="nc" id="L102">        return primaryNames;</span>
+    }
+
+    /**
+     * Returns the commands registered under cmdName with registerCommand, or
+     * null if no command is registered with that name.
+     */
+    public static Command getCommand(String cmdName) {
+<span class="nc" id="L110">        return commands.get(cmdName);</span>
+    }
+
+    static {
+<span class="nc" id="L114">        registerCommand(new CnxnStatResetCommand());</span>
+<span class="nc" id="L115">        registerCommand(new ConfCommand());</span>
+<span class="nc" id="L116">        registerCommand(new ConsCommand());</span>
+<span class="nc" id="L117">        registerCommand(new DirsCommand());</span>
+<span class="nc" id="L118">        registerCommand(new DumpCommand());</span>
+<span class="nc" id="L119">        registerCommand(new EnvCommand());</span>
+<span class="nc" id="L120">        registerCommand(new GetTraceMaskCommand());</span>
+<span class="nc" id="L121">        registerCommand(new IsroCommand());</span>
+<span class="nc" id="L122">        registerCommand(new MonitorCommand());</span>
+<span class="nc" id="L123">        registerCommand(new RuokCommand());</span>
+<span class="nc" id="L124">        registerCommand(new SetTraceMaskCommand());</span>
+<span class="nc" id="L125">        registerCommand(new SrvrCommand());</span>
+<span class="nc" id="L126">        registerCommand(new StatCommand());</span>
+<span class="nc" id="L127">        registerCommand(new StatResetCommand());</span>
+<span class="nc" id="L128">        registerCommand(new WatchCommand());</span>
+<span class="nc" id="L129">        registerCommand(new WatchesByPathCommand());</span>
+<span class="nc" id="L130">        registerCommand(new WatchSummaryCommand());</span>
+<span class="nc" id="L131">    }</span>
+
+    /**
+     * Reset all connection statistics.
+     */
+    public static class CnxnStatResetCommand extends CommandBase {
+        public CnxnStatResetCommand() {
+<span class="nc" id="L138">            super(Arrays.asList(&quot;connection_stat_reset&quot;, &quot;crst&quot;));</span>
+<span class="nc" id="L139">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L143">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L144">            zkServer.getServerCnxnFactory().resetAllConnectionStats();</span>
+<span class="nc" id="L145">            return response;</span>
+
+        }
+    }
+
+    /**
+     * Server configuration parameters.
+     * @see ZooKeeperServer#getConf()
+     */
+    public static class ConfCommand extends CommandBase {
+        public ConfCommand() {
+<span class="nc" id="L156">            super(Arrays.asList(&quot;configuration&quot;, &quot;conf&quot;, &quot;config&quot;));</span>
+<span class="nc" id="L157">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L161">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L162">            response.putAll(zkServer.getConf().toMap());</span>
+<span class="nc" id="L163">            return response;</span>
+        }
+    }
+
+    /**
+     * Information on client connections to server. Returned Map contains:
+     *   - &quot;connections&quot;: list of connection info objects
+     * @see org.apache.zookeeper.server.ServerCnxn#getConnectionInfo(boolean)
+     */
+    public static class ConsCommand extends CommandBase {
+        public ConsCommand() {
+<span class="nc" id="L174">            super(Arrays.asList(&quot;connections&quot;, &quot;cons&quot;));</span>
+<span class="nc" id="L175">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L179">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L180">            ServerCnxnFactory serverCnxnFactory = zkServer.getServerCnxnFactory();</span>
+<span class="nc bnc" id="L181" title="All 2 branches missed.">            if (serverCnxnFactory != null) {</span>
+<span class="nc" id="L182">                response.put(&quot;connections&quot;, serverCnxnFactory.getAllConnectionInfo(false));</span>
+            } else {
+<span class="nc" id="L184">                response.put(&quot;connections&quot;, Collections.emptyList());</span>
+            }
+<span class="nc" id="L186">            ServerCnxnFactory secureServerCnxnFactory = zkServer.getSecureServerCnxnFactory();</span>
+<span class="nc bnc" id="L187" title="All 2 branches missed.">            if (secureServerCnxnFactory != null) {</span>
+<span class="nc" id="L188">                response.put(&quot;secure_connections&quot;, secureServerCnxnFactory.getAllConnectionInfo(false));</span>
+            } else {
+<span class="nc" id="L190">                response.put(&quot;secure_connections&quot;, Collections.emptyList());</span>
+            }
+<span class="nc" id="L192">            return response;</span>
+        }
+    }
+
+    /**
+     * Information on ZK datadir and snapdir size in bytes
+     */
+    public static class DirsCommand extends CommandBase {
+        public DirsCommand() {
+<span class="nc" id="L201">            super(Arrays.asList(&quot;dirs&quot;));</span>
+<span class="nc" id="L202">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L206">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L207">            response.put(&quot;datadir_size&quot;, zkServer.getDataDirSize());</span>
+<span class="nc" id="L208">            response.put(&quot;logdir_size&quot;, zkServer.getLogDirSize());</span>
+<span class="nc" id="L209">            return response;</span>
+        }
+    }
+
+    /**
+     * Information on session expirations and ephemerals. Returned map contains:
+     *   - &quot;expiry_time_to_session_ids&quot;: Map&lt;Long, Set&lt;Long&gt;&gt;
+     *                                   time -&gt; sessions IDs of sessions that expire at time
+     *   - &quot;sesssion_id_to_ephemeral_paths&quot;: Map&lt;Long, Set&lt;String&gt;&gt;
+     *                                       session ID -&gt; ephemeral paths created by that session
+     * @see ZooKeeperServer#getSessionExpiryMap()
+     * @see ZooKeeperServer#getEphemerals()
+     */
+    public static class DumpCommand extends CommandBase {
+        public DumpCommand() {
+<span class="nc" id="L224">            super(Arrays.asList(&quot;dump&quot;));</span>
+<span class="nc" id="L225">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L229">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L230">            response.put(&quot;expiry_time_to_session_ids&quot;, zkServer.getSessionExpiryMap());</span>
+<span class="nc" id="L231">            response.put(&quot;session_id_to_ephemeral_paths&quot;, zkServer.getEphemerals());</span>
+<span class="nc" id="L232">            return response;</span>
+        }
+    }
+
+    /**
+     * All defined environment variables.
+     */
+    public static class EnvCommand extends CommandBase {
+        public EnvCommand() {
+<span class="nc" id="L241">            super(Arrays.asList(&quot;environment&quot;, &quot;env&quot;, &quot;envi&quot;));</span>
+<span class="nc" id="L242">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L246">            CommandResponse response = initializeResponse();</span>
+<span class="nc bnc" id="L247" title="All 2 branches missed.">            for (Entry e : Environment.list()) {</span>
+<span class="nc" id="L248">                response.put(e.getKey(), e.getValue());</span>
+<span class="nc" id="L249">            }</span>
+<span class="nc" id="L250">            return response;</span>
+        }
+    }
+
+    /**
+     * The current trace mask. Returned map contains:
+     *   - &quot;tracemask&quot;: Long
+     */
+    public static class GetTraceMaskCommand extends CommandBase {
+        public GetTraceMaskCommand() {
+<span class="nc" id="L260">            super(Arrays.asList(&quot;get_trace_mask&quot;, &quot;gtmk&quot;));</span>
+<span class="nc" id="L261">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L265">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L266">            response.put(&quot;tracemask&quot;, ZooTrace.getTextTraceLevel());</span>
+<span class="nc" id="L267">            return response;</span>
+        }
+    }
+
+    /**
+     * Is this server in read-only mode. Returned map contains:
+     *   - &quot;is_read_only&quot;: Boolean
+     */
+    public static class IsroCommand extends CommandBase {
+        public IsroCommand() {
+<span class="nc" id="L277">            super(Arrays.asList(&quot;is_read_only&quot;, &quot;isro&quot;));</span>
+<span class="nc" id="L278">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L282">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L283">            response.put(&quot;read_only&quot;, zkServer instanceof ReadOnlyZooKeeperServer);</span>
+<span class="nc" id="L284">            return response;</span>
+        }
+    }
+
+    /**
+     * Some useful info for monitoring. Returned map contains:
+     *   - &quot;version&quot;: String
+     *                server version
+     *   - &quot;avg_latency&quot;: Long
+     *   - &quot;max_latency&quot;: Long
+     *   - &quot;min_latency&quot;: Long
+     *   - &quot;packets_received&quot;: Long
+     *   - &quot;packets_sents&quot;: Long
+     *   - &quot;num_alive_connections&quot;: Integer
+     *   - &quot;outstanding_requests&quot;: Long
+     *                             number of unprocessed requests
+     *   - &quot;server_state&quot;: &quot;leader&quot;, &quot;follower&quot;, or &quot;standalone&quot;
+     *   - &quot;znode_count&quot;: Integer
+     *   - &quot;watch_count&quot;: Integer
+     *   - &quot;ephemerals_count&quot;: Integer
+     *   - &quot;approximate_data_size&quot;: Long
+     *   - &quot;open_file_descriptor_count&quot;: Long (unix only)
+     *   - &quot;max_file_descritpor_count&quot;: Long (unix only)
+     *   - &quot;fsync_threshold_exceed_count&quot;: Long
+     *   - &quot;followers&quot;: Integer (leader only)
+     *   - &quot;synced_followers&quot;: Integer (leader only)
+     *   - &quot;pending_syncs&quot;: Integer (leader only)
+     */
+    public static class MonitorCommand extends CommandBase {
+        public MonitorCommand() {
+<span class="nc" id="L314">            super(Arrays.asList(&quot;monitor&quot;, &quot;mntr&quot;));</span>
+<span class="nc" id="L315">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L319">            ZKDatabase zkdb = zkServer.getZKDatabase();</span>
+<span class="nc" id="L320">            ServerStats stats = zkServer.serverStats();</span>
+
+<span class="nc" id="L322">            CommandResponse response = initializeResponse();</span>
+
+<span class="nc" id="L324">            response.put(&quot;version&quot;, Version.getFullVersion());</span>
+
+<span class="nc" id="L326">            response.put(&quot;avg_latency&quot;, stats.getAvgLatency());</span>
+<span class="nc" id="L327">            response.put(&quot;max_latency&quot;, stats.getMaxLatency());</span>
+<span class="nc" id="L328">            response.put(&quot;min_latency&quot;, stats.getMinLatency());</span>
+
+<span class="nc" id="L330">            response.put(&quot;packets_received&quot;, stats.getPacketsReceived());</span>
+<span class="nc" id="L331">            response.put(&quot;packets_sent&quot;, stats.getPacketsSent());</span>
+<span class="nc" id="L332">            response.put(&quot;num_alive_connections&quot;, stats.getNumAliveClientConnections());</span>
+
+<span class="nc" id="L334">            response.put(&quot;outstanding_requests&quot;, stats.getOutstandingRequests());</span>
+
+<span class="nc" id="L336">            response.put(&quot;server_state&quot;, stats.getServerState());</span>
+<span class="nc" id="L337">            response.put(&quot;znode_count&quot;, zkdb.getNodeCount());</span>
+
+<span class="nc" id="L339">            response.put(&quot;watch_count&quot;, zkdb.getDataTree().getWatchCount());</span>
+<span class="nc" id="L340">            response.put(&quot;ephemerals_count&quot;, zkdb.getDataTree().getEphemeralsCount());</span>
+<span class="nc" id="L341">            response.put(&quot;approximate_data_size&quot;, zkdb.getDataTree().approximateDataSize());</span>
+
+<span class="nc" id="L343">            OSMXBean osMbean = new OSMXBean();</span>
+<span class="nc" id="L344">            response.put(&quot;open_file_descriptor_count&quot;, osMbean.getOpenFileDescriptorCount());</span>
+<span class="nc" id="L345">            response.put(&quot;max_file_descriptor_count&quot;, osMbean.getMaxFileDescriptorCount());</span>
+
+<span class="nc" id="L347">            response.put(&quot;last_client_response_size&quot;, stats.getClientResponseStats().getLastBufferSize());</span>
+<span class="nc" id="L348">            response.put(&quot;max_client_response_size&quot;, stats.getClientResponseStats().getMaxBufferSize());</span>
+<span class="nc" id="L349">            response.put(&quot;min_client_response_size&quot;, stats.getClientResponseStats().getMinBufferSize());</span>
+
+<span class="nc bnc" id="L351" title="All 2 branches missed.">            if (zkServer instanceof LeaderZooKeeperServer) {</span>
+<span class="nc" id="L352">                Leader leader = ((LeaderZooKeeperServer) zkServer).getLeader();</span>
+
+<span class="nc" id="L354">                response.put(&quot;followers&quot;, leader.getLearners().size());</span>
+<span class="nc" id="L355">                response.put(&quot;synced_followers&quot;, leader.getForwardingFollowers().size());</span>
+<span class="nc" id="L356">                response.put(&quot;pending_syncs&quot;, leader.getNumPendingSyncs());</span>
+
+<span class="nc" id="L358">                response.put(&quot;last_proposal_size&quot;, leader.getProposalStats().getLastBufferSize());</span>
+<span class="nc" id="L359">                response.put(&quot;max_proposal_size&quot;, leader.getProposalStats().getMaxBufferSize());</span>
+<span class="nc" id="L360">                response.put(&quot;min_proposal_size&quot;, leader.getProposalStats().getMinBufferSize());</span>
+            }
+
+<span class="nc" id="L363">            return response;</span>
+
+        }}
+
+    /**
+     * No-op command, check if the server is running
+     */
+    public static class RuokCommand extends CommandBase {
+        public RuokCommand() {
+<span class="nc" id="L372">            super(Arrays.asList(&quot;ruok&quot;));</span>
+<span class="nc" id="L373">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L377">            return initializeResponse();</span>
+        }
+    }
+
+    /**
+     * Sets the trace mask. Required arguments:
+     *   - &quot;traceMask&quot;: Long
+     *  Returned Map contains:
+     *   - &quot;tracemask&quot;: Long
+     */
+    public static class SetTraceMaskCommand extends CommandBase {
+        public SetTraceMaskCommand() {
+<span class="nc" id="L389">            super(Arrays.asList(&quot;set_trace_mask&quot;, &quot;stmk&quot;));</span>
+<span class="nc" id="L390">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L394">            CommandResponse response = initializeResponse();</span>
+            long traceMask;
+<span class="nc bnc" id="L396" title="All 2 branches missed.">            if (!kwargs.containsKey(&quot;traceMask&quot;)) {</span>
+<span class="nc" id="L397">                response.put(&quot;error&quot;, &quot;setTraceMask requires long traceMask argument&quot;);</span>
+<span class="nc" id="L398">                return response;</span>
+            }
+            try {
+<span class="nc" id="L401">                traceMask = Long.parseLong(kwargs.get(&quot;traceMask&quot;));</span>
+<span class="nc" id="L402">            } catch (NumberFormatException e) {</span>
+<span class="nc" id="L403">                response.put(&quot;error&quot;, &quot;setTraceMask requires long traceMask argument, got &quot;</span>
+<span class="nc" id="L404">                                      + kwargs.get(&quot;traceMask&quot;));</span>
+<span class="nc" id="L405">                return response;</span>
+<span class="nc" id="L406">            }</span>
+
+<span class="nc" id="L408">            ZooTrace.setTextTraceLevel(traceMask);</span>
+<span class="nc" id="L409">            response.put(&quot;tracemask&quot;, traceMask);</span>
+<span class="nc" id="L410">            return response;</span>
+        }
+    }
+
+    /**
+     * Server information. Returned map contains:
+     *   - &quot;version&quot;: String
+     *                version of server
+     *   - &quot;read_only&quot;: Boolean
+     *                  is server in read-only mode
+     *   - &quot;server_stats&quot;: ServerStats object
+     *   - &quot;node_count&quot;: Integer
+     */
+    public static class SrvrCommand extends CommandBase {
+        public SrvrCommand() {
+<span class="nc" id="L425">            super(Arrays.asList(&quot;server_stats&quot;, &quot;srvr&quot;));</span>
+<span class="nc" id="L426">        }</span>
+
+        // Allow subclasses (e.g. StatCommand) to specify their own names
+        protected SrvrCommand(List&lt;String&gt; names) {
+<span class="nc" id="L430">            super(names);</span>
+<span class="nc" id="L431">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L435">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L436">            LOG.info(&quot;running stat&quot;);</span>
+<span class="nc" id="L437">            response.put(&quot;version&quot;, Version.getFullVersion());</span>
+<span class="nc" id="L438">            response.put(&quot;read_only&quot;, zkServer instanceof ReadOnlyZooKeeperServer);</span>
+<span class="nc" id="L439">            response.put(&quot;server_stats&quot;, zkServer.serverStats());</span>
+<span class="nc" id="L440">            response.put(&quot;client_response&quot;, zkServer.serverStats().getClientResponseStats());</span>
+<span class="nc bnc" id="L441" title="All 2 branches missed.">            if (zkServer instanceof LeaderZooKeeperServer) {</span>
+<span class="nc" id="L442">                Leader leader = ((LeaderZooKeeperServer)zkServer).getLeader();</span>
+<span class="nc" id="L443">                response.put(&quot;proposal_stats&quot;, leader.getProposalStats());</span>
+            }
+<span class="nc" id="L445">            response.put(&quot;node_count&quot;, zkServer.getZKDatabase().getNodeCount());</span>
+<span class="nc" id="L446">            return response;</span>
+        }
+    }
+
+    /**
+     * Same as SrvrCommand but has extra &quot;connections&quot; entry.
+     */
+    public static class StatCommand extends SrvrCommand {
+        public StatCommand() {
+<span class="nc" id="L455">            super(Arrays.asList(&quot;stats&quot;, &quot;stat&quot;));</span>
+<span class="nc" id="L456">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L460">            CommandResponse response = super.run(zkServer, kwargs);</span>
+
+            final Iterable&lt;Map&lt;String, Object&gt;&gt; connections;
+<span class="nc bnc" id="L463" title="All 2 branches missed.">            if (zkServer.getServerCnxnFactory() != null) {</span>
+<span class="nc" id="L464">                connections = zkServer.getServerCnxnFactory().getAllConnectionInfo(true);</span>
+            } else {
+<span class="nc" id="L466">                connections = Collections.emptyList();</span>
+            }
+<span class="nc" id="L468">            response.put(&quot;connections&quot;, connections);</span>
+
+            final Iterable&lt;Map&lt;String, Object&gt;&gt; secureConnections;
+<span class="nc bnc" id="L471" title="All 2 branches missed.">            if (zkServer.getSecureServerCnxnFactory() != null) {</span>
+<span class="nc" id="L472">                secureConnections = zkServer.getSecureServerCnxnFactory().getAllConnectionInfo(true);</span>
+            } else {
+<span class="nc" id="L474">                secureConnections = Collections.emptyList();</span>
+            }
+<span class="nc" id="L476">            response.put(&quot;secure_connections&quot;, secureConnections);</span>
+<span class="nc" id="L477">            return response;</span>
+        }
+    }
+
+    /**
+     * Resets server statistics.
+     */
+    public static class StatResetCommand extends CommandBase {
+        public StatResetCommand() {
+<span class="nc" id="L486">            super(Arrays.asList(&quot;stat_reset&quot;, &quot;srst&quot;));</span>
+<span class="nc" id="L487">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L491">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L492">            zkServer.serverStats().reset();</span>
+<span class="nc" id="L493">            return response;</span>
+        }
+    }
+
+    /**
+     * Watch information aggregated by session. Returned Map contains:
+     *   - &quot;session_id_to_watched_paths&quot;: Map&lt;Long, Set&lt;String&gt;&gt; session ID -&gt; watched paths
+     * @see DataTree#getWatches()
+     */
+    public static class WatchCommand extends CommandBase {
+        public WatchCommand() {
+<span class="nc" id="L504">            super(Arrays.asList(&quot;watches&quot;, &quot;wchc&quot;));</span>
+<span class="nc" id="L505">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L509">            DataTree dt = zkServer.getZKDatabase().getDataTree();</span>
+<span class="nc" id="L510">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L511">            response.put(&quot;session_id_to_watched_paths&quot;, dt.getWatches().toMap());</span>
+<span class="nc" id="L512">            return response;</span>
+        }
+    }
+
+    /**
+     * Watch information aggregated by path. Returned Map contains:
+     *   - &quot;path_to_session_ids&quot;: Map&lt;String, Set&lt;Long&gt;&gt; path -&gt; session IDs of sessions watching path
+     * @see DataTree#getWatchesByPath()
+     */
+    public static class WatchesByPathCommand extends CommandBase {
+        public WatchesByPathCommand() {
+<span class="nc" id="L523">            super(Arrays.asList(&quot;watches_by_path&quot;, &quot;wchp&quot;));</span>
+<span class="nc" id="L524">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L528">            DataTree dt = zkServer.getZKDatabase().getDataTree();</span>
+<span class="nc" id="L529">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L530">            response.put(&quot;path_to_session_ids&quot;, dt.getWatchesByPath().toMap());</span>
+<span class="nc" id="L531">            return response;</span>
+        }
+    }
+
+    /**
+     * Summarized watch information.
+     * @see DataTree#getWatchesSummary()
+     */
+    public static class WatchSummaryCommand extends CommandBase {
+        public WatchSummaryCommand() {
+<span class="nc" id="L541">            super(Arrays.asList(&quot;watch_summary&quot;, &quot;wchs&quot;));</span>
+<span class="nc" id="L542">        }</span>
+
+        @Override
+        public CommandResponse run(ZooKeeperServer zkServer, Map&lt;String, String&gt; kwargs) {
+<span class="nc" id="L546">            DataTree dt = zkServer.getZKDatabase().getDataTree();</span>
+<span class="nc" id="L547">            CommandResponse response = initializeResponse();</span>
+<span class="nc" id="L548">            response.putAll(dt.getWatchesSummary().toMap());</span>
+<span class="nc" id="L549">            return response;</span>
+        }
+    }
+
+    private Commands() {}
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

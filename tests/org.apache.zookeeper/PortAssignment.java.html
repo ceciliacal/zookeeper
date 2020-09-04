@@ -1,0 +1,213 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PortAssignment.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">PortAssignment.java</span></div><h1>PortAssignment.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper;
+
+import java.io.IOException;
+import java.net.ServerSocket;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/** Assign ports to tests */
+public final class PortAssignment {
+<span class="fc" id="L31">    private static final Logger LOG = LoggerFactory.getLogger(PortAssignment.class);</span>
+
+    // The available port range that we use stays away from the ephemeral port
+    // range, which the OS will assign to client socket connections.  We can't
+    // coordinate with the OS on the assignment of those ports, so it's best to
+    // stay out of that range to avoid conflicts.  Typical ranges for ephemeral
+    // ports are:
+    // - IANA suggests 49152 - 65535
+    // - Linux typically uses 32768 - 61000
+    // - FreeBSD modern versions typically use the IANA suggested range
+    // - Windows modern versions typically use the IANA suggested range
+    private static final int GLOBAL_BASE_PORT = 11221;
+    private static final int GLOBAL_MAX_PORT = 32767;
+
+<span class="fc" id="L45">    private static PortRange portRange = null;</span>
+    private static int nextPort;
+
+    /**
+     * Assign a new, unique port to the test.  This method works by assigning
+     * ports from a valid port range as identified by the total number of
+     * concurrent test processes and the ID of this test process.  Each
+     * concurrent test process uses an isolated range, so it's not possible for
+     * multiple test processes to collide on the same port.  Within the port
+     * range, ports are assigned in monotonic increasing order, wrapping around
+     * to the beginning of the range if needed.  As an extra precaution, the
+     * method attempts to bind to the port and immediately close it before
+     * returning it to the caller.  If the port cannot be bound, then it tries
+     * the next one in the range.  This provides some resiliency in case the port
+     * is otherwise occupied, such as a developer running other servers on the
+     * machine running the tests.
+     *
+     * @return port
+     */
+    public synchronized static int unique() {
+<span class="fc bfc" id="L65" title="All 2 branches covered.">        if (portRange == null) {</span>
+<span class="fc" id="L66">            Integer threadId = Integer.getInteger(&quot;zookeeper.junit.threadid&quot;);</span>
+<span class="fc" id="L67">            portRange = setupPortRange(System.getProperty(&quot;test.junit.threads&quot;),</span>
+<span class="pc bpc" id="L68" title="1 of 2 branches missed.">                    threadId != null ? &quot;threadid=&quot; + threadId :</span>
+<span class="nc" id="L69">                    System.getProperty(&quot;sun.java.command&quot;));</span>
+<span class="fc" id="L70">            nextPort = portRange.getMinimum();</span>
+        }
+<span class="fc" id="L72">        int candidatePort = nextPort;</span>
+        for (;;) {
+<span class="fc" id="L74">            ++candidatePort;</span>
+<span class="pc bpc" id="L75" title="1 of 2 branches missed.">            if (candidatePort &gt; portRange.getMaximum()) {</span>
+<span class="nc" id="L76">                candidatePort = portRange.getMinimum();</span>
+            }
+<span class="pc bpc" id="L78" title="1 of 2 branches missed.">            if (candidatePort == nextPort) {</span>
+<span class="nc" id="L79">                throw new IllegalStateException(String.format(</span>
+                        &quot;Could not assign port from range %s.  The entire &quot; +
+                        &quot;range has been exhausted.&quot;, portRange));
+            }
+            try {
+<span class="fc" id="L84">                ServerSocket s = new ServerSocket(candidatePort);</span>
+<span class="fc" id="L85">                s.close();</span>
+<span class="fc" id="L86">                nextPort = candidatePort;</span>
+<span class="fc" id="L87">                LOG.info(&quot;Assigned port {} from range {}.&quot;, nextPort, portRange);</span>
+<span class="fc" id="L88">                return nextPort;</span>
+<span class="nc" id="L89">            } catch (IOException e) {</span>
+<span class="nc" id="L90">                LOG.debug(&quot;Could not bind to port {} from range {}.  &quot; +</span>
+<span class="nc" id="L91">                        &quot;Attempting next port.&quot;, candidatePort, portRange, e);</span>
+<span class="nc" id="L92">            }</span>
+        }
+    }
+
+    /**
+     * Sets up the port range to be used.  In typical usage, Ant invokes JUnit,
+     * possibly using multiple JUnit processes to execute multiple test suites
+     * concurrently.  The count of JUnit processes is passed from Ant as a system
+     * property named &quot;test.junit.threads&quot;.  Ant's JUnit runner receives the
+     * thread ID as a command line argument of the form threadid=N, where N is an
+     * integer in the range [1, ${test.junit.threads}].  It's not otherwise
+     * accessible, so we need to parse it from the command line.  This method
+     * uses these 2 pieces of information to split the available ports into
+     * disjoint ranges.  Each JUnit process only assigns ports from its own range
+     * in order to prevent bind errors during concurrent test runs.  If any of
+     * this information is unavailable or unparseable, then the default behavior
+     * is for this process to use the entire available port range.  This is
+     * expected when running tests outside of Ant.
+     *
+     * @param strProcessCount string representation of integer process count,
+     *         typically taken from system property test.junit.threads
+     * @param cmdLine command line containing threadid=N argument, typically
+     *         taken from system property sun.java.command
+     * @return port range to use
+     */
+    static PortRange setupPortRange(String strProcessCount, String cmdLine) {
+<span class="fc" id="L118">        Integer processCount = null;</span>
+<span class="pc bpc" id="L119" title="2 of 4 branches missed.">        if (strProcessCount != null &amp;&amp; !strProcessCount.isEmpty()) {</span>
+            try {
+<span class="fc" id="L121">                processCount = Integer.valueOf(strProcessCount);</span>
+<span class="nc" id="L122">            } catch (NumberFormatException e) {</span>
+<span class="nc" id="L123">                LOG.warn(&quot;Error parsing test.junit.threads = {}.&quot;,</span>
+                         strProcessCount, e);
+<span class="fc" id="L125">            }</span>
+        }
+
+<span class="fc" id="L128">        Integer threadId = null;</span>
+<span class="pc bpc" id="L129" title="1 of 2 branches missed.">        if (processCount != null) {</span>
+<span class="pc bpc" id="L130" title="2 of 4 branches missed.">            if (cmdLine != null &amp;&amp; !cmdLine.isEmpty()) {</span>
+<span class="fc" id="L131">                Matcher m = Pattern.compile(&quot;threadid=(\\d+)&quot;).matcher(cmdLine);</span>
+<span class="pc bpc" id="L132" title="1 of 2 branches missed.">                if (m.find()) {</span>
+                    try {
+<span class="fc" id="L134">                        threadId = Integer.valueOf(m.group(1));</span>
+<span class="nc" id="L135">                    } catch (NumberFormatException e) {</span>
+<span class="nc" id="L136">                        LOG.warn(&quot;Error parsing threadid from {}.&quot;, cmdLine, e);</span>
+<span class="fc" id="L137">                    }</span>
+                }
+            }
+        }
+
+        final PortRange newPortRange;
+<span class="pc bpc" id="L143" title="3 of 6 branches missed.">        if (processCount != null &amp;&amp; processCount &gt; 1 &amp;&amp; threadId != null) {</span>
+            // We know the total JUnit process count and this test process's ID.
+            // Use these values to calculate the valid range for port assignments
+            // within this test process.  We lose a few possible ports to the
+            // remainder, but that's acceptable.
+<span class="fc" id="L148">            int portRangeSize = (GLOBAL_MAX_PORT - GLOBAL_BASE_PORT) /</span>
+<span class="fc" id="L149">                    processCount;</span>
+<span class="fc" id="L150">            int minPort = GLOBAL_BASE_PORT + ((threadId - 1) * portRangeSize);</span>
+<span class="fc" id="L151">            int maxPort = minPort + portRangeSize - 1;</span>
+<span class="fc" id="L152">            newPortRange = new PortRange(minPort, maxPort);</span>
+<span class="fc" id="L153">            LOG.info(&quot;Test process {}/{} using ports from {}.&quot;, threadId,</span>
+                    processCount, newPortRange);
+<span class="fc" id="L155">        } else {</span>
+            // If running outside the context of Ant or Ant is using a single
+            // test process, then use all valid ports.
+<span class="nc" id="L158">            newPortRange = new PortRange(GLOBAL_BASE_PORT, GLOBAL_MAX_PORT);</span>
+<span class="nc" id="L159">            LOG.info(&quot;Single test process using ports from {}.&quot;, newPortRange);</span>
+        }
+
+<span class="fc" id="L162">        return newPortRange;</span>
+    }
+
+    /**
+     * Contains the minimum and maximum (both inclusive) in a range of ports.
+     */
+    static final class PortRange {
+        private final int minimum;
+        private final int maximum;
+
+        /**
+         * Creates a new PortRange.
+         *
+         * @param minimum lower bound port number
+         * @param maximum upper bound port number
+         */
+<span class="fc" id="L178">        PortRange(int minimum, int maximum) {</span>
+<span class="fc" id="L179">            this.minimum = minimum;</span>
+<span class="fc" id="L180">            this.maximum = maximum;</span>
+<span class="fc" id="L181">        }</span>
+
+        /**
+         * Returns maximum port in the range.
+         *
+         * @return maximum
+         */
+        int getMaximum() {
+<span class="fc" id="L189">            return maximum;</span>
+        }
+
+        /**
+         * Returns minimum port in the range.
+         *
+         * @return minimum
+         */
+        int getMinimum() {
+<span class="fc" id="L198">            return minimum;</span>
+        }
+
+        @Override
+        public String toString() {
+<span class="fc" id="L203">            return String.format(&quot;%d - %d&quot;, minimum, maximum);</span>
+        }
+    }
+
+    /**
+     * There is no reason to instantiate this class.
+     */
+    private PortAssignment() {
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

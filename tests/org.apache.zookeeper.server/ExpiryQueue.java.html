@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ExpiryQueue.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server</a> &gt; <span class="el_source">ExpiryQueue.java</span></div><h1>ExpiryQueue.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server;
+
+import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.apache.zookeeper.common.Time;
+
+/**
+ * ExpiryQueue tracks elements in time sorted fixed duration buckets.
+ * It's used by SessionTrackerImpl to expire sessions and NIOServerCnxnFactory
+ * to expire connections.
+ */
+public class ExpiryQueue&lt;E&gt; {
+<span class="fc" id="L38">    private final ConcurrentHashMap&lt;E, Long&gt; elemMap =</span>
+        new ConcurrentHashMap&lt;E, Long&gt;();
+    /**
+     * The maximum number of buckets is equal to max timeout/expirationInterval,
+     * so the expirationInterval should not be too small compared to the
+     * max timeout that this expiry queue needs to maintain.
+     */
+<span class="fc" id="L45">    private final ConcurrentHashMap&lt;Long, Set&lt;E&gt;&gt; expiryMap =</span>
+        new ConcurrentHashMap&lt;Long, Set&lt;E&gt;&gt;();
+
+<span class="fc" id="L48">    private final AtomicLong nextExpirationTime = new AtomicLong();</span>
+    private final int expirationInterval;
+
+<span class="fc" id="L51">    public ExpiryQueue(int expirationInterval) {</span>
+<span class="fc" id="L52">        this.expirationInterval = expirationInterval;</span>
+<span class="fc" id="L53">        nextExpirationTime.set(roundToNextInterval(Time.currentElapsedTime()));</span>
+<span class="fc" id="L54">    }</span>
+
+    private long roundToNextInterval(long time) {
+<span class="fc" id="L57">        return (time / expirationInterval + 1) * expirationInterval;</span>
+    }
+
+    /**
+     * Removes element from the queue.
+     * @param elem  element to remove
+     * @return      time at which the element was set to expire, or null if
+     *              it wasn't present
+     */
+    public Long remove(E elem) {
+<span class="fc" id="L67">        Long expiryTime = elemMap.remove(elem);</span>
+<span class="pc bpc" id="L68" title="1 of 2 branches missed.">        if (expiryTime != null) {</span>
+<span class="fc" id="L69">            Set&lt;E&gt; set = expiryMap.get(expiryTime);</span>
+<span class="pc bpc" id="L70" title="1 of 2 branches missed.">            if (set != null) {</span>
+<span class="fc" id="L71">                set.remove(elem);</span>
+                // We don't need to worry about removing empty sets,
+                // they'll eventually be removed when they expire.
+            }
+        }
+<span class="fc" id="L76">        return expiryTime;</span>
+    }
+
+    /**
+     * Adds or updates expiration time for element in queue, rounding the
+     * timeout to the expiry interval bucketed used by this queue.
+     * @param elem     element to add/update
+     * @param timeout  timout in milliseconds
+     * @return         time at which the element is now set to expire if
+     *                 changed, or null if unchanged
+     */
+    public Long update(E elem, int timeout) {
+<span class="fc" id="L88">        Long prevExpiryTime = elemMap.get(elem);</span>
+<span class="fc" id="L89">        long now = Time.currentElapsedTime();</span>
+<span class="fc" id="L90">        Long newExpiryTime = roundToNextInterval(now + timeout);</span>
+
+<span class="fc bfc" id="L92" title="All 2 branches covered.">        if (newExpiryTime.equals(prevExpiryTime)) {</span>
+            // No change, so nothing to update
+<span class="fc" id="L94">            return null;</span>
+        }
+
+        // First add the elem to the new expiry time bucket in expiryMap.
+<span class="fc" id="L98">        Set&lt;E&gt; set = expiryMap.get(newExpiryTime);</span>
+<span class="fc bfc" id="L99" title="All 2 branches covered.">        if (set == null) {</span>
+            // Construct a ConcurrentHashSet using a ConcurrentHashMap
+<span class="fc" id="L101">            set = Collections.newSetFromMap(</span>
+                new ConcurrentHashMap&lt;E, Boolean&gt;());
+            // Put the new set in the map, but only if another thread
+            // hasn't beaten us to it
+<span class="fc" id="L105">            Set&lt;E&gt; existingSet = expiryMap.putIfAbsent(newExpiryTime, set);</span>
+<span class="pc bpc" id="L106" title="1 of 2 branches missed.">            if (existingSet != null) {</span>
+<span class="nc" id="L107">                set = existingSet;</span>
+            }
+        }
+<span class="fc" id="L110">        set.add(elem);</span>
+
+        // Map the elem to the new expiry time. If a different previous
+        // mapping was present, clean up the previous expiry bucket.
+<span class="fc" id="L114">        prevExpiryTime = elemMap.put(elem, newExpiryTime);</span>
+<span class="pc bpc" id="L115" title="1 of 4 branches missed.">        if (prevExpiryTime != null &amp;&amp; !newExpiryTime.equals(prevExpiryTime)) {</span>
+<span class="fc" id="L116">            Set&lt;E&gt; prevSet = expiryMap.get(prevExpiryTime);</span>
+<span class="pc bpc" id="L117" title="1 of 2 branches missed.">            if (prevSet != null) {</span>
+<span class="fc" id="L118">                prevSet.remove(elem);</span>
+            }
+        }
+<span class="fc" id="L121">        return newExpiryTime;</span>
+    }
+
+    /**
+     * @return milliseconds until next expiration time, or 0 if has already past
+     */
+    public long getWaitTime() {
+<span class="fc" id="L128">        long now = Time.currentElapsedTime();</span>
+<span class="fc" id="L129">        long expirationTime = nextExpirationTime.get();</span>
+<span class="fc bfc" id="L130" title="All 2 branches covered.">        return now &lt; expirationTime ? (expirationTime - now) : 0L;</span>
+    }
+
+    /**
+     * Remove the next expired set of elements from expireMap. This method needs
+     * to be called frequently enough by checking getWaitTime(), otherwise there
+     * will be a backlog of empty sets queued up in expiryMap.
+     *
+     * @return next set of expired elements, or an empty set if none are
+     *         ready
+     */
+    public Set&lt;E&gt; poll() {
+<span class="fc" id="L142">        long now = Time.currentElapsedTime();</span>
+<span class="fc" id="L143">        long expirationTime = nextExpirationTime.get();</span>
+<span class="pc bpc" id="L144" title="1 of 2 branches missed.">        if (now &lt; expirationTime) {</span>
+<span class="nc" id="L145">            return Collections.emptySet();</span>
+        }
+
+<span class="fc" id="L148">        Set&lt;E&gt; set = null;</span>
+<span class="fc" id="L149">        long newExpirationTime = expirationTime + expirationInterval;</span>
+<span class="pc bpc" id="L150" title="1 of 2 branches missed.">        if (nextExpirationTime.compareAndSet(</span>
+              expirationTime, newExpirationTime)) {
+<span class="fc" id="L152">            set = expiryMap.remove(expirationTime);</span>
+        }
+<span class="pc bpc" id="L154" title="1 of 2 branches missed.">        if (set == null) {</span>
+<span class="fc" id="L155">            return Collections.emptySet();</span>
+        }
+<span class="nc" id="L157">        return set;</span>
+    }
+
+    public void dump(PrintWriter pwriter) {
+<span class="nc" id="L161">        pwriter.print(&quot;Sets (&quot;);</span>
+<span class="nc" id="L162">        pwriter.print(expiryMap.size());</span>
+<span class="nc" id="L163">        pwriter.print(&quot;)/(&quot;);</span>
+<span class="nc" id="L164">        pwriter.print(elemMap.size());</span>
+<span class="nc" id="L165">        pwriter.println(&quot;):&quot;);</span>
+<span class="nc" id="L166">        ArrayList&lt;Long&gt; keys = new ArrayList&lt;Long&gt;(expiryMap.keySet());</span>
+<span class="nc" id="L167">        Collections.sort(keys);</span>
+<span class="nc bnc" id="L168" title="All 2 branches missed.">        for (long time : keys) {</span>
+<span class="nc" id="L169">            Set&lt;E&gt; set = expiryMap.get(time);</span>
+<span class="nc bnc" id="L170" title="All 2 branches missed.">            if (set != null) {</span>
+<span class="nc" id="L171">                pwriter.print(set.size());</span>
+<span class="nc" id="L172">                pwriter.print(&quot; expire at &quot;);</span>
+<span class="nc" id="L173">                pwriter.print(Time.elapsedTimeToDate(time));</span>
+<span class="nc" id="L174">                pwriter.println(&quot;:&quot;);</span>
+<span class="nc bnc" id="L175" title="All 2 branches missed.">                for (E elem : set) {</span>
+<span class="nc" id="L176">                    pwriter.print(&quot;\t&quot;);</span>
+<span class="nc" id="L177">                    pwriter.println(elem.toString());</span>
+<span class="nc" id="L178">                }</span>
+            }
+<span class="nc" id="L180">        }</span>
+<span class="nc" id="L181">    }</span>
+
+    /**
+     * Returns an unmodifiable view of the expiration time -&gt; elements mapping.
+     */
+    public Map&lt;Long, Set&lt;E&gt;&gt; getExpiryMap() {
+<span class="nc" id="L187">        return Collections.unmodifiableMap(expiryMap);</span>
+    }
+}
+
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

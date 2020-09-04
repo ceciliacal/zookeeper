@@ -1,0 +1,1367 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>QuorumCnxManager.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">QuorumCnxManager.java</span></div><h1>QuorumCnxManager.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.quorum;
+
+import static org.apache.zookeeper.common.NetUtils.formatInetAddr;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
+import java.nio.BufferUnderflowException;
+import java.nio.ByteBuffer;
+import java.nio.channels.UnresolvedAddressException;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.NoSuchElementException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
+import javax.net.ssl.SSLSocket;
+import org.apache.zookeeper.common.X509Exception;
+import org.apache.zookeeper.server.ExitCode;
+import org.apache.zookeeper.server.ZooKeeperThread;
+import org.apache.zookeeper.server.quorum.auth.QuorumAuthLearner;
+import org.apache.zookeeper.server.quorum.auth.QuorumAuthServer;
+import org.apache.zookeeper.server.quorum.flexible.QuorumVerifier;
+import org.apache.zookeeper.server.quorum.QuorumPeerConfig.ConfigException;
+import org.apache.zookeeper.server.util.ConfigUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This class implements a connection manager for leader election using TCP. It
+ * maintains one connection for every pair of servers. The tricky part is to
+ * guarantee that there is exactly one connection for every pair of servers that
+ * are operating correctly and that can communicate over the network.
+ *
+ * If two servers try to start a connection concurrently, then the connection
+ * manager uses a very simple tie-breaking mechanism to decide which connection
+ * to drop based on the IP addressed of the two parties.
+ *
+ * For every peer, the manager maintains a queue of messages to send. If the
+ * connection to any particular peer drops, then the sender thread puts the
+ * message back on the list. As this implementation currently uses a queue
+ * implementation to maintain messages to send to another peer, we add the
+ * message to the tail of the queue, thus changing the order of messages.
+ * Although this is not a problem for the leader election, it could be a problem
+ * when consolidating peer communication. This is to be verified, though.
+ *
+ */
+
+public class QuorumCnxManager {
+<span class="nc" id="L86">    private static final Logger LOG = LoggerFactory.getLogger(QuorumCnxManager.class);</span>
+
+    /*
+     * Maximum capacity of thread queues
+     */
+    static final int RECV_CAPACITY = 100;
+    // Initialized to 1 to prevent sending
+    // stale notifications to peers
+    static final int SEND_CAPACITY = 1;
+
+    static final int PACKETMAXSIZE = 1024 * 512;
+
+    /*
+     * Negative counter for observer server ids.
+     */
+
+<span class="nc" id="L102">    private AtomicLong observerCounter = new AtomicLong(-1);</span>
+
+    /*
+     * Protocol identifier used among peers
+     */
+    public static final long PROTOCOL_VERSION = -65536L;
+
+    /*
+     * Max buffer size to be read from the network.
+     */
+    static public final int maxBuffer = 2048;
+
+    /*
+     * Connection time out value in milliseconds
+     */
+
+<span class="nc" id="L118">    private int cnxTO = 5000;</span>
+
+    final QuorumPeer self;
+
+    /*
+     * Local IP address
+     */
+    final long mySid;
+    final int socketTimeout;
+    final Map&lt;Long, QuorumPeer.QuorumServer&gt; view;
+    final boolean listenOnAllIPs;
+    private ThreadPoolExecutor connectionExecutor;
+<span class="nc" id="L130">    private final Set&lt;Long&gt; inprogressConnections = Collections.synchronizedSet(new HashSet&lt;&gt;());</span>
+    private QuorumAuthServer authServer;
+    private QuorumAuthLearner authLearner;
+    private boolean quorumSaslAuthEnabled;
+    /*
+     * Counter to count connection processing threads.
+     */
+<span class="nc" id="L137">    private AtomicInteger connectionThreadCnt = new AtomicInteger(0);</span>
+
+    /*
+     * Mapping from Peer to Thread number
+     */
+    final ConcurrentHashMap&lt;Long, SendWorker&gt; senderWorkerMap;
+    final ConcurrentHashMap&lt;Long, ArrayBlockingQueue&lt;ByteBuffer&gt;&gt; queueSendMap;
+    final ConcurrentHashMap&lt;Long, ByteBuffer&gt; lastMessageSent;
+
+    /*
+     * Reception queue
+     */
+    public final ArrayBlockingQueue&lt;Message&gt; recvQueue;
+    /*
+     * Object to synchronize access to recvQueue
+     */
+<span class="nc" id="L153">    private final Object recvQLock = new Object();</span>
+
+    /*
+     * Shutdown flag
+     */
+
+<span class="nc" id="L159">    volatile boolean shutdown = false;</span>
+
+    /*
+     * Listener thread
+     */
+    public final Listener listener;
+
+    /*
+     * Counter to count worker threads
+     */
+<span class="nc" id="L169">    private AtomicInteger threadCnt = new AtomicInteger(0);</span>
+
+    /*
+     * Socket options for TCP keepalive
+     */
+<span class="nc" id="L174">    private final boolean tcpKeepAlive = Boolean.getBoolean(&quot;zookeeper.tcpKeepAlive&quot;);</span>
+
+    /*
+     * Socket factory, allowing the injection of custom socket implementations for testing
+     */
+<span class="nc" id="L179">    static final Supplier&lt;Socket&gt; DEFAULT_SOCKET_FACTORY = () -&gt; new Socket();</span>
+<span class="nc" id="L180">    private static Supplier&lt;Socket&gt; SOCKET_FACTORY = DEFAULT_SOCKET_FACTORY;</span>
+    static void setSocketFactory(Supplier&lt;Socket&gt; factory) {
+<span class="nc" id="L182">        SOCKET_FACTORY = factory;</span>
+<span class="nc" id="L183">    }</span>
+
+
+    static public class Message {
+<span class="nc" id="L187">        Message(ByteBuffer buffer, long sid) {</span>
+<span class="nc" id="L188">            this.buffer = buffer;</span>
+<span class="nc" id="L189">            this.sid = sid;</span>
+<span class="nc" id="L190">        }</span>
+
+        ByteBuffer buffer;
+        long sid;
+    }
+
+    /*
+     * This class parses the initial identification sent out by peers with their
+     * sid &amp; hostname.
+     */
+    static public class InitialMessage {
+        public Long sid;
+        public InetSocketAddress electionAddr;
+
+<span class="nc" id="L204">        InitialMessage(Long sid, InetSocketAddress address) {</span>
+<span class="nc" id="L205">            this.sid = sid;</span>
+<span class="nc" id="L206">            this.electionAddr = address;</span>
+<span class="nc" id="L207">        }</span>
+
+        @SuppressWarnings(&quot;serial&quot;)
+        public static class InitialMessageException extends Exception {
+            InitialMessageException(String message, Object... args) {
+<span class="nc" id="L212">                super(String.format(message, args));</span>
+<span class="nc" id="L213">            }</span>
+        }
+
+        static public InitialMessage parse(Long protocolVersion, DataInputStream din)
+                throws InitialMessageException, IOException {
+            Long sid;
+
+<span class="nc bnc" id="L220" title="All 2 branches missed.">            if (protocolVersion != PROTOCOL_VERSION) {</span>
+<span class="nc" id="L221">                throw new InitialMessageException(</span>
+                        &quot;Got unrecognized protocol version %s&quot;, protocolVersion);
+            }
+
+<span class="nc" id="L225">            sid = din.readLong();</span>
+
+<span class="nc" id="L227">            int remaining = din.readInt();</span>
+<span class="nc bnc" id="L228" title="All 4 branches missed.">            if (remaining &lt;= 0 || remaining &gt; maxBuffer) {</span>
+<span class="nc" id="L229">                throw new InitialMessageException(</span>
+<span class="nc" id="L230">                        &quot;Unreasonable buffer length: %s&quot;, remaining);</span>
+            }
+
+<span class="nc" id="L233">            byte[] b = new byte[remaining];</span>
+<span class="nc" id="L234">            int num_read = din.read(b);</span>
+
+<span class="nc bnc" id="L236" title="All 2 branches missed.">            if (num_read != remaining) {</span>
+<span class="nc" id="L237">                throw new InitialMessageException(</span>
+                        &quot;Read only %s bytes out of %s sent by server %s&quot;,
+<span class="nc" id="L239">                        num_read, remaining, sid);</span>
+            }
+
+<span class="nc" id="L242">            String addr = new String(b);</span>
+            String[] host_port;
+            try {
+<span class="nc" id="L245">                host_port = ConfigUtils.getHostAndPort(addr);</span>
+<span class="nc" id="L246">            } catch (ConfigException e) {</span>
+<span class="nc" id="L247">                throw new InitialMessageException(&quot;Badly formed address: %s&quot;, addr);</span>
+<span class="nc" id="L248">            }</span>
+
+<span class="nc bnc" id="L250" title="All 2 branches missed.">            if (host_port.length != 2) {</span>
+<span class="nc" id="L251">                throw new InitialMessageException(&quot;Badly formed address: %s&quot;, addr);</span>
+            }
+
+            int port;
+            try {
+<span class="nc" id="L256">                port = Integer.parseInt(host_port[1]);</span>
+<span class="nc" id="L257">            } catch (NumberFormatException e) {</span>
+<span class="nc" id="L258">                throw new InitialMessageException(&quot;Bad port number: %s&quot;, host_port[1]);</span>
+<span class="nc" id="L259">            } catch (ArrayIndexOutOfBoundsException e) {</span>
+<span class="nc" id="L260">                throw new InitialMessageException(&quot;No port number in: %s&quot;, addr);</span>
+<span class="nc" id="L261">            }</span>
+
+<span class="nc bnc" id="L263" title="All 2 branches missed.">            return new InitialMessage(sid, isWildcardAddress(host_port[0]) ? null :</span>
+<span class="nc" id="L264">                    new InetSocketAddress(host_port[0], port));</span>
+        }
+
+        /**
+         * Returns true if the specified hostname is a wildcard address,
+         * like 0.0.0.0 for IPv4 or :: for IPv6
+         */
+        public static boolean isWildcardAddress(final String hostname) {
+            try {
+<span class="nc" id="L273">                return InetAddress.getByName(hostname).isAnyLocalAddress();</span>
+<span class="nc" id="L274">            } catch (UnknownHostException e) {</span>
+                // if we can not resolve, it can not be a wildcard address
+<span class="nc" id="L276">                return false;</span>
+<span class="nc" id="L277">            } catch (SecurityException e) {</span>
+<span class="nc" id="L278">                LOG.warn(&quot;SecurityException in getByName() for&quot; + hostname);</span>
+<span class="nc" id="L279">                return false;</span>
+            }
+        }
+
+        @Override
+        public String toString() {
+<span class="nc" id="L285">            return &quot;InitialMessage{sid=&quot; + sid + &quot;, electionAddr=&quot; + electionAddr + '}';</span>
+        }
+    }
+
+    public QuorumCnxManager(QuorumPeer self,
+                            final long mySid,
+                            Map&lt;Long,QuorumPeer.QuorumServer&gt; view,
+                            QuorumAuthServer authServer,
+                            QuorumAuthLearner authLearner,
+                            int socketTimeout,
+                            boolean listenOnAllIPs,
+                            int quorumCnxnThreadsSize,
+<span class="nc" id="L297">                            boolean quorumSaslAuthEnabled) {</span>
+<span class="nc" id="L298">        this.recvQueue = new ArrayBlockingQueue&lt;Message&gt;(RECV_CAPACITY);</span>
+<span class="nc" id="L299">        this.queueSendMap = new ConcurrentHashMap&lt;Long, ArrayBlockingQueue&lt;ByteBuffer&gt;&gt;();</span>
+<span class="nc" id="L300">        this.senderWorkerMap = new ConcurrentHashMap&lt;Long, SendWorker&gt;();</span>
+<span class="nc" id="L301">        this.lastMessageSent = new ConcurrentHashMap&lt;Long, ByteBuffer&gt;();</span>
+
+<span class="nc" id="L303">        String cnxToValue = System.getProperty(&quot;zookeeper.cnxTimeout&quot;);</span>
+<span class="nc bnc" id="L304" title="All 2 branches missed.">        if(cnxToValue != null){</span>
+<span class="nc" id="L305">            this.cnxTO = Integer.parseInt(cnxToValue);</span>
+        }
+
+<span class="nc" id="L308">        this.self = self;</span>
+
+<span class="nc" id="L310">        this.mySid = mySid;</span>
+<span class="nc" id="L311">        this.socketTimeout = socketTimeout;</span>
+<span class="nc" id="L312">        this.view = view;</span>
+<span class="nc" id="L313">        this.listenOnAllIPs = listenOnAllIPs;</span>
+<span class="nc" id="L314">        this.authServer = authServer;</span>
+<span class="nc" id="L315">        this.authLearner = authLearner;</span>
+<span class="nc" id="L316">        this.quorumSaslAuthEnabled = quorumSaslAuthEnabled;</span>
+
+<span class="nc" id="L318">        initializeConnectionExecutor(mySid, quorumCnxnThreadsSize);</span>
+
+        // Starts listener thread that waits for connection requests
+<span class="nc" id="L321">        listener = new Listener();</span>
+<span class="nc" id="L322">        listener.setName(&quot;QuorumPeerListener&quot;);</span>
+<span class="nc" id="L323">    }</span>
+
+    // we always use the Connection Executor during connection initiation (to handle connection
+    // timeouts), and optionally use it during receiving connections (as the Quorum SASL authentication
+    // can take extra time)
+    private void initializeConnectionExecutor(final long mySid, final int quorumCnxnThreadsSize) {
+<span class="nc" id="L329">        final AtomicInteger threadIndex = new AtomicInteger(1);</span>
+<span class="nc" id="L330">        SecurityManager s = System.getSecurityManager();</span>
+<span class="nc bnc" id="L331" title="All 2 branches missed.">        final ThreadGroup group = (s != null) ? s.getThreadGroup()</span>
+<span class="nc" id="L332">                : Thread.currentThread().getThreadGroup();</span>
+<span class="nc" id="L333">        final ThreadFactory daemonThFactory = runnable -&gt; new Thread(group, runnable,</span>
+<span class="nc" id="L334">            String.format(&quot;QuorumConnectionThread-[myid=%d]-%d&quot;, mySid, threadIndex.getAndIncrement()));</span>
+<span class="nc" id="L335">        this.connectionExecutor = new ThreadPoolExecutor(3, quorumCnxnThreadsSize, 60, TimeUnit.SECONDS,</span>
+                                                         new SynchronousQueue&lt;&gt;(), daemonThFactory);
+<span class="nc" id="L337">        this.connectionExecutor.allowCoreThreadTimeOut(true);</span>
+<span class="nc" id="L338">    }</span>
+
+
+    /**
+     * Invokes initiateConnection for testing purposes
+     *
+     * @param sid
+     */
+    public void testInitiateConnection(long sid) {
+<span class="nc" id="L347">        LOG.debug(&quot;Opening channel to server &quot; + sid);</span>
+<span class="nc" id="L348">        initiateConnection(self.getVotingView().get(sid).electionAddr, sid);</span>
+<span class="nc" id="L349">    }</span>
+
+    /**
+     * First we create the socket, perform SSL handshake and authentication if needed.
+     * Then we perform the initiation protocol.
+     *  If this server has initiated the connection, then it gives up on the
+     * connection if it loses challenge. Otherwise, it keeps the connection.
+     */
+    public void initiateConnection(final InetSocketAddress electionAddr, final Long sid) {
+
+<span class="nc" id="L359">        Socket sock = null;</span>
+        try {
+<span class="nc" id="L361">            LOG.debug(&quot;Opening channel to server &quot; + sid);</span>
+<span class="nc bnc" id="L362" title="All 2 branches missed.">            if (self.isSslQuorum()) {</span>
+<span class="nc" id="L363">                SSLSocket sslSock = self.getX509Util().createSSLSocket();</span>
+<span class="nc" id="L364">                setSockOpts(sslSock);</span>
+<span class="nc" id="L365">                sslSock.connect(electionAddr, cnxTO);</span>
+<span class="nc" id="L366">                sslSock.startHandshake();</span>
+<span class="nc" id="L367">                sock = sslSock;</span>
+<span class="nc" id="L368">                LOG.info(&quot;SSL handshake complete with {} - {} - {}&quot;, sslSock.getRemoteSocketAddress(),</span>
+<span class="nc" id="L369">                         sslSock.getSession().getProtocol(), sslSock.getSession().getCipherSuite());</span>
+<span class="nc" id="L370">            } else {</span>
+<span class="nc" id="L371">                sock = SOCKET_FACTORY.get();</span>
+<span class="nc" id="L372">                setSockOpts(sock);</span>
+<span class="nc" id="L373">                sock.connect(electionAddr, cnxTO);</span>
+            }
+<span class="nc" id="L375">            LOG.debug(&quot;Connected to server &quot; + sid);</span>
+<span class="nc" id="L376">        } catch (X509Exception e) {</span>
+<span class="nc" id="L377">            LOG.warn(&quot;Cannot open secure channel to {} at election address {}&quot;, sid, electionAddr, e);</span>
+<span class="nc" id="L378">            closeSocket(sock);</span>
+<span class="nc" id="L379">            return;</span>
+<span class="nc" id="L380">        } catch (UnresolvedAddressException | IOException e) {</span>
+<span class="nc" id="L381">            LOG.warn(&quot;Cannot open channel to {} at election address {}&quot;, sid, electionAddr, e);</span>
+<span class="nc" id="L382">            closeSocket(sock);</span>
+<span class="nc" id="L383">            return;</span>
+<span class="nc" id="L384">        }</span>
+
+        try {
+<span class="nc" id="L387">            startConnection(sock, sid);</span>
+<span class="nc" id="L388">        } catch (IOException e) {</span>
+<span class="nc" id="L389">            LOG.error(&quot;Exception while connecting, id: {}, addr: {}, closing learner connection&quot;,</span>
+<span class="nc" id="L390">                    new Object[] { sid, sock.getRemoteSocketAddress() }, e);</span>
+<span class="nc" id="L391">            closeSocket(sock);</span>
+<span class="nc" id="L392">        }</span>
+<span class="nc" id="L393">    }</span>
+
+    /**
+     * Server will initiate the connection request to its peer server
+     * asynchronously via separate connection thread.
+     */
+    public boolean initiateConnectionAsync(final InetSocketAddress electionAddr, final Long sid) {
+<span class="nc bnc" id="L400" title="All 2 branches missed.">        if(!inprogressConnections.add(sid)){</span>
+            // simply return as there is a connection request to
+            // server 'sid' already in progress.
+<span class="nc" id="L403">            LOG.debug(&quot;Connection request to server id: {} is already in progress, so skipping this request&quot;,</span>
+                    sid);
+<span class="nc" id="L405">            return true;</span>
+        }
+        try {
+<span class="nc" id="L408">            connectionExecutor.execute(new QuorumConnectionReqThread(electionAddr, sid));</span>
+<span class="nc" id="L409">            connectionThreadCnt.incrementAndGet();</span>
+<span class="nc" id="L410">        } catch (Throwable e) {</span>
+            // Imp: Safer side catching all type of exceptions and remove 'sid'
+            // from inprogress connections. This is to avoid blocking further
+            // connection requests from this 'sid' in case of errors.
+<span class="nc" id="L414">            inprogressConnections.remove(sid);</span>
+<span class="nc" id="L415">            LOG.error(&quot;Exception while submitting quorum connection request&quot;, e);</span>
+<span class="nc" id="L416">            return false;</span>
+<span class="nc" id="L417">        }</span>
+<span class="nc" id="L418">        return true;</span>
+    }
+
+    /**
+     * Thread to send connection request to peer server.
+     */
+    private class QuorumConnectionReqThread extends ZooKeeperThread {
+        final InetSocketAddress electionAddr;
+        final Long sid;
+<span class="nc" id="L427">        QuorumConnectionReqThread(final InetSocketAddress electionAddr, final Long sid) {</span>
+<span class="nc" id="L428">            super(&quot;QuorumConnectionReqThread-&quot; + sid);</span>
+<span class="nc" id="L429">            this.electionAddr = electionAddr;</span>
+<span class="nc" id="L430">            this.sid = sid;</span>
+<span class="nc" id="L431">        }</span>
+
+        @Override
+        public void run() {
+            try{
+<span class="nc" id="L436">                initiateConnection(electionAddr, sid);</span>
+            } finally {
+<span class="nc" id="L438">                inprogressConnections.remove(sid);</span>
+            }
+<span class="nc" id="L440">        }</span>
+    }
+
+    private boolean startConnection(Socket sock, Long sid)
+            throws IOException {
+<span class="nc" id="L445">        DataOutputStream dout = null;</span>
+<span class="nc" id="L446">        DataInputStream din = null;</span>
+<span class="nc" id="L447">        LOG.debug(&quot;startConnection (myId:{} --&gt; sid:{})&quot;, self.getId(), sid);</span>
+        try {
+            // Use BufferedOutputStream to reduce the number of IP packets. This is
+            // important for x-DC scenarios.
+<span class="nc" id="L451">            BufferedOutputStream buf = new BufferedOutputStream(sock.getOutputStream());</span>
+<span class="nc" id="L452">            dout = new DataOutputStream(buf);</span>
+
+            // Sending id and challenge
+            // represents protocol version (in other words - message type)
+<span class="nc" id="L456">            dout.writeLong(PROTOCOL_VERSION);</span>
+<span class="nc" id="L457">            dout.writeLong(self.getId());</span>
+<span class="nc" id="L458">            String addr = formatInetAddr(self.getElectionAddress());</span>
+<span class="nc" id="L459">            byte[] addr_bytes = addr.getBytes();</span>
+<span class="nc" id="L460">            dout.writeInt(addr_bytes.length);</span>
+<span class="nc" id="L461">            dout.write(addr_bytes);</span>
+<span class="nc" id="L462">            dout.flush();</span>
+
+<span class="nc" id="L464">            din = new DataInputStream(</span>
+<span class="nc" id="L465">                    new BufferedInputStream(sock.getInputStream()));</span>
+<span class="nc" id="L466">        } catch (IOException e) {</span>
+<span class="nc" id="L467">            LOG.warn(&quot;Ignoring exception reading or writing challenge: &quot;, e);</span>
+<span class="nc" id="L468">            closeSocket(sock);</span>
+<span class="nc" id="L469">            return false;</span>
+<span class="nc" id="L470">        }</span>
+
+        // authenticate learner
+<span class="nc" id="L473">        QuorumPeer.QuorumServer qps = self.getVotingView().get(sid);</span>
+<span class="nc bnc" id="L474" title="All 2 branches missed.">        if (qps != null) {</span>
+            // TODO - investigate why reconfig makes qps null.
+<span class="nc" id="L476">            authLearner.authenticate(sock, qps.hostname);</span>
+        }
+
+        // If lost the challenge, then drop the new connection
+<span class="nc bnc" id="L480" title="All 2 branches missed.">        if (sid &gt; self.getId()) {</span>
+<span class="nc" id="L481">            LOG.info(&quot;Have smaller server identifier, so dropping the connection: (myId:{} --&gt; sid:{})&quot;, self.getId(), sid);</span>
+<span class="nc" id="L482">            closeSocket(sock);</span>
+            // Otherwise proceed with the connection
+        } else {
+<span class="nc" id="L485">            LOG.debug(&quot;Have larger server identifier, so keeping the connection: (myId:{} --&gt; sid:{})&quot;, self.getId(), sid);</span>
+<span class="nc" id="L486">            SendWorker sw = new SendWorker(sock, sid);</span>
+<span class="nc" id="L487">            RecvWorker rw = new RecvWorker(sock, din, sid, sw);</span>
+<span class="nc" id="L488">            sw.setRecv(rw);</span>
+
+<span class="nc" id="L490">            SendWorker vsw = senderWorkerMap.get(sid);</span>
+
+<span class="nc bnc" id="L492" title="All 2 branches missed.">            if(vsw != null)</span>
+<span class="nc" id="L493">                vsw.finish();</span>
+
+<span class="nc" id="L495">            senderWorkerMap.put(sid, sw);</span>
+<span class="nc" id="L496">            queueSendMap.putIfAbsent(sid, new ArrayBlockingQueue&lt;ByteBuffer&gt;(</span>
+                    SEND_CAPACITY));
+
+<span class="nc" id="L499">            sw.start();</span>
+<span class="nc" id="L500">            rw.start();</span>
+
+<span class="nc" id="L502">            return true;</span>
+
+        }
+<span class="nc" id="L505">        return false;</span>
+    }
+
+    /**
+     * If this server receives a connection request, then it gives up on the new
+     * connection if it wins. Notice that it checks whether it has a connection
+     * to this server already or not. If it does, then it sends the smallest
+     * possible long value to lose the challenge.
+     *
+     */
+    public void receiveConnection(final Socket sock) {
+<span class="nc" id="L516">        DataInputStream din = null;</span>
+        try {
+<span class="nc" id="L518">            din = new DataInputStream(</span>
+<span class="nc" id="L519">                    new BufferedInputStream(sock.getInputStream()));</span>
+
+<span class="nc" id="L521">            LOG.debug(&quot;Sync handling of connection request received from: {}&quot;, sock.getRemoteSocketAddress());</span>
+<span class="nc" id="L522">            handleConnection(sock, din);</span>
+<span class="nc" id="L523">        } catch (IOException e) {</span>
+<span class="nc" id="L524">            LOG.error(&quot;Exception handling connection, addr: {}, closing server connection&quot;,</span>
+<span class="nc" id="L525">                    sock.getRemoteSocketAddress());</span>
+<span class="nc" id="L526">            LOG.debug(&quot;Exception details: &quot;, e);</span>
+<span class="nc" id="L527">            closeSocket(sock);</span>
+<span class="nc" id="L528">        }</span>
+<span class="nc" id="L529">    }</span>
+
+    /**
+     * Server receives a connection request and handles it asynchronously via
+     * separate thread.
+     */
+    public void receiveConnectionAsync(final Socket sock) {
+        try {
+<span class="nc" id="L537">            LOG.debug(&quot;Async handling of connection request received from: {}&quot;, sock.getRemoteSocketAddress());</span>
+<span class="nc" id="L538">            connectionExecutor.execute(</span>
+                    new QuorumConnectionReceiverThread(sock));
+<span class="nc" id="L540">            connectionThreadCnt.incrementAndGet();</span>
+<span class="nc" id="L541">        } catch (Throwable e) {</span>
+<span class="nc" id="L542">            LOG.error(&quot;Exception handling connection, addr: {}, closing server connection&quot;,</span>
+<span class="nc" id="L543">                    sock.getRemoteSocketAddress());</span>
+<span class="nc" id="L544">            LOG.debug(&quot;Exception details: &quot;, e);</span>
+<span class="nc" id="L545">            closeSocket(sock);</span>
+<span class="nc" id="L546">        }</span>
+<span class="nc" id="L547">    }</span>
+
+    /**
+     * Thread to receive connection request from peer server.
+     */
+    private class QuorumConnectionReceiverThread extends ZooKeeperThread {
+        private final Socket sock;
+<span class="nc" id="L554">        QuorumConnectionReceiverThread(final Socket sock) {</span>
+<span class="nc" id="L555">            super(&quot;QuorumConnectionReceiverThread-&quot; + sock.getRemoteSocketAddress());</span>
+<span class="nc" id="L556">            this.sock = sock;</span>
+<span class="nc" id="L557">        }</span>
+
+        @Override
+        public void run() {
+<span class="nc" id="L561">            receiveConnection(sock);</span>
+<span class="nc" id="L562">        }</span>
+    }
+
+    private void handleConnection(Socket sock, DataInputStream din)
+            throws IOException {
+<span class="nc" id="L567">        Long sid = null, protocolVersion = null;</span>
+<span class="nc" id="L568">        InetSocketAddress electionAddr = null;</span>
+
+        try {
+<span class="nc" id="L571">            protocolVersion = din.readLong();</span>
+<span class="nc bnc" id="L572" title="All 2 branches missed.">            if (protocolVersion &gt;= 0) { // this is a server id and not a protocol version</span>
+<span class="nc" id="L573">                sid = protocolVersion;</span>
+            } else {
+                try {
+<span class="nc" id="L576">                    InitialMessage init = InitialMessage.parse(protocolVersion, din);</span>
+<span class="nc" id="L577">                    sid = init.sid;</span>
+<span class="nc" id="L578">                    electionAddr = init.electionAddr;</span>
+<span class="nc" id="L579">                } catch (InitialMessage.InitialMessageException ex) {</span>
+<span class="nc" id="L580">                    LOG.error(&quot;Initial message parsing error!&quot;, ex);</span>
+<span class="nc" id="L581">                    closeSocket(sock);</span>
+<span class="nc" id="L582">                    return;</span>
+<span class="nc" id="L583">                }</span>
+            }
+
+<span class="nc bnc" id="L586" title="All 2 branches missed.">            if (sid == QuorumPeer.OBSERVER_ID) {</span>
+                /*
+                 * Choose identifier at random. We need a value to identify
+                 * the connection.
+                 */
+<span class="nc" id="L591">                sid = observerCounter.getAndDecrement();</span>
+<span class="nc" id="L592">                LOG.info(&quot;Setting arbitrary identifier to observer: &quot; + sid);</span>
+            }
+<span class="nc" id="L594">        } catch (IOException e) {</span>
+<span class="nc" id="L595">            LOG.warn(&quot;Exception reading or writing challenge: {}&quot;, e);</span>
+<span class="nc" id="L596">            closeSocket(sock);</span>
+<span class="nc" id="L597">            return;</span>
+<span class="nc" id="L598">        }</span>
+
+        // do authenticating learner
+<span class="nc" id="L601">        authServer.authenticate(sock, din);</span>
+        //If wins the challenge, then close the new connection.
+<span class="nc bnc" id="L603" title="All 2 branches missed.">        if (sid &lt; self.getId()) {</span>
+            /*
+             * This replica might still believe that the connection to sid is
+             * up, so we have to shut down the workers before trying to open a
+             * new connection.
+             */
+<span class="nc" id="L609">            SendWorker sw = senderWorkerMap.get(sid);</span>
+<span class="nc bnc" id="L610" title="All 2 branches missed.">            if (sw != null) {</span>
+<span class="nc" id="L611">                sw.finish();</span>
+            }
+
+            /*
+             * Now we start a new connection
+             */
+<span class="nc" id="L617">            LOG.debug(&quot;Create new connection to server: {}&quot;, sid);</span>
+<span class="nc" id="L618">            closeSocket(sock);</span>
+
+<span class="nc bnc" id="L620" title="All 2 branches missed.">            if (electionAddr != null) {</span>
+<span class="nc" id="L621">                connectOne(sid, electionAddr);</span>
+            } else {
+<span class="nc" id="L623">                connectOne(sid);</span>
+            }
+<span class="nc bnc" id="L625" title="All 2 branches missed.">        } else if (sid == self.getId()) {</span>
+            // we saw this case in ZOOKEEPER-2164
+<span class="nc" id="L627">            LOG.warn(&quot;We got a connection request from a server with our own ID. &quot;</span>
+                    + &quot;This should be either a configuration error, or a bug.&quot;);
+        } else { // Otherwise start worker threads to receive data.
+<span class="nc" id="L630">            SendWorker sw = new SendWorker(sock, sid);</span>
+<span class="nc" id="L631">            RecvWorker rw = new RecvWorker(sock, din, sid, sw);</span>
+<span class="nc" id="L632">            sw.setRecv(rw);</span>
+
+<span class="nc" id="L634">            SendWorker vsw = senderWorkerMap.get(sid);</span>
+
+<span class="nc bnc" id="L636" title="All 2 branches missed.">            if (vsw != null) {</span>
+<span class="nc" id="L637">                vsw.finish();</span>
+            }
+
+<span class="nc" id="L640">            senderWorkerMap.put(sid, sw);</span>
+
+<span class="nc" id="L642">            queueSendMap.putIfAbsent(sid,</span>
+                    new ArrayBlockingQueue&lt;ByteBuffer&gt;(SEND_CAPACITY));
+
+<span class="nc" id="L645">            sw.start();</span>
+<span class="nc" id="L646">            rw.start();</span>
+        }
+<span class="nc" id="L648">    }</span>
+
+    /**
+     * Processes invoke this message to queue a message to send. Currently,
+     * only leader election uses it.
+     */
+    public void toSend(Long sid, ByteBuffer b) {
+        /*
+         * If sending message to myself, then simply enqueue it (loopback).
+         */
+<span class="nc bnc" id="L658" title="All 2 branches missed.">        if (this.mySid == sid) {</span>
+<span class="nc" id="L659">             b.position(0);</span>
+<span class="nc" id="L660">             addToRecvQueue(new Message(b.duplicate(), sid));</span>
+            /*
+             * Otherwise send to the corresponding thread to send.
+             */
+        } else {
+             /*
+              * Start a new connection if doesn't have one already.
+              */
+<span class="nc" id="L668">             ArrayBlockingQueue&lt;ByteBuffer&gt; bq = new ArrayBlockingQueue&lt;ByteBuffer&gt;(</span>
+                SEND_CAPACITY);
+<span class="nc" id="L670">             ArrayBlockingQueue&lt;ByteBuffer&gt; oldq = queueSendMap.putIfAbsent(sid, bq);</span>
+<span class="nc bnc" id="L671" title="All 2 branches missed.">             if (oldq != null) {</span>
+<span class="nc" id="L672">                 addToSendQueue(oldq, b);</span>
+             } else {
+<span class="nc" id="L674">                 addToSendQueue(bq, b);</span>
+             }
+<span class="nc" id="L676">             connectOne(sid);</span>
+
+        }
+<span class="nc" id="L679">    }</span>
+
+    /**
+     * Try to establish a connection to server with id sid using its electionAddr.
+     * The function will return quickly and the connection will be established asynchronously.
+     *
+     *  @param sid  server id
+     *  @return boolean success indication
+     */
+    synchronized private boolean connectOne(long sid, InetSocketAddress electionAddr){
+<span class="nc bnc" id="L689" title="All 2 branches missed.">        if (senderWorkerMap.get(sid) != null) {</span>
+<span class="nc" id="L690">            LOG.debug(&quot;There is a connection already for server &quot; + sid);</span>
+<span class="nc" id="L691">            return true;</span>
+        }
+
+        // we are doing connection initiation always asynchronously, since it is possible that
+        // the socket connection timeouts or the SSL handshake takes too long and don't want
+        // to keep the rest of the connections to wait
+<span class="nc" id="L697">        return initiateConnectionAsync(electionAddr, sid);</span>
+    }
+
+    /**
+     * Try to establish a connection to server with id sid.
+     * The function will return quickly and the connection will be established asynchronously.
+     *
+     *  @param sid  server id
+     */
+    synchronized void connectOne(long sid){
+<span class="nc bnc" id="L707" title="All 2 branches missed.">        if (senderWorkerMap.get(sid) != null) {</span>
+<span class="nc" id="L708">            LOG.debug(&quot;There is a connection already for server &quot; + sid);</span>
+<span class="nc" id="L709">            return;</span>
+        }
+<span class="nc" id="L711">        synchronized (self.QV_LOCK) {</span>
+<span class="nc" id="L712">            boolean knownId = false;</span>
+            // Resolve hostname for the remote server before attempting to
+            // connect in case the underlying ip address has changed.
+<span class="nc" id="L715">            self.recreateSocketAddresses(sid);</span>
+<span class="nc" id="L716">            Map&lt;Long, QuorumPeer.QuorumServer&gt; lastCommittedView = self.getView();</span>
+<span class="nc" id="L717">            QuorumVerifier lastSeenQV = self.getLastSeenQuorumVerifier();</span>
+<span class="nc" id="L718">            Map&lt;Long, QuorumPeer.QuorumServer&gt; lastProposedView = lastSeenQV.getAllMembers();</span>
+<span class="nc bnc" id="L719" title="All 2 branches missed.">            if (lastCommittedView.containsKey(sid)) {</span>
+<span class="nc" id="L720">                knownId = true;</span>
+<span class="nc" id="L721">                LOG.debug(&quot;Server {} knows {} already, it is in the lastCommittedView&quot;, self.getId(), sid);</span>
+<span class="nc bnc" id="L722" title="All 2 branches missed.">                if (connectOne(sid, lastCommittedView.get(sid).electionAddr))</span>
+<span class="nc" id="L723">                    return;</span>
+            }
+<span class="nc bnc" id="L725" title="All 6 branches missed.">            if (lastSeenQV != null &amp;&amp; lastProposedView.containsKey(sid)</span>
+<span class="nc" id="L726">                    &amp;&amp; (!knownId || (lastProposedView.get(sid).electionAddr !=</span>
+<span class="nc bnc" id="L727" title="All 2 branches missed.">                    lastCommittedView.get(sid).electionAddr))) {</span>
+<span class="nc" id="L728">                knownId = true;</span>
+<span class="nc" id="L729">                LOG.debug(&quot;Server {} knows {} already, it is in the lastProposedView&quot;, self.getId(), sid);</span>
+<span class="nc bnc" id="L730" title="All 2 branches missed.">                if (connectOne(sid, lastProposedView.get(sid).electionAddr))</span>
+<span class="nc" id="L731">                    return;</span>
+            }
+<span class="nc bnc" id="L733" title="All 2 branches missed.">            if (!knownId) {</span>
+<span class="nc" id="L734">                LOG.warn(&quot;Invalid server id: &quot; + sid);</span>
+<span class="nc" id="L735">                return;</span>
+            }
+<span class="nc" id="L737">        }</span>
+<span class="nc" id="L738">    }</span>
+
+
+    /**
+     * Try to establish a connection with each server if one
+     * doesn't exist.
+     */
+
+    public void connectAll(){
+        long sid;
+<span class="nc" id="L748">        for(Enumeration&lt;Long&gt; en = queueSendMap.keys();</span>
+<span class="nc bnc" id="L749" title="All 2 branches missed.">            en.hasMoreElements();){</span>
+<span class="nc" id="L750">            sid = en.nextElement();</span>
+<span class="nc" id="L751">            connectOne(sid);</span>
+        }
+<span class="nc" id="L753">    }</span>
+
+
+    /**
+     * Check if all queues are empty, indicating that all messages have been delivered.
+     */
+    boolean haveDelivered() {
+<span class="nc bnc" id="L760" title="All 2 branches missed.">        for (ArrayBlockingQueue&lt;ByteBuffer&gt; queue : queueSendMap.values()) {</span>
+<span class="nc" id="L761">            LOG.debug(&quot;Queue size: &quot; + queue.size());</span>
+<span class="nc bnc" id="L762" title="All 2 branches missed.">            if (queue.size() == 0) {</span>
+<span class="nc" id="L763">                return true;</span>
+            }
+<span class="nc" id="L765">        }</span>
+
+<span class="nc" id="L767">        return false;</span>
+    }
+
+    /**
+     * Flag that it is time to wrap up all activities and interrupt the listener.
+     */
+    public void halt() {
+<span class="nc" id="L774">        shutdown = true;</span>
+<span class="nc" id="L775">        LOG.debug(&quot;Halting listener&quot;);</span>
+<span class="nc" id="L776">        listener.halt();</span>
+
+        // Wait for the listener to terminate.
+        try {
+<span class="nc" id="L780">            listener.join();</span>
+<span class="nc" id="L781">        } catch (InterruptedException ex) {</span>
+<span class="nc" id="L782">            LOG.warn(&quot;Got interrupted before joining the listener&quot;, ex);</span>
+<span class="nc" id="L783">        }</span>
+<span class="nc" id="L784">        softHalt();</span>
+
+        // clear data structures used for auth
+<span class="nc bnc" id="L787" title="All 2 branches missed.">        if (connectionExecutor != null) {</span>
+<span class="nc" id="L788">            connectionExecutor.shutdown();</span>
+        }
+<span class="nc" id="L790">        inprogressConnections.clear();</span>
+<span class="nc" id="L791">        resetConnectionThreadCount();</span>
+<span class="nc" id="L792">    }</span>
+
+    /**
+     * A soft halt simply finishes workers.
+     */
+    public void softHalt() {
+<span class="nc bnc" id="L798" title="All 2 branches missed.">        for (SendWorker sw : senderWorkerMap.values()) {</span>
+<span class="nc" id="L799">            LOG.debug(&quot;Halting sender: &quot; + sw);</span>
+<span class="nc" id="L800">            LOG.debug(&quot;Server {} is soft-halting sender towards: {}&quot;, self.getId(), sw);</span>
+<span class="nc" id="L801">            sw.finish();</span>
+<span class="nc" id="L802">        }</span>
+<span class="nc" id="L803">    }</span>
+
+    /**
+     * Helper method to set socket options.
+     *
+     * @param sock
+     *            Reference to socket
+     */
+    private void setSockOpts(Socket sock) throws SocketException {
+<span class="nc" id="L812">        sock.setTcpNoDelay(true);</span>
+<span class="nc" id="L813">        sock.setKeepAlive(tcpKeepAlive);</span>
+<span class="nc" id="L814">        sock.setSoTimeout(self.tickTime * self.syncLimit);</span>
+<span class="nc" id="L815">    }</span>
+
+    /**
+     * Helper method to close a socket.
+     *
+     * @param sock
+     *            Reference to socket
+     */
+    private void closeSocket(Socket sock) {
+<span class="nc bnc" id="L824" title="All 2 branches missed.">        if (sock == null) {</span>
+<span class="nc" id="L825">            return;</span>
+        }
+
+        try {
+<span class="nc" id="L829">            sock.close();</span>
+<span class="nc" id="L830">        } catch (IOException ie) {</span>
+<span class="nc" id="L831">            LOG.error(&quot;Exception while closing&quot;, ie);</span>
+<span class="nc" id="L832">        }</span>
+<span class="nc" id="L833">    }</span>
+
+    /**
+     * Return number of worker threads
+     */
+    public long getThreadCount() {
+<span class="nc" id="L839">        return threadCnt.get();</span>
+    }
+
+    /**
+     * Return number of connection processing threads.
+     */
+    public long getConnectionThreadCount() {
+<span class="nc" id="L846">        return connectionThreadCnt.get();</span>
+    }
+
+    /**
+     * Reset the value of connection processing threads count to zero.
+     */
+    private void resetConnectionThreadCount() {
+<span class="nc" id="L853">        connectionThreadCnt.set(0);</span>
+<span class="nc" id="L854">    }</span>
+
+    /**
+     * Thread to listen on some port
+     */
+    public class Listener extends ZooKeeperThread {
+
+        private static final String ELECTION_PORT_BIND_RETRY = &quot;zookeeper.electionPortBindRetry&quot;;
+        private static final int DEFAULT_PORT_BIND_MAX_RETRY = 3;
+
+        private final int portBindMaxRetry;
+<span class="nc" id="L865">        private Runnable socketBindErrorHandler = () -&gt; System.exit(ExitCode.UNABLE_TO_BIND_QUORUM_PORT.getValue());</span>
+<span class="nc" id="L866">        volatile ServerSocket ss = null;</span>
+
+<span class="nc" id="L868">        public Listener() {</span>
+            // During startup of thread, thread name will be overridden to
+            // specific election address
+<span class="nc" id="L871">            super(&quot;ListenerThread&quot;);</span>
+
+            // maximum retry count while trying to bind to election port
+            // see ZOOKEEPER-3320 for more details
+<span class="nc" id="L875">            final Integer maxRetry = Integer.getInteger(ELECTION_PORT_BIND_RETRY,</span>
+                                                        DEFAULT_PORT_BIND_MAX_RETRY);
+<span class="nc bnc" id="L877" title="All 2 branches missed.">            if (maxRetry &gt;= 0) {</span>
+<span class="nc" id="L878">                LOG.info(&quot;Election port bind maximum retries is {}&quot;,</span>
+<span class="nc bnc" id="L879" title="All 2 branches missed.">                         maxRetry == 0 ? &quot;infinite&quot; : maxRetry);</span>
+<span class="nc" id="L880">                portBindMaxRetry = maxRetry;</span>
+            } else {
+<span class="nc" id="L882">                LOG.info(&quot;'{}' contains invalid value: {}(must be &gt;= 0). &quot;</span>
+                         + &quot;Use default value of {} instead.&quot;,
+<span class="nc" id="L884">                         ELECTION_PORT_BIND_RETRY, maxRetry, DEFAULT_PORT_BIND_MAX_RETRY);</span>
+<span class="nc" id="L885">                portBindMaxRetry = DEFAULT_PORT_BIND_MAX_RETRY;</span>
+            }
+<span class="nc" id="L887">        }</span>
+
+        /**
+         * Change socket bind error handler. Used for testing.
+         */
+        public void setSocketBindErrorHandler(Runnable errorHandler) {
+<span class="nc" id="L893">            this.socketBindErrorHandler = errorHandler;</span>
+<span class="nc" id="L894">        }</span>
+
+        /**
+         * Sleeps on accept().
+         */
+        @Override
+        public void run() {
+<span class="nc" id="L901">            int numRetries = 0;</span>
+            InetSocketAddress addr;
+<span class="nc" id="L903">            Socket client = null;</span>
+<span class="nc" id="L904">            Exception exitException = null;</span>
+<span class="nc bnc" id="L905" title="All 6 branches missed.">            while ((!shutdown) &amp;&amp; (portBindMaxRetry == 0 || numRetries &lt; portBindMaxRetry)) {</span>
+<span class="nc" id="L906">                LOG.debug(&quot;Listener thread started, myId: {}&quot;, self.getId());</span>
+                try {
+<span class="nc bnc" id="L908" title="All 2 branches missed.">                    if (self.shouldUsePortUnification()) {</span>
+<span class="nc" id="L909">                        LOG.info(&quot;Creating TLS-enabled quorum server socket&quot;);</span>
+<span class="nc" id="L910">                        ss = new UnifiedServerSocket(self.getX509Util(), true);</span>
+<span class="nc bnc" id="L911" title="All 2 branches missed.">                    } else if (self.isSslQuorum()) {</span>
+<span class="nc" id="L912">                        LOG.info(&quot;Creating TLS-only quorum server socket&quot;);</span>
+<span class="nc" id="L913">                        ss = new UnifiedServerSocket(self.getX509Util(), false);</span>
+                    } else {
+<span class="nc" id="L915">                        ss = new ServerSocket();</span>
+                    }
+
+<span class="nc" id="L918">                    ss.setReuseAddress(true);</span>
+
+<span class="nc bnc" id="L920" title="All 2 branches missed.">                    if (self.getQuorumListenOnAllIPs()) {</span>
+<span class="nc" id="L921">                        int port = self.getElectionAddress().getPort();</span>
+<span class="nc" id="L922">                        addr = new InetSocketAddress(port);</span>
+<span class="nc" id="L923">                    } else {</span>
+                        // Resolve hostname for this server in case the
+                        // underlying ip address has changed.
+<span class="nc" id="L926">                        self.recreateSocketAddresses(self.getId());</span>
+<span class="nc" id="L927">                        addr = self.getElectionAddress();</span>
+                    }
+<span class="nc" id="L929">                    LOG.info(&quot;{} is accepting connections now, my election bind port: {}&quot;, QuorumCnxManager.this.mySid, addr.toString());</span>
+<span class="nc" id="L930">                    setName(addr.toString());</span>
+<span class="nc" id="L931">                    ss.bind(addr);</span>
+<span class="nc bnc" id="L932" title="All 2 branches missed.">                    while (!shutdown) {</span>
+                        try {
+<span class="nc" id="L934">                            client = ss.accept();</span>
+<span class="nc" id="L935">                            setSockOpts(client);</span>
+<span class="nc" id="L936">                            LOG.info(&quot;Received connection request from {}&quot;, client.getRemoteSocketAddress());</span>
+                            // Receive and handle the connection request
+                            // asynchronously if the quorum sasl authentication is
+                            // enabled. This is required because sasl server
+                            // authentication process may take few seconds to finish,
+                            // this may delay next peer connection requests.
+<span class="nc bnc" id="L942" title="All 2 branches missed.">                            if (quorumSaslAuthEnabled) {</span>
+<span class="nc" id="L943">                                receiveConnectionAsync(client);</span>
+                            } else {
+<span class="nc" id="L945">                                receiveConnection(client);</span>
+                            }
+<span class="nc" id="L947">                            numRetries = 0;</span>
+<span class="nc" id="L948">                        } catch (SocketTimeoutException e) {</span>
+<span class="nc" id="L949">                            LOG.warn(&quot;The socket is listening for the election accepted &quot;</span>
+                                     + &quot;and it timed out unexpectedly, but will retry.&quot;
+                                     + &quot;see ZOOKEEPER-2836&quot;);
+<span class="nc" id="L952">                        }</span>
+                    }
+<span class="nc" id="L954">                } catch (IOException e) {</span>
+<span class="nc bnc" id="L955" title="All 2 branches missed.">                    if (shutdown) {</span>
+<span class="nc" id="L956">                        break;</span>
+                    }
+<span class="nc" id="L958">                    LOG.error(&quot;Exception while listening&quot;, e);</span>
+<span class="nc" id="L959">                    exitException = e;</span>
+<span class="nc" id="L960">                    numRetries++;</span>
+                    try {
+<span class="nc" id="L962">                        ss.close();</span>
+<span class="nc" id="L963">                        Thread.sleep(1000);</span>
+<span class="nc" id="L964">                    } catch (IOException ie) {</span>
+<span class="nc" id="L965">                        LOG.error(&quot;Error closing server socket&quot;, ie);</span>
+<span class="nc" id="L966">                    } catch (InterruptedException ie) {</span>
+<span class="nc" id="L967">                        LOG.error(&quot;Interrupted while sleeping. &quot; +</span>
+                            &quot;Ignoring exception&quot;, ie);
+<span class="nc" id="L969">                    }</span>
+<span class="nc" id="L970">                    closeSocket(client);</span>
+<span class="nc" id="L971">                }</span>
+            }
+<span class="nc" id="L973">            LOG.info(&quot;Leaving listener&quot;);</span>
+<span class="nc bnc" id="L974" title="All 2 branches missed.">            if (!shutdown) {</span>
+<span class="nc" id="L975">                LOG.error(&quot;As I'm leaving the listener thread after &quot;</span>
+                          + numRetries + &quot; errors. &quot;
+                          + &quot;I won't be able to participate in leader &quot;
+                          + &quot;election any longer: &quot;
+<span class="nc" id="L979">                          + formatInetAddr(self.getElectionAddress())</span>
+                          + &quot;. Use &quot; + ELECTION_PORT_BIND_RETRY + &quot; property to &quot;
+                          + &quot;increase retry count.&quot;);
+<span class="nc bnc" id="L982" title="All 2 branches missed.">                if (exitException instanceof SocketException) {</span>
+                    // After leaving listener thread, the host cannot join the
+                    // quorum anymore, this is a severe error that we cannot
+                    // recover from, so we need to exit
+<span class="nc" id="L986">                    socketBindErrorHandler.run();</span>
+                }
+<span class="nc bnc" id="L988" title="All 2 branches missed.">            } else if (ss != null) {</span>
+                // Clean up for shutdown.
+                try {
+<span class="nc" id="L991">                    ss.close();</span>
+<span class="nc" id="L992">                } catch (IOException ie) {</span>
+                    // Don't log an error for shutdown.
+<span class="nc" id="L994">                    LOG.debug(&quot;Error closing server socket&quot;, ie);</span>
+<span class="nc" id="L995">                }</span>
+            }
+<span class="nc" id="L997">        }</span>
+
+        /**
+         * Halts this listener thread.
+         */
+        void halt(){
+            try{
+
+<span class="nc" id="L1005">                LOG.debug(&quot;Halt called: Trying to close listeners&quot;);</span>
+<span class="nc bnc" id="L1006" title="All 2 branches missed.">                if(ss != null) {</span>
+<span class="nc" id="L1007">                    LOG.debug(&quot;Closing listener: &quot;</span>
+                              + QuorumCnxManager.this.mySid);
+<span class="nc" id="L1009">                    ss.close();</span>
+                }
+<span class="nc" id="L1011">            } catch (IOException e){</span>
+<span class="nc" id="L1012">                LOG.warn(&quot;Exception when shutting down listener: &quot; + e);</span>
+<span class="nc" id="L1013">            }</span>
+<span class="nc" id="L1014">        }</span>
+    }
+
+    /**
+     * Thread to send messages. Instance waits on a queue, and send a message as
+     * soon as there is one available. If connection breaks, then opens a new
+     * one.
+     */
+    class SendWorker extends ZooKeeperThread {
+        Long sid;
+        Socket sock;
+        RecvWorker recvWorker;
+<span class="nc" id="L1026">        volatile boolean running = true;</span>
+        DataOutputStream dout;
+
+        /**
+         * An instance of this thread receives messages to send
+         * through a queue and sends them to the server sid.
+         *
+         * @param sock
+         *            Socket to remote peer
+         * @param sid
+         *            Server identifier of remote peer
+         */
+<span class="nc" id="L1038">        SendWorker(Socket sock, Long sid) {</span>
+<span class="nc" id="L1039">            super(&quot;SendWorker:&quot; + sid);</span>
+<span class="nc" id="L1040">            this.sid = sid;</span>
+<span class="nc" id="L1041">            this.sock = sock;</span>
+<span class="nc" id="L1042">            recvWorker = null;</span>
+            try {
+<span class="nc" id="L1044">                dout = new DataOutputStream(sock.getOutputStream());</span>
+<span class="nc" id="L1045">            } catch (IOException e) {</span>
+<span class="nc" id="L1046">                LOG.error(&quot;Unable to access socket output stream&quot;, e);</span>
+<span class="nc" id="L1047">                closeSocket(sock);</span>
+<span class="nc" id="L1048">                running = false;</span>
+<span class="nc" id="L1049">            }</span>
+<span class="nc" id="L1050">            LOG.debug(&quot;Address of remote peer: &quot; + this.sid);</span>
+<span class="nc" id="L1051">        }</span>
+
+        synchronized void setRecv(RecvWorker recvWorker) {
+<span class="nc" id="L1054">            this.recvWorker = recvWorker;</span>
+<span class="nc" id="L1055">        }</span>
+
+        /**
+         * Returns RecvWorker that pairs up with this SendWorker.
+         *
+         * @return RecvWorker
+         */
+        synchronized RecvWorker getRecvWorker(){
+<span class="nc" id="L1063">            return recvWorker;</span>
+        }
+
+        synchronized boolean finish() {
+<span class="nc" id="L1067">            LOG.debug(&quot;Calling SendWorker.finish for {}&quot;, sid);</span>
+
+<span class="nc bnc" id="L1069" title="All 2 branches missed.">            if(!running){</span>
+                /*
+                 * Avoids running finish() twice.
+                 */
+<span class="nc" id="L1073">                return running;</span>
+            }
+
+<span class="nc" id="L1076">            running = false;</span>
+<span class="nc" id="L1077">            closeSocket(sock);</span>
+
+<span class="nc" id="L1079">            this.interrupt();</span>
+<span class="nc bnc" id="L1080" title="All 2 branches missed.">            if (recvWorker != null) {</span>
+<span class="nc" id="L1081">                recvWorker.finish();</span>
+            }
+
+<span class="nc" id="L1084">            LOG.debug(&quot;Removing entry from senderWorkerMap sid=&quot; + sid);</span>
+
+<span class="nc" id="L1086">            senderWorkerMap.remove(sid, this);</span>
+<span class="nc" id="L1087">            threadCnt.decrementAndGet();</span>
+<span class="nc" id="L1088">            return running;</span>
+        }
+
+        synchronized void send(ByteBuffer b) throws IOException {
+<span class="nc" id="L1092">            byte[] msgBytes = new byte[b.capacity()];</span>
+            try {
+<span class="nc" id="L1094">                b.position(0);</span>
+<span class="nc" id="L1095">                b.get(msgBytes);</span>
+<span class="nc" id="L1096">            } catch (BufferUnderflowException be) {</span>
+<span class="nc" id="L1097">                LOG.error(&quot;BufferUnderflowException &quot;, be);</span>
+<span class="nc" id="L1098">                return;</span>
+<span class="nc" id="L1099">            }</span>
+<span class="nc" id="L1100">            dout.writeInt(b.capacity());</span>
+<span class="nc" id="L1101">            dout.write(b.array());</span>
+<span class="nc" id="L1102">            dout.flush();</span>
+<span class="nc" id="L1103">        }</span>
+
+        @Override
+        public void run() {
+<span class="nc" id="L1107">            threadCnt.incrementAndGet();</span>
+            try {
+                /**
+                 * If there is nothing in the queue to send, then we
+                 * send the lastMessage to ensure that the last message
+                 * was received by the peer. The message could be dropped
+                 * in case self or the peer shutdown their connection
+                 * (and exit the thread) prior to reading/processing
+                 * the last message. Duplicate messages are handled correctly
+                 * by the peer.
+                 *
+                 * If the send queue is non-empty, then we have a recent
+                 * message than that stored in lastMessage. To avoid sending
+                 * stale message, we should send the message in the send queue.
+                 */
+<span class="nc" id="L1122">                ArrayBlockingQueue&lt;ByteBuffer&gt; bq = queueSendMap.get(sid);</span>
+<span class="nc bnc" id="L1123" title="All 4 branches missed.">                if (bq == null || isSendQueueEmpty(bq)) {</span>
+<span class="nc" id="L1124">                   ByteBuffer b = lastMessageSent.get(sid);</span>
+<span class="nc bnc" id="L1125" title="All 2 branches missed.">                   if (b != null) {</span>
+<span class="nc" id="L1126">                       LOG.debug(&quot;Attempting to send lastMessage to sid=&quot; + sid);</span>
+<span class="nc" id="L1127">                       send(b);</span>
+                   }
+                }
+<span class="nc" id="L1130">            } catch (IOException e) {</span>
+<span class="nc" id="L1131">                LOG.error(&quot;Failed to send last message. Shutting down thread.&quot;, e);</span>
+<span class="nc" id="L1132">                this.finish();</span>
+<span class="nc" id="L1133">            }</span>
+<span class="nc" id="L1134">            LOG.debug(&quot;SendWorker thread started towards {}. myId: {}&quot;, sid, QuorumCnxManager.this.mySid);</span>
+            try {
+<span class="nc bnc" id="L1136" title="All 6 branches missed.">                while (running &amp;&amp; !shutdown &amp;&amp; sock != null) {</span>
+
+<span class="nc" id="L1138">                    ByteBuffer b = null;</span>
+                    try {
+<span class="nc" id="L1140">                        ArrayBlockingQueue&lt;ByteBuffer&gt; bq = queueSendMap</span>
+<span class="nc" id="L1141">                                .get(sid);</span>
+<span class="nc bnc" id="L1142" title="All 2 branches missed.">                        if (bq != null) {</span>
+<span class="nc" id="L1143">                            b = pollSendQueue(bq, 1000, TimeUnit.MILLISECONDS);</span>
+                        } else {
+<span class="nc" id="L1145">                            LOG.error(&quot;No queue of incoming messages for &quot; +</span>
+                                      &quot;server &quot; + sid);
+<span class="nc" id="L1147">                            break;</span>
+                        }
+
+<span class="nc bnc" id="L1150" title="All 2 branches missed.">                        if(b != null){</span>
+<span class="nc" id="L1151">                            lastMessageSent.put(sid, b);</span>
+<span class="nc" id="L1152">                            send(b);</span>
+                        }
+<span class="nc" id="L1154">                    } catch (InterruptedException e) {</span>
+<span class="nc" id="L1155">                        LOG.warn(&quot;Interrupted while waiting for message on queue&quot;,</span>
+                                e);
+<span class="nc" id="L1157">                    }</span>
+<span class="nc" id="L1158">                }</span>
+<span class="nc" id="L1159">            } catch (Exception e) {</span>
+<span class="nc" id="L1160">                LOG.warn(&quot;Exception when using channel: for id &quot; + sid</span>
+                         + &quot; my id = &quot; + QuorumCnxManager.this.mySid
+                         + &quot; error = &quot; + e);
+<span class="nc" id="L1163">            }</span>
+<span class="nc" id="L1164">            this.finish();</span>
+<span class="nc" id="L1165">            LOG.warn(&quot;Send worker leaving thread &quot; + &quot; id &quot; + sid + &quot; my id = &quot; + self.getId());</span>
+<span class="nc" id="L1166">        }</span>
+    }
+
+    /**
+     * Thread to receive messages. Instance waits on a socket read. If the
+     * channel breaks, then removes itself from the pool of receivers.
+     */
+    class RecvWorker extends ZooKeeperThread {
+        Long sid;
+        Socket sock;
+<span class="nc" id="L1176">        volatile boolean running = true;</span>
+        final DataInputStream din;
+        final SendWorker sw;
+
+<span class="nc" id="L1180">        RecvWorker(Socket sock, DataInputStream din, Long sid, SendWorker sw) {</span>
+<span class="nc" id="L1181">            super(&quot;RecvWorker:&quot; + sid);</span>
+<span class="nc" id="L1182">            this.sid = sid;</span>
+<span class="nc" id="L1183">            this.sock = sock;</span>
+<span class="nc" id="L1184">            this.sw = sw;</span>
+<span class="nc" id="L1185">            this.din = din;</span>
+            try {
+                // OK to wait until socket disconnects while reading.
+<span class="nc" id="L1188">                sock.setSoTimeout(0);</span>
+<span class="nc" id="L1189">            } catch (IOException e) {</span>
+<span class="nc" id="L1190">                LOG.error(&quot;Error while accessing socket for &quot; + sid, e);</span>
+<span class="nc" id="L1191">                closeSocket(sock);</span>
+<span class="nc" id="L1192">                running = false;</span>
+<span class="nc" id="L1193">            }</span>
+<span class="nc" id="L1194">        }</span>
+
+        /**
+         * Shuts down this worker
+         *
+         * @return boolean  Value of variable running
+         */
+        synchronized boolean finish() {
+<span class="nc" id="L1202">            LOG.debug(&quot;RecvWorker.finish called. sid: {}. myId: {}&quot;, sid, QuorumCnxManager.this.mySid);</span>
+<span class="nc bnc" id="L1203" title="All 2 branches missed.">            if(!running){</span>
+                /*
+                 * Avoids running finish() twice.
+                 */
+<span class="nc" id="L1207">                return running;</span>
+            }
+<span class="nc" id="L1209">            running = false;</span>
+
+<span class="nc" id="L1211">            this.interrupt();</span>
+<span class="nc" id="L1212">            threadCnt.decrementAndGet();</span>
+<span class="nc" id="L1213">            return running;</span>
+        }
+
+        @Override
+        public void run() {
+<span class="nc" id="L1218">            threadCnt.incrementAndGet();</span>
+            try {
+<span class="nc" id="L1220">                LOG.debug(&quot;RecvWorker thread towards {} started. myId: {}&quot;, sid, QuorumCnxManager.this.mySid);</span>
+<span class="nc bnc" id="L1221" title="All 6 branches missed.">                while (running &amp;&amp; !shutdown &amp;&amp; sock != null) {</span>
+                    /**
+                     * Reads the first int to determine the length of the
+                     * message
+                     */
+<span class="nc" id="L1226">                    int length = din.readInt();</span>
+<span class="nc bnc" id="L1227" title="All 4 branches missed.">                    if (length &lt;= 0 || length &gt; PACKETMAXSIZE) {</span>
+<span class="nc" id="L1228">                        throw new IOException(</span>
+                                &quot;Received packet with invalid packet: &quot;
+                                        + length);
+                    }
+                    /**
+                     * Allocates a new ByteBuffer to receive the message
+                     */
+<span class="nc" id="L1235">                    byte[] msgArray = new byte[length];</span>
+<span class="nc" id="L1236">                    din.readFully(msgArray, 0, length);</span>
+<span class="nc" id="L1237">                    ByteBuffer message = ByteBuffer.wrap(msgArray);</span>
+<span class="nc" id="L1238">                    addToRecvQueue(new Message(message.duplicate(), sid));</span>
+<span class="nc" id="L1239">                }</span>
+<span class="nc" id="L1240">            } catch (Exception e) {</span>
+<span class="nc" id="L1241">                LOG.warn(&quot;Connection broken for id &quot; + sid + &quot;, my id = &quot;</span>
+                         + QuorumCnxManager.this.mySid + &quot;, error = &quot; , e);
+            } finally {
+<span class="nc" id="L1244">                LOG.warn(&quot;Interrupting SendWorker thread from RecvWorker. sid: {}. myId: {}&quot;, sid, QuorumCnxManager.this.mySid);</span>
+<span class="nc" id="L1245">                sw.finish();</span>
+<span class="nc" id="L1246">                closeSocket(sock);</span>
+            }
+<span class="nc" id="L1248">        }</span>
+    }
+
+    /**
+     * Inserts an element in the specified queue. If the Queue is full, this
+     * method removes an element from the head of the Queue and then inserts
+     * the element at the tail. It can happen that the an element is removed
+     * by another thread in {@link SendWorker#processMessage() processMessage}
+     * method before this method attempts to remove an element from the queue.
+     * This will cause {@link ArrayBlockingQueue#remove() remove} to throw an
+     * exception, which is safe to ignore.
+     *
+     * Unlike {@link #addToRecvQueue(Message) addToRecvQueue} this method does
+     * not need to be synchronized since there is only one thread that inserts
+     * an element in the queue and another thread that reads from the queue.
+     *
+     * @param queue
+     *          Reference to the Queue
+     * @param buffer
+     *          Reference to the buffer to be inserted in the queue
+     */
+    private void addToSendQueue(ArrayBlockingQueue&lt;ByteBuffer&gt; queue,
+          ByteBuffer buffer) {
+<span class="nc bnc" id="L1271" title="All 2 branches missed.">        if (queue.remainingCapacity() == 0) {</span>
+            try {
+<span class="nc" id="L1273">                queue.remove();</span>
+<span class="nc" id="L1274">            } catch (NoSuchElementException ne) {</span>
+                // element could be removed by poll()
+<span class="nc" id="L1276">                LOG.debug(&quot;Trying to remove from an empty &quot; +</span>
+                        &quot;Queue. Ignoring exception &quot; + ne);
+<span class="nc" id="L1278">            }</span>
+        }
+        try {
+<span class="nc" id="L1281">            queue.add(buffer);</span>
+<span class="nc" id="L1282">        } catch (IllegalStateException ie) {</span>
+            // This should never happen
+<span class="nc" id="L1284">            LOG.error(&quot;Unable to insert an element in the queue &quot; + ie);</span>
+<span class="nc" id="L1285">        }</span>
+<span class="nc" id="L1286">    }</span>
+
+    /**
+     * Returns true if queue is empty.
+     * @param queue
+     *          Reference to the queue
+     * @return
+     *      true if the specified queue is empty
+     */
+    private boolean isSendQueueEmpty(ArrayBlockingQueue&lt;ByteBuffer&gt; queue) {
+<span class="nc" id="L1296">        return queue.isEmpty();</span>
+    }
+
+    /**
+     * Retrieves and removes buffer at the head of this queue,
+     * waiting up to the specified wait time if necessary for an element to
+     * become available.
+     *
+     * {@link ArrayBlockingQueue#poll(long, java.util.concurrent.TimeUnit)}
+     */
+    private ByteBuffer pollSendQueue(ArrayBlockingQueue&lt;ByteBuffer&gt; queue,
+          long timeout, TimeUnit unit) throws InterruptedException {
+<span class="nc" id="L1308">       return queue.poll(timeout, unit);</span>
+    }
+
+    /**
+     * Inserts an element in the {@link #recvQueue}. If the Queue is full, this
+     * methods removes an element from the head of the Queue and then inserts
+     * the element at the tail of the queue.
+     *
+     * This method is synchronized to achieve fairness between two threads that
+     * are trying to insert an element in the queue. Each thread checks if the
+     * queue is full, then removes the element at the head of the queue, and
+     * then inserts an element at the tail. This three-step process is done to
+     * prevent a thread from blocking while inserting an element in the queue.
+     * If we do not synchronize the call to this method, then a thread can grab
+     * a slot in the queue created by the second thread. This can cause the call
+     * to insert by the second thread to fail.
+     * Note that synchronizing this method does not block another thread
+     * from polling the queue since that synchronization is provided by the
+     * queue itself.
+     *
+     * @param msg
+     *          Reference to the message to be inserted in the queue
+     */
+    public void addToRecvQueue(Message msg) {
+<span class="nc" id="L1332">        synchronized(recvQLock) {</span>
+<span class="nc bnc" id="L1333" title="All 2 branches missed.">            if (recvQueue.remainingCapacity() == 0) {</span>
+                try {
+<span class="nc" id="L1335">                    recvQueue.remove();</span>
+<span class="nc" id="L1336">                } catch (NoSuchElementException ne) {</span>
+                    // element could be removed by poll()
+<span class="nc" id="L1338">                     LOG.debug(&quot;Trying to remove from an empty &quot; +</span>
+                         &quot;recvQueue. Ignoring exception &quot; + ne);
+<span class="nc" id="L1340">                }</span>
+            }
+            try {
+<span class="nc" id="L1343">                recvQueue.add(msg);</span>
+<span class="nc" id="L1344">            } catch (IllegalStateException ie) {</span>
+                // This should never happen
+<span class="nc" id="L1346">                LOG.error(&quot;Unable to insert element in the recvQueue &quot; + ie);</span>
+<span class="nc" id="L1347">            }</span>
+<span class="nc" id="L1348">        }</span>
+<span class="nc" id="L1349">    }</span>
+
+    /**
+     * Retrieves and removes a message at the head of this queue,
+     * waiting up to the specified wait time if necessary for an element to
+     * become available.
+     *
+     * {@link ArrayBlockingQueue#poll(long, java.util.concurrent.TimeUnit)}
+     */
+    public Message pollRecvQueue(long timeout, TimeUnit unit)
+       throws InterruptedException {
+<span class="nc" id="L1360">       return recvQueue.poll(timeout, unit);</span>
+    }
+
+    public boolean connectedToPeer(long peerSid) {
+<span class="nc bnc" id="L1364" title="All 2 branches missed.">        return senderWorkerMap.get(peerSid) != null;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

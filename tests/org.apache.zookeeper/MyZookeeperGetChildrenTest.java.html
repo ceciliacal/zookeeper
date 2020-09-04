@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MyZookeeperGetChildrenTest.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">MyZookeeperGetChildrenTest.java</span></div><h1>MyZookeeperGetChildrenTest.java</h1><pre class="source lang-java linenums">package org.apache.zookeeper;
+
+import org.apache.zookeeper.cli.CliException;
+import org.apache.zookeeper.test.ClientBase;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+
+import static org.junit.Assert.assertEquals;
+
+@RunWith(value = Parameterized.class)
+public class MyZookeeperGetChildrenTest extends ClientBase {
+
+    private ZooKeeper zk;
+
+    private boolean expectedRes;
+    private String path;
+    private boolean watch;
+
+<span class="nc" id="L27">    public MyZookeeperGetChildrenTest(boolean expectedRes, String path, boolean watch){</span>
+
+<span class="nc" id="L29">        this.expectedRes=expectedRes;</span>
+<span class="nc" id="L30">        this.path=path;</span>
+<span class="nc" id="L31">        this.watch=watch;</span>
+
+<span class="nc" id="L33">    }</span>
+
+    @Before
+    public void setup() throws Exception {
+
+<span class="nc" id="L38">        zk = createClient();</span>
+<span class="nc" id="L39">        System.out.println(&quot; \n----STO NEL BEFORE&quot;);</span>
+
+        //creazione znode
+
+<span class="nc" id="L43">        zk.setData(&quot;/&quot;, &quot;myTest&quot;.getBytes(), -1);</span>
+<span class="nc" id="L44">        zk.create(&quot;/path_01&quot;, &quot;myTest&quot;.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                CreateMode.PERSISTENT);
+<span class="nc" id="L46">        zk.create(&quot;/path_01/path_02&quot;, &quot;myTest&quot;.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                CreateMode.PERSISTENT);
+<span class="nc" id="L48">        zk.create(&quot;/path_01/path_02/path_03&quot;, &quot;myTest&quot;.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                CreateMode.PERSISTENT);
+<span class="nc" id="L50">        zk.create(&quot;/path_01/path_04&quot;, &quot;myTest&quot;.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                CreateMode.PERSISTENT);
+<span class="nc" id="L52">        zk.create(&quot;/path_01/path_05&quot;, &quot;myTest&quot;.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                CreateMode.PERSISTENT);
+<span class="nc" id="L54">        zk.create(&quot;/anotherPath_01&quot;, &quot;myTest&quot;.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                CreateMode.PERSISTENT);
+<span class="nc" id="L56">        zk.create(&quot;/anotherPath_01/anotherPath_02&quot;, &quot;myTest&quot;.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                CreateMode.PERSISTENT);
+<span class="nc" id="L58">        zk.create(&quot;/anotherPath_01/anotherPath_03&quot;, &quot;myTest&quot;.getBytes(), ZooDefs.Ids.OPEN_ACL_UNSAFE,</span>
+                CreateMode.PERSISTENT);
+
+<span class="nc" id="L61">    }</span>
+
+    @Parameterized.Parameters
+    public static Collection&lt;?&gt; getParameters(){
+<span class="nc" id="L65">        System.out.println(&quot; \n----STO NEI PARAMETRI&quot;);</span>
+<span class="nc" id="L66">        return Arrays.asList(new Object[][] {</span>
+
+                //expectedRes bool, string path, watch
+<span class="nc" id="L69">                {true, &quot;/anotherPath_01&quot;, false},</span>
+<span class="nc" id="L70">                {false, &quot;/anotherPath01&quot;, false},</span>
+<span class="nc" id="L71">                {true, &quot;/path_01&quot;, true},</span>
+<span class="nc" id="L72">                {false, null, true},</span>
+
+        });
+
+
+    }
+
+    @Test
+    public void testDeleteRecursive() throws IOException, InterruptedException, CliException, KeeperException {
+
+<span class="nc" id="L82">        System.out.println(&quot; \n----STO NEL TEST&quot;);</span>
+
+<span class="nc" id="L84">        boolean res = true;</span>
+<span class="nc" id="L85">        List&lt;String&gt; children = null;</span>
+
+
+<span class="nc" id="L88">        System.out.println(&quot; \n------path: &quot;+path);</span>
+
+        try {
+
+<span class="nc" id="L92">            children = zk.getChildren(path, watch);</span>
+
+<span class="nc" id="L94">        } catch (KeeperException e) {       //path errato</span>
+<span class="nc" id="L95">            System.out.println(&quot; \n-------- STO DENTRO TRY CATCH&quot;);</span>
+<span class="nc" id="L96">            e.printStackTrace();</span>
+<span class="nc" id="L97">        } catch (InterruptedException e) {</span>
+<span class="nc" id="L98">            e.printStackTrace();</span>
+        }
+<span class="nc" id="L100">        catch (IllegalArgumentException e){</span>
+<span class="nc" id="L101">            e.printStackTrace();</span>
+<span class="nc" id="L102">        }</span>
+
+
+<span class="nc bnc" id="L105" title="All 2 branches missed.">        if  (expectedRes){</span>
+
+
+<span class="nc bnc" id="L108" title="All 2 branches missed.">            if (path.equals(&quot;/path_01&quot;)) {</span>
+
+<span class="nc bnc" id="L110" title="All 6 branches missed.">                if ( (children.contains(&quot;path_02&quot;))  &amp;&amp; (children.contains(&quot;path_04&quot;)) &amp;&amp; (children.contains(&quot;path_05&quot;)) ){</span>
+
+<span class="nc" id="L112">                    System.out.println(&quot; \n--------path: &quot;+path+&quot;     children: &quot;+children);</span>
+<span class="nc" id="L113">                    assertEquals(children.size(),3);</span>
+
+                }
+
+            }
+<span class="nc bnc" id="L118" title="All 2 branches missed.">            else if (path.equals(&quot;/anotherPath_01&quot;)) {</span>
+
+<span class="nc bnc" id="L120" title="All 4 branches missed.">                if ( (children.contains(&quot;anotherPath_02&quot;)) &amp;&amp; (children.contains(&quot;anotherPath_03&quot;)) ){</span>
+
+<span class="nc" id="L122">                    System.out.println(&quot; \n--------path: &quot;+path+&quot;     children: &quot;+children);</span>
+<span class="nc" id="L123">                    assertEquals(children.size(),2);</span>
+                }
+
+            }
+
+<span class="nc" id="L128">            ;System.out.println(&quot; \n-------- STO ALLA FINE&quot;);</span>
+<span class="nc" id="L129">            assertEquals(expectedRes,res);</span>
+
+        }
+
+
+<span class="nc" id="L134">    }</span>
+
+    @After
+    public void teardown() {
+<span class="nc bnc" id="L138" title="All 2 branches missed.">        if (zk!=null){</span>
+            try {
+<span class="nc" id="L140">                zk.close();</span>
+<span class="nc" id="L141">            } catch (InterruptedException e) {</span>
+<span class="nc" id="L142">                e.printStackTrace();</span>
+<span class="nc" id="L143">            }</span>
+        }
+<span class="nc" id="L145">    }</span>
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

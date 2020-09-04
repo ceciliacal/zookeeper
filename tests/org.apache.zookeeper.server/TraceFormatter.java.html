@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TraceFormatter.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server</a> &gt; <span class="el_source">TraceFormatter.java</span></div><h1>TraceFormatter.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server;
+
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.text.DateFormat;
+import java.util.Date;
+
+import org.apache.zookeeper.ZooDefs.OpCode;
+
+<span class="nc" id="L30">public class TraceFormatter {</span>
+
+    public static String op2String(int op) {
+<span class="nc bnc" id="L33" title="All 21 branches missed.">        switch (op) {</span>
+        case OpCode.notification:
+<span class="nc" id="L35">            return &quot;notification&quot;;</span>
+        case OpCode.create:
+<span class="nc" id="L37">            return &quot;create&quot;;</span>
+        case OpCode.create2:
+<span class="nc" id="L39">            return &quot;create2&quot;;</span>
+        case OpCode.createTTL:
+<span class="nc" id="L41">            return &quot;createTtl&quot;;</span>
+        case OpCode.createContainer:
+<span class="nc" id="L43">            return &quot;createContainer&quot;;</span>
+        case OpCode.delete:
+<span class="nc" id="L45">            return &quot;delete&quot;;</span>
+        case OpCode.deleteContainer:
+<span class="nc" id="L47">            return &quot;deleteContainer&quot;;</span>
+        case OpCode.exists:
+<span class="nc" id="L49">            return &quot;exists&quot;;</span>
+        case OpCode.getData:
+<span class="nc" id="L51">            return &quot;getDate&quot;;</span>
+        case OpCode.setData:
+<span class="nc" id="L53">            return &quot;setData&quot;;</span>
+        case OpCode.multi:
+<span class="nc" id="L55">            return &quot;multi&quot;;</span>
+        case OpCode.getACL:
+<span class="nc" id="L57">            return &quot;getACL&quot;;</span>
+        case OpCode.setACL:
+<span class="nc" id="L59">            return &quot;setACL&quot;;</span>
+        case OpCode.getChildren:
+<span class="nc" id="L61">            return &quot;getChildren&quot;;</span>
+        case OpCode.getChildren2:
+<span class="nc" id="L63">            return &quot;getChildren2&quot;;</span>
+        case OpCode.ping:
+<span class="nc" id="L65">            return &quot;ping&quot;;</span>
+        case OpCode.createSession:
+<span class="nc" id="L67">            return &quot;createSession&quot;;</span>
+        case OpCode.closeSession:
+<span class="nc" id="L69">            return &quot;closeSession&quot;;</span>
+        case OpCode.error:
+<span class="nc" id="L71">            return &quot;error&quot;;</span>
+        case OpCode.reconfig:
+<span class="nc" id="L73">           return &quot;reconfig&quot;;</span>
+        default:
+<span class="nc" id="L75">            return &quot;unknown &quot; + op;</span>
+        }
+    }
+
+    /**
+     * @param args
+     * @throws IOException
+     */
+    public static void main(String[] args) throws IOException {
+<span class="nc bnc" id="L84" title="All 2 branches missed.">        if (args.length != 1) {</span>
+<span class="nc" id="L85">            System.err.println(&quot;USAGE: TraceFormatter trace_file&quot;);</span>
+<span class="nc" id="L86">            System.exit(2);</span>
+        }
+<span class="nc" id="L88">        FileChannel fc = new FileInputStream(args[0]).getChannel();</span>
+        while (true) {
+<span class="nc" id="L90">            ByteBuffer bb = ByteBuffer.allocate(41);</span>
+<span class="nc" id="L91">            fc.read(bb);</span>
+<span class="nc" id="L92">            bb.flip();</span>
+
+<span class="nc" id="L94">            byte app = bb.get();</span>
+<span class="nc" id="L95">            long time = bb.getLong();</span>
+<span class="nc" id="L96">            long id = bb.getLong();</span>
+<span class="nc" id="L97">            int cxid = bb.getInt();</span>
+<span class="nc" id="L98">            long zxid = bb.getLong();</span>
+<span class="nc" id="L99">            int txnType = bb.getInt();</span>
+<span class="nc" id="L100">            int type = bb.getInt();</span>
+<span class="nc" id="L101">            int len = bb.getInt();</span>
+<span class="nc" id="L102">            bb = ByteBuffer.allocate(len);</span>
+<span class="nc" id="L103">            fc.read(bb);</span>
+<span class="nc" id="L104">            bb.flip();</span>
+<span class="nc" id="L105">            String path = &quot;n/a&quot;;</span>
+<span class="nc bnc" id="L106" title="All 2 branches missed.">            if (bb.remaining() &gt; 0) {</span>
+<span class="nc bnc" id="L107" title="All 2 branches missed.">                if (type != OpCode.createSession) {</span>
+<span class="nc" id="L108">                    int pathLen = bb.getInt();</span>
+<span class="nc" id="L109">                    byte b[] = new byte[pathLen];</span>
+<span class="nc" id="L110">                    bb.get(b);</span>
+<span class="nc" id="L111">                    path = new String(b);</span>
+                }
+            }
+<span class="nc" id="L114">            System.out.println(DateFormat.getDateTimeInstance(DateFormat.SHORT,</span>
+<span class="nc" id="L115">                    DateFormat.LONG).format(new Date(time))</span>
+                    + &quot;: &quot;
+                    + (char) app
+                    + &quot; id=0x&quot;
+<span class="nc" id="L119">                    + Long.toHexString(id)</span>
+                    + &quot; cxid=&quot;
+                    + cxid
+                    + &quot; op=&quot;
+<span class="nc" id="L123">                    + op2String(type)</span>
+                    + &quot; zxid=0x&quot;
+<span class="nc" id="L125">                    + Long.toHexString(zxid)</span>
+                    + &quot; txnType=&quot;
+                    + txnType
+                    + &quot; len=&quot;
+                    + len + &quot; path=&quot; + path);
+<span class="nc" id="L130">        }</span>
+    }
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

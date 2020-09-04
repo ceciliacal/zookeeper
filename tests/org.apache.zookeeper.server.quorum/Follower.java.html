@@ -1,0 +1,205 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>Follower.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">Follower.java</span></div><h1>Follower.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.quorum;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+
+import org.apache.jute.Record;
+import org.apache.zookeeper.ZooDefs.OpCode;
+import org.apache.zookeeper.common.Time;
+import org.apache.zookeeper.server.Request;
+import org.apache.zookeeper.server.quorum.flexible.QuorumVerifier;
+import org.apache.zookeeper.server.quorum.QuorumPeer.QuorumServer;
+import org.apache.zookeeper.server.util.SerializeUtils;
+import org.apache.zookeeper.server.util.ZxidUtils;
+import org.apache.zookeeper.txn.SetDataTxn;
+import org.apache.zookeeper.txn.TxnHeader;
+/**
+ * This class has the control logic for the Follower.
+ */
+public class Follower extends Learner{
+
+    private long lastQueued;
+    // This is the same object as this.zk, but we cache the downcast op
+    final FollowerZooKeeperServer fzk;
+    
+<span class="nc" id="L44">    Follower(QuorumPeer self,FollowerZooKeeperServer zk) {</span>
+<span class="nc" id="L45">        this.self = self;</span>
+<span class="nc" id="L46">        this.zk=zk;</span>
+<span class="nc" id="L47">        this.fzk = zk;</span>
+<span class="nc" id="L48">    }</span>
+
+    @Override
+    public String toString() {
+<span class="nc" id="L52">        StringBuilder sb = new StringBuilder();</span>
+<span class="nc" id="L53">        sb.append(&quot;Follower &quot;).append(sock);</span>
+<span class="nc" id="L54">        sb.append(&quot; lastQueuedZxid:&quot;).append(lastQueued);</span>
+<span class="nc" id="L55">        sb.append(&quot; pendingRevalidationCount:&quot;)</span>
+<span class="nc" id="L56">            .append(pendingRevalidations.size());</span>
+<span class="nc" id="L57">        return sb.toString();</span>
+    }
+
+    /**
+     * the main method called by the follower to follow the leader
+     *
+     * @throws InterruptedException
+     */
+    void followLeader() throws InterruptedException {
+<span class="nc" id="L66">        self.end_fle = Time.currentElapsedTime();</span>
+<span class="nc" id="L67">        long electionTimeTaken = self.end_fle - self.start_fle;</span>
+<span class="nc" id="L68">        self.setElectionTimeTaken(electionTimeTaken);</span>
+<span class="nc" id="L69">        LOG.info(&quot;FOLLOWING - LEADER ELECTION TOOK - {} {}&quot;, electionTimeTaken,</span>
+                QuorumPeer.FLE_TIME_UNIT);
+<span class="nc" id="L71">        self.start_fle = 0;</span>
+<span class="nc" id="L72">        self.end_fle = 0;</span>
+<span class="nc" id="L73">        fzk.registerJMX(new FollowerBean(this, zk), self.jmxLocalPeerBean);</span>
+        try {
+<span class="nc" id="L75">            QuorumServer leaderServer = findLeader();            </span>
+            try {
+<span class="nc" id="L77">                connectToLeader(leaderServer.addr, leaderServer.hostname);</span>
+<span class="nc" id="L78">                long newEpochZxid = registerWithLeader(Leader.FOLLOWERINFO);</span>
+<span class="nc bnc" id="L79" title="All 2 branches missed.">                if (self.isReconfigStateChange())</span>
+<span class="nc" id="L80">                   throw new Exception(&quot;learned about role change&quot;);</span>
+                //check to see if the leader zxid is lower than ours
+                //this should never happen but is just a safety check
+<span class="nc" id="L83">                long newEpoch = ZxidUtils.getEpochFromZxid(newEpochZxid);</span>
+<span class="nc bnc" id="L84" title="All 2 branches missed.">                if (newEpoch &lt; self.getAcceptedEpoch()) {</span>
+<span class="nc" id="L85">                    LOG.error(&quot;Proposed leader epoch &quot; + ZxidUtils.zxidToString(newEpochZxid)</span>
+<span class="nc" id="L86">                            + &quot; is less than our accepted epoch &quot; + ZxidUtils.zxidToString(self.getAcceptedEpoch()));</span>
+<span class="nc" id="L87">                    throw new IOException(&quot;Error: Epoch of leader is lower&quot;);</span>
+                }
+<span class="nc" id="L89">                syncWithLeader(newEpochZxid);                </span>
+<span class="nc" id="L90">                QuorumPacket qp = new QuorumPacket();</span>
+<span class="nc bnc" id="L91" title="All 2 branches missed.">                while (this.isRunning()) {</span>
+<span class="nc" id="L92">                    readPacket(qp);</span>
+<span class="nc" id="L93">                    processPacket(qp);</span>
+                }
+<span class="nc" id="L95">            } catch (Exception e) {</span>
+<span class="nc" id="L96">                LOG.warn(&quot;Exception when following the leader&quot;, e);</span>
+                try {
+<span class="nc" id="L98">                    sock.close();</span>
+<span class="nc" id="L99">                } catch (IOException e1) {</span>
+<span class="nc" id="L100">                    e1.printStackTrace();</span>
+<span class="nc" id="L101">                }</span>
+    
+                // clear pending revalidations
+<span class="nc" id="L104">                pendingRevalidations.clear();</span>
+<span class="nc" id="L105">            }</span>
+        } finally {
+<span class="nc" id="L107">            zk.unregisterJMX((Learner)this);</span>
+        }
+<span class="nc" id="L109">    }</span>
+
+    /**
+     * Examine the packet received in qp and dispatch based on its contents.
+     * @param qp
+     * @throws IOException
+     */
+    protected void processPacket(QuorumPacket qp) throws Exception{
+<span class="nc bnc" id="L117" title="All 8 branches missed.">        switch (qp.getType()) {</span>
+        case Leader.PING:            
+<span class="nc" id="L119">            ping(qp);            </span>
+<span class="nc" id="L120">            break;</span>
+        case Leader.PROPOSAL:           
+<span class="nc" id="L122">            TxnHeader hdr = new TxnHeader();</span>
+<span class="nc" id="L123">            Record txn = SerializeUtils.deserializeTxn(qp.getData(), hdr);</span>
+<span class="nc bnc" id="L124" title="All 2 branches missed.">            if (hdr.getZxid() != lastQueued + 1) {</span>
+<span class="nc" id="L125">                LOG.warn(&quot;Got zxid 0x&quot;</span>
+<span class="nc" id="L126">                        + Long.toHexString(hdr.getZxid())</span>
+                        + &quot; expected 0x&quot;
+<span class="nc" id="L128">                        + Long.toHexString(lastQueued + 1));</span>
+            }
+<span class="nc" id="L130">            lastQueued = hdr.getZxid();</span>
+            
+<span class="nc bnc" id="L132" title="All 2 branches missed.">            if (hdr.getType() == OpCode.reconfig){</span>
+<span class="nc" id="L133">               SetDataTxn setDataTxn = (SetDataTxn) txn;       </span>
+<span class="nc" id="L134">               QuorumVerifier qv = self.configFromString(new String(setDataTxn.getData()));</span>
+<span class="nc" id="L135">               self.setLastSeenQuorumVerifier(qv, true);                               </span>
+            }
+            
+<span class="nc" id="L138">            fzk.logRequest(hdr, txn);</span>
+<span class="nc" id="L139">            break;</span>
+        case Leader.COMMIT:
+<span class="nc" id="L141">            fzk.commit(qp.getZxid());</span>
+<span class="nc" id="L142">            break;</span>
+            
+        case Leader.COMMITANDACTIVATE:
+           // get the new configuration from the request
+<span class="nc" id="L146">           Request request = fzk.pendingTxns.element();</span>
+<span class="nc" id="L147">           SetDataTxn setDataTxn = (SetDataTxn) request.getTxn();                                                                                                      </span>
+<span class="nc" id="L148">           QuorumVerifier qv = self.configFromString(new String(setDataTxn.getData()));                                </span>
+ 
+           // get new designated leader from (current) leader's message
+<span class="nc" id="L151">           ByteBuffer buffer = ByteBuffer.wrap(qp.getData());    </span>
+<span class="nc" id="L152">           long suggestedLeaderId = buffer.getLong();</span>
+<span class="nc" id="L153">            boolean majorChange = </span>
+<span class="nc" id="L154">                   self.processReconfig(qv, suggestedLeaderId, qp.getZxid(), true);</span>
+           // commit (writes the new config to ZK tree (/zookeeper/config)                     
+<span class="nc" id="L156">           fzk.commit(qp.getZxid());</span>
+<span class="nc bnc" id="L157" title="All 2 branches missed.">            if (majorChange) {</span>
+<span class="nc" id="L158">               throw new Exception(&quot;changes proposed in reconfig&quot;);</span>
+           }
+           break;
+        case Leader.UPTODATE:
+<span class="nc" id="L162">            LOG.error(&quot;Received an UPTODATE message after Follower started&quot;);</span>
+<span class="nc" id="L163">            break;</span>
+        case Leader.REVALIDATE:
+<span class="nc" id="L165">            revalidate(qp);</span>
+<span class="nc" id="L166">            break;</span>
+        case Leader.SYNC:
+<span class="nc" id="L168">            fzk.sync();</span>
+<span class="nc" id="L169">            break;</span>
+        default:
+<span class="nc" id="L171">            LOG.warn(&quot;Unknown packet type: {}&quot;, LearnerHandler.packetToString(qp));</span>
+            break;
+        }
+<span class="nc" id="L174">    }</span>
+
+    /**
+     * The zxid of the last operation seen
+     * @return zxid
+     */
+    public long getZxid() {
+        try {
+<span class="nc" id="L182">            synchronized (fzk) {</span>
+<span class="nc" id="L183">                return fzk.getZxid();</span>
+            }
+<span class="nc" id="L185">        } catch (NullPointerException e) {</span>
+<span class="nc" id="L186">            LOG.warn(&quot;error getting zxid&quot;, e);</span>
+        }
+<span class="nc" id="L188">        return -1;</span>
+    }
+    
+    /**
+     * The zxid of the last operation queued
+     * @return zxid
+     */
+    protected long getLastQueued() {
+<span class="nc" id="L196">        return lastQueued;</span>
+    }
+
+    @Override
+    public void shutdown() {    
+<span class="nc" id="L201">        LOG.info(&quot;shutdown called&quot;, new Exception(&quot;shutdown Follower&quot;));</span>
+<span class="nc" id="L202">        super.shutdown();</span>
+<span class="nc" id="L203">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

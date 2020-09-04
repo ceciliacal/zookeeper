@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LearnerSnapshotThrottler.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">LearnerSnapshotThrottler.java</span></div><h1>LearnerSnapshotThrottler.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.quorum;
+
+import org.apache.zookeeper.common.Time;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Utility class to limit the number of concurrent snapshots from a leader to
+ * observers and followers.  {@link LearnerHandler} objects should call
+ * {@link #beginSnapshot(boolean)} before sending a snapshot and
+ * {@link #endSnapshot()} after finishing, successfully or not.
+ *
+ */
+public class LearnerSnapshotThrottler {
+<span class="nc" id="L33">    private static final Logger LOG =</span>
+<span class="nc" id="L34">            LoggerFactory.getLogger(LearnerSnapshotThrottler.class);</span>
+
+<span class="nc" id="L36">    private final Object snapCountSyncObject = new Object();</span>
+    private int snapsInProgress;
+
+    private final int maxConcurrentSnapshots;
+    private final long timeoutMillis;
+
+    /**
+     * Constructs a new instance limiting the concurrent number of snapshots to
+     * &lt;code&gt;maxConcurrentSnapshots&lt;/code&gt;.
+     * @param maxConcurrentSnapshots maximum concurrent number of snapshots
+     * @param timeoutMillis milliseconds to attempt to wait when attempting to
+     *                      begin a snapshot that would otherwise be throttled;
+     *                      a value of zero means no waiting will be attempted
+     * @throws java.lang.IllegalArgumentException when &lt;code&gt;timeoutMillis&lt;/code&gt;
+     *                                            is negative or
+     *                                            &lt;code&gt;maxConcurrentSnaphots&lt;/code&gt;
+     *                                            is less than 1
+     */
+    public LearnerSnapshotThrottler(int maxConcurrentSnapshots,
+<span class="nc" id="L55">                                    long timeoutMillis) {</span>
+<span class="nc bnc" id="L56" title="All 2 branches missed.">        if (timeoutMillis &lt; 0) {</span>
+<span class="nc" id="L57">            String errorMsg = &quot;timeout cannot be negative, was &quot; + timeoutMillis;</span>
+<span class="nc" id="L58">            throw new IllegalArgumentException(errorMsg);</span>
+        }
+<span class="nc bnc" id="L60" title="All 2 branches missed.">        if (maxConcurrentSnapshots &lt;= 0) {</span>
+<span class="nc" id="L61">            String errorMsg = &quot;maxConcurrentSnapshots must be positive, was &quot; +</span>
+                    maxConcurrentSnapshots;
+<span class="nc" id="L63">            throw new IllegalArgumentException(errorMsg);</span>
+        }
+
+<span class="nc" id="L66">        this.maxConcurrentSnapshots = maxConcurrentSnapshots;</span>
+<span class="nc" id="L67">        this.timeoutMillis = timeoutMillis;</span>
+
+<span class="nc" id="L69">        synchronized (snapCountSyncObject) {</span>
+<span class="nc" id="L70">            snapsInProgress = 0;</span>
+<span class="nc" id="L71">        }</span>
+<span class="nc" id="L72">    }</span>
+
+    public LearnerSnapshotThrottler(int maxConcurrentSnapshots) {
+<span class="nc" id="L75">        this(maxConcurrentSnapshots, 0);</span>
+<span class="nc" id="L76">    }</span>
+
+    /**
+     * Indicates that a new snapshot is about to be sent.
+     * 
+     * @param essential if &lt;code&gt;true&lt;/code&gt;, do not throw an exception even
+     *                  if throttling limit is reached
+     * @throws SnapshotThrottleException if throttling limit has been exceeded
+     *                                   and &lt;code&gt;essential == false&lt;/code&gt;,
+     *                                   even after waiting for the timeout
+     *                                   period, if any
+     * @throws InterruptedException if thread is interrupted while trying
+     *                              to start a snapshot; cannot happen if
+     *                              timeout is zero
+     */
+    public LearnerSnapshot beginSnapshot(boolean essential)
+            throws SnapshotThrottleException, InterruptedException {
+        int snapshotNumber;
+
+<span class="nc" id="L95">        synchronized (snapCountSyncObject) {</span>
+<span class="nc bnc" id="L96" title="All 6 branches missed.">            if (!essential</span>
+                &amp;&amp; timeoutMillis &gt; 0
+                &amp;&amp; snapsInProgress &gt;= maxConcurrentSnapshots) {
+<span class="nc" id="L99">                long timestamp = Time.currentElapsedTime();</span>
+                do {
+<span class="nc" id="L101">                    snapCountSyncObject.wait(timeoutMillis);</span>
+<span class="nc bnc" id="L102" title="All 2 branches missed.">                } while (snapsInProgress &gt;= maxConcurrentSnapshots</span>
+<span class="nc bnc" id="L103" title="All 2 branches missed.">                         &amp;&amp; timestamp + timeoutMillis &lt; Time.currentElapsedTime());</span>
+            }
+
+<span class="nc bnc" id="L106" title="All 4 branches missed.">            if (essential || snapsInProgress &lt; maxConcurrentSnapshots) {</span>
+<span class="nc" id="L107">                snapsInProgress++;</span>
+<span class="nc" id="L108">                snapshotNumber = snapsInProgress;</span>
+            } else {
+<span class="nc" id="L110">                throw new SnapshotThrottleException(snapsInProgress + 1,</span>
+                                                    maxConcurrentSnapshots);
+            }
+<span class="nc" id="L113">        }</span>
+
+<span class="nc" id="L115">        return new LearnerSnapshot(this, snapshotNumber, essential);</span>
+    }
+
+    /**
+     * Indicates that a snapshot has been completed.
+     */
+    public void endSnapshot() {
+        int newCount;
+<span class="nc" id="L123">        synchronized (snapCountSyncObject) {</span>
+<span class="nc" id="L124">            snapsInProgress--;</span>
+<span class="nc" id="L125">            newCount = snapsInProgress;</span>
+<span class="nc" id="L126">            snapCountSyncObject.notify();</span>
+<span class="nc" id="L127">        }</span>
+
+<span class="nc bnc" id="L129" title="All 2 branches missed.">        if (newCount &lt; 0) {</span>
+<span class="nc" id="L130">            String errorMsg =</span>
+                    &quot;endSnapshot() called incorrectly; current snapshot count is &quot;
+                            + newCount;
+<span class="nc" id="L133">            LOG.error(errorMsg);</span>
+        }
+<span class="nc" id="L135">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

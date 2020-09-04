@@ -1,0 +1,551 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FileTxnSnapLog.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.persistence</a> &gt; <span class="el_source">FileTxnSnapLog.java</span></div><h1>FileTxnSnapLog.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.persistence;
+
+import java.io.File;
+import java.io.FilenameFilter;
+import java.io.IOException;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.apache.jute.Record;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.KeeperException.Code;
+import org.apache.zookeeper.ZooDefs.OpCode;
+import org.apache.zookeeper.server.DataTree;
+import org.apache.zookeeper.server.DataTree.ProcessTxnResult;
+import org.apache.zookeeper.server.Request;
+import org.apache.zookeeper.server.ServerStats;
+import org.apache.zookeeper.server.ZooTrace;
+import org.apache.zookeeper.server.persistence.TxnLog.TxnIterator;
+import org.apache.zookeeper.txn.CreateSessionTxn;
+import org.apache.zookeeper.txn.TxnHeader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This is a helper class
+ * above the implementations
+ * of txnlog and snapshot
+ * classes
+ */
+public class FileTxnSnapLog {
+    //the direcotry containing the
+    //the transaction logs
+    private final File dataDir;
+    //the directory containing the
+    //the snapshot directory
+    private final File snapDir;
+    private TxnLog txnLog;
+    private SnapShot snapLog;
+    private final boolean trustEmptySnapshot;
+    public final static int VERSION = 2;
+    public final static String version = &quot;version-&quot;;
+
+<span class="fc" id="L62">    private static final Logger LOG = LoggerFactory.getLogger(FileTxnSnapLog.class);</span>
+
+    public static final String ZOOKEEPER_DATADIR_AUTOCREATE =
+            &quot;zookeeper.datadir.autocreate&quot;;
+
+    public static final String ZOOKEEPER_DATADIR_AUTOCREATE_DEFAULT = &quot;true&quot;;
+
+    public static final String ZOOKEEPER_SNAPSHOT_TRUST_EMPTY = &quot;zookeeper.snapshot.trust.empty&quot;;
+
+    private static final String EMPTY_SNAPSHOT_WARNING = &quot;No snapshot found, but there are log entries. &quot;;
+
+    /**
+     * This listener helps
+     * the external apis calling
+     * restore to gather information
+     * while the data is being
+     * restored.
+     */
+    public interface PlayBackListener {
+        void onTxnLoaded(TxnHeader hdr, Record rec);
+    }
+
+    /**
+     * Finalizing restore of data tree through
+     * a set of operations (replaying transaction logs,
+     * calculating data tree digests, and so on.).
+     */
+    private interface RestoreFinalizer {
+        /**
+         * @return the highest zxid of restored data tree.
+         */
+        long run() throws IOException;
+    }
+
+    /**
+     * the constructor which takes the datadir and
+     * snapdir.
+     * @param dataDir the transaction directory
+     * @param snapDir the snapshot directory
+     */
+<span class="fc" id="L102">    public FileTxnSnapLog(File dataDir, File snapDir) throws IOException {</span>
+<span class="fc" id="L103">        LOG.debug(&quot;Opening datadir:{} snapDir:{}&quot;, dataDir, snapDir);</span>
+
+<span class="fc" id="L105">        this.dataDir = new File(dataDir, version + VERSION);</span>
+<span class="fc" id="L106">        this.snapDir = new File(snapDir, version + VERSION);</span>
+
+        // by default create snap/log dirs, but otherwise complain instead
+        // See ZOOKEEPER-1161 for more details
+<span class="fc" id="L110">        boolean enableAutocreate = Boolean.valueOf(</span>
+<span class="fc" id="L111">                System.getProperty(ZOOKEEPER_DATADIR_AUTOCREATE,</span>
+                        ZOOKEEPER_DATADIR_AUTOCREATE_DEFAULT));
+
+<span class="fc" id="L114">        trustEmptySnapshot = Boolean.getBoolean(ZOOKEEPER_SNAPSHOT_TRUST_EMPTY);</span>
+<span class="fc" id="L115">        LOG.info(ZOOKEEPER_SNAPSHOT_TRUST_EMPTY + &quot; : &quot; + trustEmptySnapshot);</span>
+
+<span class="pc bpc" id="L117" title="1 of 2 branches missed.">        if (!this.dataDir.exists()) {</span>
+<span class="pc bpc" id="L118" title="1 of 2 branches missed.">            if (!enableAutocreate) {</span>
+<span class="nc" id="L119">                throw new DatadirException(&quot;Missing data directory &quot;</span>
+                        + this.dataDir
+                        + &quot;, automatic data directory creation is disabled (&quot;
+                        + ZOOKEEPER_DATADIR_AUTOCREATE
+                        + &quot; is false). Please create this directory manually.&quot;);
+            }
+
+<span class="pc bpc" id="L126" title="3 of 4 branches missed.">            if (!this.dataDir.mkdirs() &amp;&amp; !this.dataDir.exists()) {</span>
+<span class="nc" id="L127">                throw new DatadirException(&quot;Unable to create data directory &quot;</span>
+                        + this.dataDir);
+            }
+        }
+<span class="pc bpc" id="L131" title="1 of 2 branches missed.">        if (!this.dataDir.canWrite()) {</span>
+<span class="nc" id="L132">            throw new DatadirException(&quot;Cannot write to data directory &quot; + this.dataDir);</span>
+        }
+
+<span class="pc bpc" id="L135" title="1 of 2 branches missed.">        if (!this.snapDir.exists()) {</span>
+            // by default create this directory, but otherwise complain instead
+            // See ZOOKEEPER-1161 for more details
+<span class="nc bnc" id="L138" title="All 2 branches missed.">            if (!enableAutocreate) {</span>
+<span class="nc" id="L139">                throw new DatadirException(&quot;Missing snap directory &quot;</span>
+                        + this.snapDir
+                        + &quot;, automatic data directory creation is disabled (&quot;
+                        + ZOOKEEPER_DATADIR_AUTOCREATE
+                        + &quot; is false). Please create this directory manually.&quot;);
+            }
+
+<span class="nc bnc" id="L146" title="All 4 branches missed.">            if (!this.snapDir.mkdirs() &amp;&amp; !this.snapDir.exists()) {</span>
+<span class="nc" id="L147">                throw new DatadirException(&quot;Unable to create snap directory &quot;</span>
+                        + this.snapDir);
+            }
+        }
+<span class="pc bpc" id="L151" title="1 of 2 branches missed.">        if (!this.snapDir.canWrite()) {</span>
+<span class="nc" id="L152">            throw new DatadirException(&quot;Cannot write to snap directory &quot; + this.snapDir);</span>
+        }
+
+        // check content of transaction log and snapshot dirs if they are two different directories
+        // See ZOOKEEPER-2967 for more details
+<span class="pc bpc" id="L157" title="1 of 2 branches missed.">        if(!this.dataDir.getPath().equals(this.snapDir.getPath())){</span>
+<span class="nc" id="L158">            checkLogDir();</span>
+<span class="nc" id="L159">            checkSnapDir();</span>
+        }
+
+<span class="fc" id="L162">        txnLog = new FileTxnLog(this.dataDir);</span>
+<span class="fc" id="L163">        snapLog = new FileSnap(this.snapDir);</span>
+<span class="fc" id="L164">    }</span>
+
+    public void setServerStats(ServerStats serverStats) {
+<span class="fc" id="L167">        txnLog.setServerStats(serverStats);</span>
+<span class="fc" id="L168">    }</span>
+
+    private void checkLogDir() throws LogDirContentCheckException {
+<span class="nc" id="L171">        File[] files = this.dataDir.listFiles(new FilenameFilter() {</span>
+            @Override
+            public boolean accept(File dir, String name) {
+<span class="nc" id="L174">                return Util.isSnapshotFileName(name);</span>
+            }
+        });
+<span class="nc bnc" id="L177" title="All 4 branches missed.">        if (files != null &amp;&amp; files.length &gt; 0) {</span>
+<span class="nc" id="L178">            throw new LogDirContentCheckException(&quot;Log directory has snapshot files. Check if dataLogDir and dataDir configuration is correct.&quot;);</span>
+        }
+<span class="nc" id="L180">    }</span>
+
+    private void checkSnapDir() throws SnapDirContentCheckException {
+<span class="nc" id="L183">        File[] files = this.snapDir.listFiles(new FilenameFilter() {</span>
+            @Override
+            public boolean accept(File dir, String name) {
+<span class="nc" id="L186">                return Util.isLogFileName(name);</span>
+            }
+        });
+<span class="nc bnc" id="L189" title="All 4 branches missed.">        if (files != null &amp;&amp; files.length &gt; 0) {</span>
+<span class="nc" id="L190">            throw new SnapDirContentCheckException(&quot;Snapshot directory has log files. Check if dataLogDir and dataDir configuration is correct.&quot;);</span>
+        }
+<span class="nc" id="L192">    }</span>
+
+    /**
+     * get the datadir used by this filetxn
+     * snap log
+     * @return the data dir
+     */
+    public File getDataDir() {
+<span class="fc" id="L200">        return this.dataDir;</span>
+    }
+
+    /**
+     * get the snap dir used by this
+     * filetxn snap log
+     * @return the snap dir
+     */
+    public File getSnapDir() {
+<span class="fc" id="L209">        return this.snapDir;</span>
+    }
+
+    /**
+     * this function restores the server
+     * database after reading from the
+     * snapshots and transaction logs
+     * @param dt the datatree to be restored
+     * @param sessions the sessions to be restored
+     * @param listener the playback listener to run on the
+     * database restoration
+     * @return the highest zxid restored
+     * @throws IOException
+     */
+    public long restore(DataTree dt, Map&lt;Long, Integer&gt; sessions,
+                        PlayBackListener listener) throws IOException {
+<span class="fc" id="L225">        long deserializeResult = snapLog.deserialize(dt, sessions);</span>
+<span class="fc" id="L226">        FileTxnLog txnLog = new FileTxnLog(dataDir);</span>
+
+<span class="fc" id="L228">        RestoreFinalizer finalizer = () -&gt; {</span>
+<span class="nc" id="L229">            long highestZxid = fastForwardFromEdits(dt, sessions, listener);</span>
+<span class="nc" id="L230">            return highestZxid;</span>
+        };
+
+<span class="pc bpc" id="L233" title="1 of 2 branches missed.">        if (-1L == deserializeResult) {</span>
+            /* this means that we couldn't find any snapshot, so we need to
+             * initialize an empty database (reported in ZOOKEEPER-2325) */
+<span class="pc bpc" id="L236" title="1 of 2 branches missed.">            if (txnLog.getLastLoggedZxid() != -1) {</span>
+                // ZOOKEEPER-3056: provides an escape hatch for users upgrading
+                // from old versions of zookeeper (3.4.x, pre 3.5.3).
+<span class="nc bnc" id="L239" title="All 2 branches missed.">                if (!trustEmptySnapshot) {</span>
+<span class="nc" id="L240">                    throw new IOException(EMPTY_SNAPSHOT_WARNING + &quot;Something is broken!&quot;);</span>
+                } else {
+<span class="nc" id="L242">                    LOG.warn(&quot;{}This should only be allowed during upgrading.&quot;, EMPTY_SNAPSHOT_WARNING);</span>
+<span class="nc" id="L243">                    return finalizer.run();</span>
+                }
+            }
+            /* TODO: (br33d) we should either put a ConcurrentHashMap on restore()
+             *       or use Map on save() */
+<span class="fc" id="L248">            save(dt, (ConcurrentHashMap&lt;Long, Integer&gt;)sessions);</span>
+            /* return a zxid of zero, since we the database is empty */
+<span class="fc" id="L250">            return 0;</span>
+        }
+
+<span class="nc" id="L253">        return finalizer.run();</span>
+    }
+
+    /**
+     * This function will fast forward the server database to have the latest
+     * transactions in it.  This is the same as restore, but only reads from
+     * the transaction logs and not restores from a snapshot.
+     * @param dt the datatree to write transactions to.
+     * @param sessions the sessions to be restored.
+     * @param listener the playback listener to run on the
+     * database transactions.
+     * @return the highest zxid restored.
+     * @throws IOException
+     */
+    public long fastForwardFromEdits(DataTree dt, Map&lt;Long, Integer&gt; sessions,
+                                     PlayBackListener listener) throws IOException {
+<span class="fc" id="L269">        TxnIterator itr = txnLog.read(dt.lastProcessedZxid+1);</span>
+<span class="fc" id="L270">        long highestZxid = dt.lastProcessedZxid;</span>
+        TxnHeader hdr;
+        try {
+            while (true) {
+                // iterator points to
+                // the first valid txn when initialized
+<span class="fc" id="L276">                hdr = itr.getHeader();</span>
+<span class="pc bpc" id="L277" title="1 of 2 branches missed.">                if (hdr == null) {</span>
+                    //empty logs
+<span class="fc" id="L279">                    return dt.lastProcessedZxid;</span>
+                }
+<span class="nc bnc" id="L281" title="All 4 branches missed.">                if (hdr.getZxid() &lt; highestZxid &amp;&amp; highestZxid != 0) {</span>
+<span class="nc" id="L282">                    LOG.error(&quot;{}(highestZxid) &gt; {}(next log) for type {}&quot;,</span>
+<span class="nc" id="L283">                            highestZxid, hdr.getZxid(), hdr.getType());</span>
+                } else {
+<span class="nc" id="L285">                    highestZxid = hdr.getZxid();</span>
+                }
+                try {
+<span class="nc" id="L288">                    processTransaction(hdr,dt,sessions, itr.getTxn());</span>
+<span class="nc" id="L289">                } catch(KeeperException.NoNodeException e) {</span>
+<span class="nc" id="L290">                   throw new IOException(&quot;Failed to process transaction type: &quot; +</span>
+<span class="nc" id="L291">                         hdr.getType() + &quot; error: &quot; + e.getMessage(), e);</span>
+<span class="nc" id="L292">                }</span>
+<span class="nc" id="L293">                listener.onTxnLoaded(hdr, itr.getTxn());</span>
+<span class="nc bnc" id="L294" title="All 2 branches missed.">                if (!itr.next())</span>
+<span class="nc" id="L295">                    break;</span>
+            }
+        } finally {
+<span class="pc bpc" id="L298" title="1 of 2 branches missed.">            if (itr != null) {</span>
+<span class="fc" id="L299">                itr.close();</span>
+            }
+        }
+<span class="nc" id="L302">        return highestZxid;</span>
+    }
+
+    /**
+     * Get TxnIterator for iterating through txnlog starting at a given zxid
+     *
+     * @param zxid starting zxid
+     * @return TxnIterator
+     * @throws IOException
+     */
+    public TxnIterator readTxnLog(long zxid) throws IOException {
+<span class="nc" id="L313">        return readTxnLog(zxid, true);</span>
+    }
+
+    /**
+     * Get TxnIterator for iterating through txnlog starting at a given zxid
+     *
+     * @param zxid starting zxid
+     * @param fastForward true if the iterator should be fast forwarded to point
+     *        to the txn of a given zxid, else the iterator will point to the
+     *        starting txn of a txnlog that may contain txn of a given zxid
+     * @return TxnIterator
+     * @throws IOException
+     */
+    public TxnIterator readTxnLog(long zxid, boolean fastForward)
+            throws IOException {
+<span class="nc" id="L328">        FileTxnLog txnLog = new FileTxnLog(dataDir);</span>
+<span class="nc" id="L329">        return txnLog.read(zxid, fastForward);</span>
+    }
+    
+    /**
+     * process the transaction on the datatree
+     * @param hdr the hdr of the transaction
+     * @param dt the datatree to apply transaction to
+     * @param sessions the sessions to be restored
+     * @param txn the transaction to be applied
+     */
+    public void processTransaction(TxnHeader hdr,DataTree dt,
+            Map&lt;Long, Integer&gt; sessions, Record txn)
+        throws KeeperException.NoNodeException {
+        ProcessTxnResult rc;
+<span class="nc bnc" id="L343" title="All 3 branches missed.">        switch (hdr.getType()) {</span>
+        case OpCode.createSession:
+<span class="nc" id="L345">            sessions.put(hdr.getClientId(),</span>
+<span class="nc" id="L346">                    ((CreateSessionTxn) txn).getTimeOut());</span>
+<span class="nc bnc" id="L347" title="All 2 branches missed.">            if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L348">                ZooTrace.logTraceMessage(LOG,ZooTrace.SESSION_TRACE_MASK,</span>
+                        &quot;playLog --- create session in log: 0x&quot;
+<span class="nc" id="L350">                                + Long.toHexString(hdr.getClientId())</span>
+                                + &quot; with timeout: &quot;
+<span class="nc" id="L352">                                + ((CreateSessionTxn) txn).getTimeOut());</span>
+            }
+            // give dataTree a chance to sync its lastProcessedZxid
+<span class="nc" id="L355">            rc = dt.processTxn(hdr, txn);</span>
+<span class="nc" id="L356">            break;</span>
+        case OpCode.closeSession:
+<span class="nc" id="L358">            sessions.remove(hdr.getClientId());</span>
+<span class="nc bnc" id="L359" title="All 2 branches missed.">            if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L360">                ZooTrace.logTraceMessage(LOG,ZooTrace.SESSION_TRACE_MASK,</span>
+                        &quot;playLog --- close session in log: 0x&quot;
+<span class="nc" id="L362">                                + Long.toHexString(hdr.getClientId()));</span>
+            }
+<span class="nc" id="L364">            rc = dt.processTxn(hdr, txn);</span>
+<span class="nc" id="L365">            break;</span>
+        default:
+<span class="nc" id="L367">            rc = dt.processTxn(hdr, txn);</span>
+        }
+
+        /**
+         * Snapshots are lazily created. So when a snapshot is in progress,
+         * there is a chance for later transactions to make into the
+         * snapshot. Then when the snapshot is restored, NONODE/NODEEXISTS
+         * errors could occur. It should be safe to ignore these.
+         */
+<span class="nc bnc" id="L376" title="All 2 branches missed.">        if (rc.err != Code.OK.intValue()) {</span>
+<span class="nc" id="L377">            LOG.debug(</span>
+                    &quot;Ignoring processTxn failure hdr: {}, error: {}, path: {}&quot;,
+<span class="nc" id="L379">                    hdr.getType(), rc.err, rc.path);</span>
+        }
+<span class="nc" id="L381">    }</span>
+
+    /**
+     * the last logged zxid on the transaction logs
+     * @return the last logged zxid
+     */
+    public long getLastLoggedZxid() {
+<span class="nc" id="L388">        FileTxnLog txnLog = new FileTxnLog(dataDir);</span>
+<span class="nc" id="L389">        return txnLog.getLastLoggedZxid();</span>
+    }
+
+    /**
+     * save the datatree and the sessions into a snapshot
+     * @param dataTree the datatree to be serialized onto disk
+     * @param sessionsWithTimeouts the session timeouts to be
+     * serialized onto disk
+     * @throws IOException
+     */
+    public void save(DataTree dataTree,
+            ConcurrentHashMap&lt;Long, Integer&gt; sessionsWithTimeouts)
+        throws IOException {
+<span class="fc" id="L402">        long lastZxid = dataTree.lastProcessedZxid;</span>
+<span class="fc" id="L403">        File snapshotFile = new File(snapDir, Util.makeSnapshotName(lastZxid));</span>
+<span class="fc" id="L404">        LOG.info(&quot;Snapshotting: 0x{} to {}&quot;, Long.toHexString(lastZxid),</span>
+                snapshotFile);
+<span class="fc" id="L406">        snapLog.serialize(dataTree, sessionsWithTimeouts, snapshotFile);</span>
+
+<span class="fc" id="L408">    }</span>
+
+    /**
+     * truncate the transaction logs the zxid
+     * specified
+     * @param zxid the zxid to truncate the logs to
+     * @return true if able to truncate the log, false if not
+     * @throws IOException
+     */
+    public boolean truncateLog(long zxid) {
+        try {
+            // close the existing txnLog and snapLog
+<span class="nc" id="L420">            close();</span>
+
+            // truncate it
+<span class="nc" id="L423">            try (FileTxnLog truncLog = new FileTxnLog(dataDir)) {</span>
+<span class="nc" id="L424">                boolean truncated = truncLog.truncate(zxid);</span>
+
+                // re-open the txnLog and snapLog
+                // I'd rather just close/reopen this object itself, however that
+                // would have a big impact outside ZKDatabase as there are other
+                // objects holding a reference to this object.
+<span class="nc" id="L430">                txnLog = new FileTxnLog(dataDir);</span>
+<span class="nc" id="L431">                snapLog = new FileSnap(snapDir);</span>
+
+<span class="nc" id="L433">                return truncated;</span>
+            }
+<span class="nc" id="L435">        } catch (IOException e) {</span>
+<span class="nc" id="L436">            LOG.error(&quot;Unable to truncate Txn log&quot;, e);</span>
+<span class="nc" id="L437">            return false;</span>
+        }
+    }
+
+    /**
+     * the most recent snapshot in the snapshot
+     * directory
+     * @return the file that contains the most
+     * recent snapshot
+     * @throws IOException
+     */
+    public File findMostRecentSnapshot() throws IOException {
+<span class="nc" id="L449">        FileSnap snaplog = new FileSnap(snapDir);</span>
+<span class="nc" id="L450">        return snaplog.findMostRecentSnapshot();</span>
+    }
+
+    /**
+     * the n most recent snapshots
+     * @param n the number of recent snapshots
+     * @return the list of n most recent snapshots, with
+     * the most recent in front
+     * @throws IOException
+     */
+    public List&lt;File&gt; findNRecentSnapshots(int n) throws IOException {
+<span class="nc" id="L461">        FileSnap snaplog = new FileSnap(snapDir);</span>
+<span class="nc" id="L462">        return snaplog.findNRecentSnapshots(n);</span>
+    }
+
+    /**
+     * get the snapshot logs which may contain transactions newer than the given zxid.
+     * This includes logs with starting zxid greater than given zxid, as well as the
+     * newest transaction log with starting zxid less than given zxid.  The latter log
+     * file may contain transactions beyond given zxid.
+     * @param zxid the zxid that contains logs greater than
+     * zxid
+     * @return
+     */
+    public File[] getSnapshotLogs(long zxid) {
+<span class="nc" id="L475">        return FileTxnLog.getLogFiles(dataDir.listFiles(), zxid);</span>
+    }
+
+    /**
+     * append the request to the transaction logs
+     * @param si the request to be appended
+     * returns true iff something appended, otw false
+     * @throws IOException
+     */
+    public boolean append(Request si) throws IOException {
+<span class="fc" id="L485">        return txnLog.append(si.getHdr(), si.getTxn());</span>
+    }
+
+    /**
+     * commit the transaction of logs
+     * @throws IOException
+     */
+    public void commit() throws IOException {
+<span class="fc" id="L493">        txnLog.commit();</span>
+<span class="fc" id="L494">    }</span>
+
+    /**
+     *
+     * @return elapsed sync time of transaction log commit in milliseconds
+     */
+    public long getTxnLogElapsedSyncTime() {
+<span class="nc" id="L501">        return txnLog.getTxnLogSyncElapsedTime();</span>
+    }
+
+    /**
+     * roll the transaction logs
+     * @throws IOException
+     */
+    public void rollLog() throws IOException {
+<span class="nc" id="L509">        txnLog.rollLog();</span>
+<span class="nc" id="L510">    }</span>
+
+    /**
+     * close the transaction log files
+     * @throws IOException
+     */
+    public void close() throws IOException {
+<span class="pc bpc" id="L517" title="1 of 2 branches missed.">        if (txnLog != null) {</span>
+<span class="fc" id="L518">            txnLog.close();</span>
+<span class="fc" id="L519">            txnLog = null;</span>
+        }
+<span class="pc bpc" id="L521" title="1 of 2 branches missed.">        if (snapLog != null) {</span>
+<span class="fc" id="L522">            snapLog.close();</span>
+<span class="fc" id="L523">            snapLog = null;</span>
+        }
+<span class="fc" id="L525">    }</span>
+
+    @SuppressWarnings(&quot;serial&quot;)
+    public static class DatadirException extends IOException {
+        public DatadirException(String msg) {
+<span class="nc" id="L530">            super(msg);</span>
+<span class="nc" id="L531">        }</span>
+        public DatadirException(String msg, Exception e) {
+<span class="nc" id="L533">            super(msg, e);</span>
+<span class="nc" id="L534">        }</span>
+    }
+
+    @SuppressWarnings(&quot;serial&quot;)
+    public static class LogDirContentCheckException extends DatadirException {
+        public LogDirContentCheckException(String msg) {
+<span class="nc" id="L540">            super(msg);</span>
+<span class="nc" id="L541">        }</span>
+    }
+
+    @SuppressWarnings(&quot;serial&quot;)
+    public static class SnapDirContentCheckException extends DatadirException {
+        public SnapDirContentCheckException(String msg) {
+<span class="nc" id="L547">            super(msg);</span>
+<span class="nc" id="L548">        }</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ManagedUtil.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.jmx</a> &gt; <span class="el_source">ManagedUtil.java</span></div><h1>ManagedUtil.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.jmx;
+
+import java.util.Enumeration;
+
+import javax.management.JMException;
+import javax.management.MBeanServer;
+import javax.management.ObjectName;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Shared utilities
+ */
+<span class="nc" id="L33">public class ManagedUtil {</span>
+<span class="nc" id="L34">    private static final Logger LOG = LoggerFactory.getLogger(ManagedUtil.class);</span>
+
+    private static boolean isLog4jJmxEnabled() {
+<span class="nc" id="L37">        boolean enabled = false;</span>
+
+<span class="nc bnc" id="L39" title="All 2 branches missed.">        if (Boolean.getBoolean(&quot;zookeeper.jmx.log4j.disable&quot;)) {</span>
+<span class="nc" id="L40">            LOG.info(&quot;Log4j 1.2 jmx support is disabled by property.&quot;);</span>
+        } else {
+            try {
+<span class="nc" id="L43">                Class.forName(&quot;org.apache.log4j.jmx.HierarchyDynamicMBean&quot;);</span>
+<span class="nc" id="L44">                enabled = true;</span>
+<span class="nc" id="L45">                LOG.info(&quot;Log4j 1.2 jmx support found and enabled.&quot;);</span>
+<span class="nc" id="L46">            } catch (ClassNotFoundException e) {</span>
+<span class="nc" id="L47">                LOG.info(&quot;Log4j 1.2 jmx support not found; jmx disabled.&quot;);</span>
+<span class="nc" id="L48">            }</span>
+        }
+
+<span class="nc" id="L51">        return enabled;</span>
+    }
+
+
+    /**
+     * Register the log4j JMX mbeans. Set system property
+     * &quot;zookeeper.jmx.log4j.disable&quot; to true to disable registration.
+     * @see http://logging.apache.org/log4j/1.2/apidocs/index.html?org/apache/log4j/jmx/package-summary.html
+     * @throws JMException if registration fails
+     */
+    @SuppressWarnings(&quot;rawtypes&quot;)
+    public static void registerLog4jMBeans() throws JMException {
+<span class="nc bnc" id="L63" title="All 2 branches missed.">        if (isLog4jJmxEnabled()) {</span>
+<span class="nc" id="L64">            LOG.debug(&quot;registerLog4jMBeans()&quot;);</span>
+<span class="nc" id="L65">            MBeanServer mbs = MBeanRegistry.getInstance().getPlatformMBeanServer();</span>
+
+            try {
+                // Create and Register the top level Log4J MBean
+                // org.apache.log4j.jmx.HierarchyDynamicMBean hdm = new org.apache.log4j.jmx.HierarchyDynamicMBean();
+<span class="nc" id="L70">                Object hdm = Class.forName(&quot;org.apache.log4j.jmx.HierarchyDynamicMBean&quot;).getConstructor().newInstance();</span>
+
+<span class="nc" id="L72">                String mbean = System.getProperty(&quot;zookeeper.jmx.log4j.mbean&quot;, &quot;log4j:hierarchy=default&quot;);</span>
+<span class="nc" id="L73">                ObjectName mbo = new ObjectName(mbean);</span>
+<span class="nc" id="L74">                mbs.registerMBean(hdm, mbo);</span>
+
+                // Add the root logger to the Hierarchy MBean
+                // org.apache.log4j.Logger rootLogger =
+                // org.apache.log4j.Logger.getRootLogger();
+<span class="nc" id="L79">                Object rootLogger = Class.forName(&quot;org.apache.log4j.Logger&quot;)</span>
+<span class="nc" id="L80">                        .getMethod(&quot;getRootLogger&quot;, (Class&lt;?&gt;[]) null)</span>
+<span class="nc" id="L81">                        .invoke(null, (Object[]) null);</span>
+
+                // hdm.addLoggerMBean(rootLogger.getName());
+<span class="nc" id="L84">                Object rootLoggerName = rootLogger.getClass()</span>
+<span class="nc" id="L85">                        .getMethod(&quot;getName&quot;, (Class&lt;?&gt;[]) null)</span>
+<span class="nc" id="L86">                        .invoke(rootLogger, (Object[]) null);</span>
+<span class="nc" id="L87">                hdm.getClass().getMethod(&quot;addLoggerMBean&quot;, String.class)</span>
+<span class="nc" id="L88">                        .invoke(hdm, rootLoggerName);</span>
+
+                // Get each logger from the Log4J Repository and add it to the
+                // Hierarchy MBean created above.
+                // org.apache.log4j.spi.LoggerRepository r =
+                // org.apache.log4j.LogManager.getLoggerRepository();
+<span class="nc" id="L94">                Object r = Class.forName(&quot;org.apache.log4j.LogManager&quot;)</span>
+<span class="nc" id="L95">                        .getMethod(&quot;getLoggerRepository&quot;, (Class&lt;?&gt;[]) null)</span>
+<span class="nc" id="L96">                        .invoke(null, (Object[]) null);</span>
+
+                // Enumeration enumer = r.getCurrentLoggers();
+<span class="nc" id="L99">                Enumeration enumer = (Enumeration) r.getClass()</span>
+<span class="nc" id="L100">                        .getMethod(&quot;getCurrentLoggers&quot;, (Class&lt;?&gt;[]) null)</span>
+<span class="nc" id="L101">                        .invoke(r, (Object[]) null);</span>
+
+<span class="nc bnc" id="L103" title="All 2 branches missed.">                while (enumer.hasMoreElements()) {</span>
+<span class="nc" id="L104">                    Object logger = enumer.nextElement();</span>
+                    // hdm.addLoggerMBean(logger.getName());
+<span class="nc" id="L106">                    Object loggerName = logger.getClass()</span>
+<span class="nc" id="L107">                            .getMethod(&quot;getName&quot;, (Class&lt;?&gt;[]) null)</span>
+<span class="nc" id="L108">                            .invoke(logger, (Object[]) null);</span>
+<span class="nc" id="L109">                    hdm.getClass().getMethod(&quot;addLoggerMBean&quot;, String.class)</span>
+<span class="nc" id="L110">                            .invoke(hdm, loggerName);</span>
+<span class="nc" id="L111">                }</span>
+<span class="nc" id="L112">            } catch (Exception e) {</span>
+<span class="nc" id="L113">                LOG.error(&quot;Problems while registering log4j 1.2 jmx beans!&quot;, e);</span>
+<span class="nc" id="L114">                throw new JMException(e.toString());</span>
+<span class="nc" id="L115">            }</span>
+        }
+<span class="nc" id="L117">    }</span>
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

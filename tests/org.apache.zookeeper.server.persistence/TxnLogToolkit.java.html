@@ -1,0 +1,356 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TxnLogToolkit.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.persistence</a> &gt; <span class="el_source">TxnLogToolkit.java</span></div><h1>TxnLogToolkit.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.persistence;
+
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
+import org.apache.commons.cli.PosixParser;
+import org.apache.jute.BinaryInputArchive;
+import org.apache.jute.BinaryOutputArchive;
+import org.apache.jute.Record;
+import org.apache.zookeeper.server.TraceFormatter;
+import org.apache.zookeeper.server.util.SerializeUtils;
+import org.apache.zookeeper.txn.CreateContainerTxn;
+import org.apache.zookeeper.txn.CreateTTLTxn;
+import org.apache.zookeeper.txn.CreateTxn;
+import org.apache.zookeeper.txn.SetDataTxn;
+import org.apache.zookeeper.txn.TxnHeader;
+
+import java.io.Closeable;
+import java.io.EOFException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.text.DateFormat;
+import java.util.Date;
+import java.util.Scanner;
+import java.util.zip.Adler32;
+import java.util.zip.Checksum;
+
+import static org.apache.zookeeper.server.persistence.FileTxnLog.TXNLOG_MAGIC;
+
+public class TxnLogToolkit implements Closeable {
+
+    static class TxnLogToolkitException extends Exception {
+        private static final long serialVersionUID = 1L;
+        private int exitCode;
+
+        TxnLogToolkitException(int exitCode, String message, Object... params) {
+<span class="nc" id="L61">            super(String.format(message, params));</span>
+<span class="nc" id="L62">            this.exitCode = exitCode;</span>
+<span class="nc" id="L63">        }</span>
+
+        int getExitCode() {
+<span class="nc" id="L66">            return exitCode;</span>
+        }
+    }
+
+    static class TxnLogToolkitParseException extends TxnLogToolkitException {
+        private static final long serialVersionUID = 1L;
+        private Options options;
+
+        TxnLogToolkitParseException(Options options, int exitCode, String message, Object... params) {
+<span class="nc" id="L75">            super(exitCode, message, params);</span>
+<span class="nc" id="L76">            this.options = options;</span>
+<span class="nc" id="L77">        }</span>
+
+        Options getOptions() {
+<span class="nc" id="L80">            return options;</span>
+        }
+    }
+
+    private File txnLogFile;
+<span class="nc" id="L85">    private boolean recoveryMode = false;</span>
+<span class="nc" id="L86">    private boolean verbose = false;</span>
+    private FileInputStream txnFis;
+    private BinaryInputArchive logStream;
+
+    // Recovery mode
+<span class="nc" id="L91">    private int crcFixed = 0;</span>
+    private FileOutputStream recoveryFos;
+    private BinaryOutputArchive recoveryOa;
+    private File recoveryLogFile;
+<span class="nc" id="L95">    private FilePadding filePadding = new FilePadding();</span>
+<span class="nc" id="L96">    private boolean force = false;</span>
+
+    /**
+     * @param args Command line arguments
+     */
+    public static void main(String[] args) throws Exception {
+<span class="nc" id="L102">        try (final TxnLogToolkit lt = parseCommandLine(args)) {</span>
+<span class="nc" id="L103">            lt.dump(new Scanner(System.in));</span>
+<span class="nc" id="L104">            lt.printStat();</span>
+<span class="nc" id="L105">        } catch (TxnLogToolkitParseException e) {</span>
+<span class="nc" id="L106">            System.err.println(e.getMessage() + &quot;\n&quot;);</span>
+<span class="nc" id="L107">            printHelpAndExit(e.getExitCode(), e.getOptions());</span>
+<span class="nc" id="L108">        } catch (TxnLogToolkitException e) {</span>
+<span class="nc" id="L109">            System.err.println(e.getMessage());</span>
+<span class="nc" id="L110">            System.exit(e.getExitCode());</span>
+<span class="nc" id="L111">        }</span>
+<span class="nc" id="L112">    }</span>
+
+    public TxnLogToolkit(boolean recoveryMode, boolean verbose, String txnLogFileName, boolean force)
+<span class="nc" id="L115">            throws FileNotFoundException, TxnLogToolkitException {</span>
+<span class="nc" id="L116">        this.recoveryMode = recoveryMode;</span>
+<span class="nc" id="L117">        this.verbose = verbose;</span>
+<span class="nc" id="L118">        this.force = force;</span>
+<span class="nc" id="L119">        txnLogFile = new File(txnLogFileName);</span>
+<span class="nc bnc" id="L120" title="All 4 branches missed.">        if (!txnLogFile.exists() || !txnLogFile.canRead()) {</span>
+<span class="nc" id="L121">            throw new TxnLogToolkitException(1, &quot;File doesn't exist or not readable: %s&quot;, txnLogFile);</span>
+        }
+<span class="nc bnc" id="L123" title="All 2 branches missed.">        if (recoveryMode) {</span>
+<span class="nc" id="L124">            recoveryLogFile = new File(txnLogFile.toString() + &quot;.fixed&quot;);</span>
+<span class="nc bnc" id="L125" title="All 2 branches missed.">            if (recoveryLogFile.exists()) {</span>
+<span class="nc" id="L126">                throw new TxnLogToolkitException(1, &quot;Recovery file %s already exists or not writable&quot;, recoveryLogFile);</span>
+            }
+        }
+
+<span class="nc" id="L130">        openTxnLogFile();</span>
+<span class="nc bnc" id="L131" title="All 2 branches missed.">        if (recoveryMode) {</span>
+<span class="nc" id="L132">            openRecoveryFile();</span>
+        }
+<span class="nc" id="L134">    }</span>
+
+    public void dump(Scanner scanner) throws Exception {
+<span class="nc" id="L137">        crcFixed = 0;</span>
+
+<span class="nc" id="L139">        FileHeader fhdr = new FileHeader();</span>
+<span class="nc" id="L140">        fhdr.deserialize(logStream, &quot;fileheader&quot;);</span>
+<span class="nc bnc" id="L141" title="All 2 branches missed.">        if (fhdr.getMagic() != TXNLOG_MAGIC) {</span>
+<span class="nc" id="L142">            throw new TxnLogToolkitException(2, &quot;Invalid magic number for %s&quot;, txnLogFile.getName());</span>
+        }
+<span class="nc" id="L144">        System.out.println(&quot;ZooKeeper Transactional Log File with dbid &quot;</span>
+<span class="nc" id="L145">                + fhdr.getDbid() + &quot; txnlog format version &quot;</span>
+<span class="nc" id="L146">                + fhdr.getVersion());</span>
+
+<span class="nc bnc" id="L148" title="All 2 branches missed.">        if (recoveryMode) {</span>
+<span class="nc" id="L149">            fhdr.serialize(recoveryOa, &quot;fileheader&quot;);</span>
+<span class="nc" id="L150">            recoveryFos.flush();</span>
+<span class="nc" id="L151">            filePadding.setCurrentSize(recoveryFos.getChannel().position());</span>
+        }
+
+<span class="nc" id="L154">        int count = 0;</span>
+        while (true) {
+            long crcValue;
+            byte[] bytes;
+            try {
+<span class="nc" id="L159">                crcValue = logStream.readLong(&quot;crcvalue&quot;);</span>
+<span class="nc" id="L160">                bytes = logStream.readBuffer(&quot;txnEntry&quot;);</span>
+<span class="nc" id="L161">            } catch (EOFException e) {</span>
+<span class="nc" id="L162">                System.out.println(&quot;EOF reached after &quot; + count + &quot; txns.&quot;);</span>
+<span class="nc" id="L163">                return;</span>
+<span class="nc" id="L164">            }</span>
+<span class="nc bnc" id="L165" title="All 2 branches missed.">            if (bytes.length == 0) {</span>
+                // Since we preallocate, we define EOF to be an
+                // empty transaction
+<span class="nc" id="L168">                System.out.println(&quot;EOF reached after &quot; + count + &quot; txns.&quot;);</span>
+<span class="nc" id="L169">                return;</span>
+            }
+<span class="nc" id="L171">            Checksum crc = new Adler32();</span>
+<span class="nc" id="L172">            crc.update(bytes, 0, bytes.length);</span>
+<span class="nc bnc" id="L173" title="All 2 branches missed.">            if (crcValue != crc.getValue()) {</span>
+<span class="nc bnc" id="L174" title="All 2 branches missed.">                if (recoveryMode) {</span>
+<span class="nc bnc" id="L175" title="All 2 branches missed.">                    if (!force) {</span>
+<span class="nc" id="L176">                        printTxn(bytes, &quot;CRC ERROR&quot;);</span>
+<span class="nc bnc" id="L177" title="All 2 branches missed.">                        if (askForFix(scanner)) {</span>
+<span class="nc" id="L178">                            crcValue = crc.getValue();</span>
+<span class="nc" id="L179">                            ++crcFixed;</span>
+                        }
+                    } else {
+<span class="nc" id="L182">                        crcValue = crc.getValue();</span>
+<span class="nc" id="L183">                        printTxn(bytes, &quot;CRC FIXED&quot;);</span>
+<span class="nc" id="L184">                        ++crcFixed;</span>
+                    }
+                } else {
+<span class="nc" id="L187">                    printTxn(bytes, &quot;CRC ERROR&quot;);</span>
+                }
+            }
+<span class="nc bnc" id="L190" title="All 4 branches missed.">            if (!recoveryMode || verbose) {</span>
+<span class="nc" id="L191">                printTxn(bytes);</span>
+            }
+<span class="nc bnc" id="L193" title="All 2 branches missed.">            if (logStream.readByte(&quot;EOR&quot;) != 'B') {</span>
+<span class="nc" id="L194">                throw new TxnLogToolkitException(1, &quot;Last transaction was partial.&quot;);</span>
+            }
+<span class="nc bnc" id="L196" title="All 2 branches missed.">            if (recoveryMode) {</span>
+<span class="nc" id="L197">                filePadding.padFile(recoveryFos.getChannel());</span>
+<span class="nc" id="L198">                recoveryOa.writeLong(crcValue, &quot;crcvalue&quot;);</span>
+<span class="nc" id="L199">                recoveryOa.writeBuffer(bytes, &quot;txnEntry&quot;);</span>
+<span class="nc" id="L200">                recoveryOa.writeByte((byte)'B', &quot;EOR&quot;);</span>
+            }
+<span class="nc" id="L202">            count++;</span>
+<span class="nc" id="L203">        }</span>
+    }
+
+    private boolean askForFix(Scanner scanner) throws TxnLogToolkitException {
+        while (true) {
+<span class="nc" id="L208">            System.out.print(&quot;Would you like to fix it (Yes/No/Abort) ? &quot;);</span>
+<span class="nc" id="L209">            char answer = Character.toUpperCase(scanner.next().charAt(0));</span>
+<span class="nc bnc" id="L210" title="All 4 branches missed.">            switch (answer) {</span>
+                case 'Y':
+<span class="nc" id="L212">                    return true;</span>
+                case 'N':
+<span class="nc" id="L214">                    return false;</span>
+                case 'A':
+<span class="nc" id="L216">                    throw new TxnLogToolkitException(0, &quot;Recovery aborted.&quot;);</span>
+            }
+<span class="nc" id="L218">        }</span>
+    }
+
+    private void printTxn(byte[] bytes) throws IOException {
+<span class="nc" id="L222">        printTxn(bytes, &quot;&quot;);</span>
+<span class="nc" id="L223">    }</span>
+
+    private void printTxn(byte[] bytes, String prefix) throws IOException {
+<span class="nc" id="L226">        TxnHeader hdr = new TxnHeader();</span>
+<span class="nc" id="L227">        Record txn = SerializeUtils.deserializeTxn(bytes, hdr);</span>
+<span class="nc" id="L228">        String txnStr = getDataStrFromTxn(txn);</span>
+<span class="nc" id="L229">        String txns = String.format(&quot;%s session 0x%s cxid 0x%s zxid 0x%s %s %s&quot;,</span>
+<span class="nc" id="L230">                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.LONG).format(new Date(hdr.getTime())),</span>
+<span class="nc" id="L231">                Long.toHexString(hdr.getClientId()),</span>
+<span class="nc" id="L232">                Long.toHexString(hdr.getCxid()),</span>
+<span class="nc" id="L233">                Long.toHexString(hdr.getZxid()),</span>
+<span class="nc" id="L234">                TraceFormatter.op2String(hdr.getType()),</span>
+                txnStr);
+<span class="nc bnc" id="L236" title="All 4 branches missed.">        if (prefix != null &amp;&amp; !&quot;&quot;.equals(prefix.trim())) {</span>
+<span class="nc" id="L237">            System.out.print(prefix + &quot; - &quot;);</span>
+        }
+<span class="nc bnc" id="L239" title="All 2 branches missed.">        if (txns.endsWith(&quot;\n&quot;)) {</span>
+<span class="nc" id="L240">            System.out.print(txns);</span>
+        } else {
+<span class="nc" id="L242">            System.out.println(txns);</span>
+        }
+<span class="nc" id="L244">    }</span>
+
+    /**
+     * get transaction log data string with node's data as a string
+     * @param txn
+     * @return
+     */
+    private static String getDataStrFromTxn(Record txn) {
+<span class="nc" id="L252">        StringBuilder txnData = new StringBuilder();</span>
+<span class="nc bnc" id="L253" title="All 2 branches missed.">        if (txn == null) {</span>
+<span class="nc" id="L254">            return txnData.toString();</span>
+        }
+<span class="nc bnc" id="L256" title="All 2 branches missed.">        if (txn instanceof CreateTxn) {</span>
+<span class="nc" id="L257">            CreateTxn createTxn = ((CreateTxn) txn);</span>
+<span class="nc" id="L258">            txnData.append(createTxn.getPath() + &quot;,&quot; + new String(createTxn.getData()))</span>
+<span class="nc" id="L259">                   .append(&quot;,&quot; + createTxn.getAcl() + &quot;,&quot; + createTxn.getEphemeral())</span>
+<span class="nc" id="L260">                   .append(&quot;,&quot; + createTxn.getParentCVersion());</span>
+<span class="nc bnc" id="L261" title="All 2 branches missed.">        } else if (txn instanceof SetDataTxn) {</span>
+<span class="nc" id="L262">            SetDataTxn setDataTxn = ((SetDataTxn) txn);</span>
+<span class="nc" id="L263">            txnData.append(setDataTxn.getPath() + &quot;,&quot; + new String(setDataTxn.getData()))</span>
+<span class="nc" id="L264">                   .append(&quot;,&quot; + setDataTxn.getVersion());</span>
+<span class="nc bnc" id="L265" title="All 2 branches missed.">        } else if (txn instanceof CreateContainerTxn) {</span>
+<span class="nc" id="L266">            CreateContainerTxn createContainerTxn = ((CreateContainerTxn) txn);</span>
+<span class="nc" id="L267">            txnData.append(createContainerTxn.getPath() + &quot;,&quot; + new String(createContainerTxn.getData()))</span>
+<span class="nc" id="L268">                   .append(&quot;,&quot; + createContainerTxn.getAcl() + &quot;,&quot; + createContainerTxn.getParentCVersion());</span>
+<span class="nc bnc" id="L269" title="All 2 branches missed.">        } else if (txn instanceof CreateTTLTxn) {</span>
+<span class="nc" id="L270">            CreateTTLTxn createTTLTxn = ((CreateTTLTxn) txn);</span>
+<span class="nc" id="L271">            txnData.append(createTTLTxn.getPath() + &quot;,&quot; + new String(createTTLTxn.getData()))</span>
+<span class="nc" id="L272">                   .append(&quot;,&quot; + createTTLTxn.getAcl() + &quot;,&quot; + createTTLTxn.getParentCVersion())</span>
+<span class="nc" id="L273">                   .append(&quot;,&quot; + createTTLTxn.getTtl());</span>
+<span class="nc" id="L274">        } else {</span>
+<span class="nc" id="L275">            txnData.append(txn.toString());</span>
+        }
+
+<span class="nc" id="L278">        return txnData.toString();</span>
+    }
+    
+    private void openTxnLogFile() throws FileNotFoundException {
+<span class="nc" id="L282">        txnFis = new FileInputStream(txnLogFile);</span>
+<span class="nc" id="L283">        logStream = BinaryInputArchive.getArchive(txnFis);</span>
+<span class="nc" id="L284">    }</span>
+
+    private void closeTxnLogFile() throws IOException {
+<span class="nc bnc" id="L287" title="All 2 branches missed.">        if (txnFis != null) {</span>
+<span class="nc" id="L288">            txnFis.close();</span>
+        }
+<span class="nc" id="L290">    }</span>
+
+    private void openRecoveryFile() throws FileNotFoundException {
+<span class="nc" id="L293">        recoveryFos = new FileOutputStream(recoveryLogFile);</span>
+<span class="nc" id="L294">        recoveryOa = BinaryOutputArchive.getArchive(recoveryFos);</span>
+<span class="nc" id="L295">    }</span>
+
+    private void closeRecoveryFile() throws IOException {
+<span class="nc bnc" id="L298" title="All 2 branches missed.">        if (recoveryFos != null) {</span>
+<span class="nc" id="L299">            recoveryFos.close();</span>
+        }
+<span class="nc" id="L301">    }</span>
+
+    private static TxnLogToolkit parseCommandLine(String[] args) throws TxnLogToolkitException, FileNotFoundException {
+<span class="nc" id="L304">        CommandLineParser parser = new PosixParser();</span>
+<span class="nc" id="L305">        Options options = new Options();</span>
+
+<span class="nc" id="L307">        Option helpOpt = new Option(&quot;h&quot;, &quot;help&quot;, false, &quot;Print help message&quot;);</span>
+<span class="nc" id="L308">        options.addOption(helpOpt);</span>
+
+<span class="nc" id="L310">        Option recoverOpt = new Option(&quot;r&quot;, &quot;recover&quot;, false, &quot;Recovery mode. Re-calculate CRC for broken entries.&quot;);</span>
+<span class="nc" id="L311">        options.addOption(recoverOpt);</span>
+
+<span class="nc" id="L313">        Option quietOpt = new Option(&quot;v&quot;, &quot;verbose&quot;, false, &quot;Be verbose in recovery mode: print all entries, not just fixed ones.&quot;);</span>
+<span class="nc" id="L314">        options.addOption(quietOpt);</span>
+
+<span class="nc" id="L316">        Option dumpOpt = new Option(&quot;d&quot;, &quot;dump&quot;, false, &quot;Dump mode. Dump all entries of the log file with printing the content of a nodepath (default)&quot;);</span>
+<span class="nc" id="L317">        options.addOption(dumpOpt);</span>
+
+<span class="nc" id="L319">        Option forceOpt = new Option(&quot;y&quot;, &quot;yes&quot;, false, &quot;Non-interactive mode: repair all CRC errors without asking&quot;);</span>
+<span class="nc" id="L320">        options.addOption(forceOpt);</span>
+
+        try {
+<span class="nc" id="L323">            CommandLine cli = parser.parse(options, args);</span>
+<span class="nc bnc" id="L324" title="All 2 branches missed.">            if (cli.hasOption(&quot;help&quot;)) {</span>
+<span class="nc" id="L325">                printHelpAndExit(0, options);</span>
+            }
+<span class="nc bnc" id="L327" title="All 2 branches missed.">            if (cli.getArgs().length &lt; 1) {</span>
+<span class="nc" id="L328">                printHelpAndExit(1, options);</span>
+            }
+<span class="nc" id="L330">            return new TxnLogToolkit(cli.hasOption(&quot;recover&quot;), cli.hasOption(&quot;verbose&quot;), cli.getArgs()[0], cli.hasOption(&quot;yes&quot;));</span>
+<span class="nc" id="L331">        } catch (ParseException e) {</span>
+<span class="nc" id="L332">            throw new TxnLogToolkitParseException(options, 1, e.getMessage());</span>
+        }
+    }
+
+    private static void printHelpAndExit(int exitCode, Options options) {
+<span class="nc" id="L337">        HelpFormatter help = new HelpFormatter();</span>
+<span class="nc" id="L338">        help.printHelp(120,&quot;TxnLogToolkit [-dhrv] &lt;txn_log_file_name&gt;&quot;, &quot;&quot;, options, &quot;&quot;);</span>
+<span class="nc" id="L339">        System.exit(exitCode);</span>
+<span class="nc" id="L340">    }</span>
+
+    private void printStat() {
+<span class="nc bnc" id="L343" title="All 2 branches missed.">        if (recoveryMode) {</span>
+<span class="nc" id="L344">            System.out.printf(&quot;Recovery file %s has been written with %d fixed CRC error(s)%n&quot;, recoveryLogFile, crcFixed);</span>
+        }
+<span class="nc" id="L346">    }</span>
+
+    @Override
+    public void close() throws IOException {
+<span class="nc bnc" id="L350" title="All 2 branches missed.">        if (recoveryMode) {</span>
+<span class="nc" id="L351">            closeRecoveryFile();</span>
+        }
+<span class="nc" id="L353">        closeTxnLogFile();</span>
+<span class="nc" id="L354">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

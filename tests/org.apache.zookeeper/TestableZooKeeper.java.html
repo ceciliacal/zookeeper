@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>TestableZooKeeper.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">TestableZooKeeper.java</span></div><h1>TestableZooKeeper.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper;
+
+import java.io.IOException;
+import java.net.SocketAddress;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+import org.apache.jute.Record;
+import org.apache.zookeeper.admin.ZooKeeperAdmin;
+import org.apache.zookeeper.client.HostProvider;
+import org.apache.zookeeper.proto.ReplyHeader;
+import org.apache.zookeeper.proto.RequestHeader;
+
+public class TestableZooKeeper extends ZooKeeperAdmin {
+
+    public TestableZooKeeper(String host, int sessionTimeout,
+            Watcher watcher) throws IOException {
+<span class="fc" id="L37">        super(host, sessionTimeout, watcher);</span>
+<span class="fc" id="L38">    }</span>
+
+    class TestableClientCnxn extends ClientCnxn {
+        TestableClientCnxn(String chrootPath, HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
+            ClientWatchManager watcher, ClientCnxnSocket clientCnxnSocket, boolean canBeReadOnly)
+<span class="fc" id="L43">                throws IOException {</span>
+<span class="fc" id="L44">            super(chrootPath, hostProvider, sessionTimeout, zooKeeper, watcher,</span>
+                clientCnxnSocket, 0, new byte[16], canBeReadOnly);
+<span class="fc" id="L46">        }</span>
+
+        void setXid(int newXid) {
+<span class="nc" id="L49">            xid = newXid;</span>
+<span class="nc" id="L50">        }</span>
+
+        int checkXid() {
+<span class="nc" id="L53">            return xid;</span>
+        }
+    }
+
+    protected ClientCnxn createConnection(String chrootPath,
+            HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
+            ClientWatchManager watcher, ClientCnxnSocket clientCnxnSocket,
+            boolean canBeReadOnly) throws IOException {
+<span class="fc" id="L61">        return new TestableClientCnxn(chrootPath, hostProvider, sessionTimeout, this,</span>
+                watcher, clientCnxnSocket, canBeReadOnly);
+    }
+
+    public void setXid(int xid) {
+<span class="nc" id="L66">        ((TestableClientCnxn)cnxn).setXid(xid);</span>
+<span class="nc" id="L67">    }</span>
+
+    public int checkXid() {
+<span class="nc" id="L70">        return ((TestableClientCnxn)cnxn).checkXid();</span>
+    }
+    
+    @Override
+    public List&lt;String&gt; getChildWatches() {
+<span class="fc" id="L75">        return super.getChildWatches();</span>
+    }
+
+
+    @Override
+    public List&lt;String&gt; getDataWatches() {
+<span class="fc" id="L81">        return super.getDataWatches();</span>
+    }
+
+
+    @Override
+    public List&lt;String&gt; getExistWatches() {
+<span class="fc" id="L87">        return super.getExistWatches();</span>
+    }
+
+    /**
+     * Cause this ZooKeeper object to disconnect from the server. It will then
+     * later attempt to reconnect.
+     */
+    public void testableConnloss() throws IOException {
+<span class="nc" id="L95">        synchronized(cnxn) {</span>
+<span class="nc" id="L96">            cnxn.sendThread.testableCloseSocket();</span>
+<span class="nc" id="L97">        }</span>
+<span class="nc" id="L98">    }</span>
+
+    /**
+     * Cause this ZooKeeper object to stop receiving from the ZooKeeperServer
+     * for the given number of milliseconds.
+     * @param ms the number of milliseconds to pause.
+     * @return true if the connection is paused, otherwise false
+     */
+    public boolean pauseCnxn(final long ms) {
+<span class="nc" id="L107">        final CountDownLatch initiatedPause = new CountDownLatch(1);</span>
+<span class="nc" id="L108">        new Thread() {</span>
+            public void run() {
+<span class="nc" id="L110">                synchronized(cnxn) {</span>
+                    try {
+                        try {
+<span class="nc" id="L113">                            cnxn.sendThread.testableCloseSocket();</span>
+<span class="nc" id="L114">                        } catch (IOException e) {</span>
+<span class="nc" id="L115">                            e.printStackTrace();</span>
+                        } finally {
+<span class="nc" id="L117">                            initiatedPause.countDown();</span>
+                        }
+<span class="nc" id="L119">                        Thread.sleep(ms);</span>
+<span class="nc" id="L120">                    } catch (InterruptedException e) {</span>
+<span class="nc" id="L121">                    }</span>
+<span class="nc" id="L122">                }</span>
+<span class="nc" id="L123">            }</span>
+<span class="nc" id="L124">        }.start();</span>
+
+        try {
+<span class="nc" id="L127">            return initiatedPause.await(ms, TimeUnit.MILLISECONDS);</span>
+<span class="nc" id="L128">        } catch (InterruptedException e) {</span>
+<span class="nc" id="L129">            e.printStackTrace();</span>
+<span class="nc" id="L130">            return false;</span>
+        }
+    }
+
+    public SocketAddress testableLocalSocketAddress() {
+<span class="nc" id="L135">        return super.testableLocalSocketAddress();</span>
+    }
+
+    public SocketAddress testableRemoteSocketAddress() {
+<span class="nc" id="L139">        return super.testableRemoteSocketAddress();</span>
+    }
+
+    /**
+     * @return the last zxid as seen by the client session
+     */
+    public long testableLastZxid() {
+<span class="nc" id="L146">        return cnxn.getLastZxid();</span>
+    }
+
+    public ReplyHeader submitRequest(RequestHeader h, Record request,
+            Record response, WatchRegistration watchRegistration) throws InterruptedException {
+<span class="nc" id="L151">        return cnxn.submitRequest(h, request, response, watchRegistration);</span>
+    }
+
+    /** Testing only!!! Really!!!! This is only here to test when the client
+     * disconnects from the server w/o sending a session disconnect (ie
+     * ending the session cleanly). The server will eventually notice the
+     * client is no longer pinging and will timeout the session.
+     */
+    public void disconnect() {
+<span class="nc" id="L160">        cnxn.disconnect();</span>
+<span class="nc" id="L161">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

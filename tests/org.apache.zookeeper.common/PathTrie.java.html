@@ -1,0 +1,294 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>PathTrie.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.common</a> &gt; <span class="el_source">PathTrie.java</span></div><h1>PathTrie.java</h1><pre class="source lang-java linenums"> /**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.common;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * a class that implements prefix matching for 
+ * components of a filesystem path. the trie
+ * looks like a tree with edges mapping to 
+ * the component of a path.
+ * example /ab/bc/cf would map to a trie
+ *           /
+ *        ab/
+ *        (ab)
+ *      bc/
+ *       / 
+ *      (bc)
+ *   cf/
+ *   (cf)
+ */    
+public class PathTrie {
+    /**
+     * the logger for this class
+     */
+<span class="fc" id="L47">    private static final Logger LOG = LoggerFactory.getLogger(PathTrie.class);</span>
+    
+    /**
+     * the root node of PathTrie
+     */
+    private final TrieNode rootNode ;
+    
+    static class TrieNode {
+<span class="fc" id="L55">        boolean property = false;</span>
+        final HashMap&lt;String, TrieNode&gt; children;
+<span class="fc" id="L57">        TrieNode parent = null;</span>
+        /**
+         * create a trienode with parent
+         * as parameter
+         * @param parent the parent of this trienode
+         */
+<span class="fc" id="L63">        private TrieNode(TrieNode parent) {</span>
+<span class="fc" id="L64">            children = new HashMap&lt;String, TrieNode&gt;();</span>
+<span class="fc" id="L65">            this.parent = parent;</span>
+<span class="fc" id="L66">        }</span>
+        
+        /**
+         * get the parent of this node
+         * @return the parent node
+         */
+        TrieNode getParent() {
+<span class="nc" id="L73">            return this.parent;</span>
+        }
+        
+        /**
+         * set the parent of this node
+         * @param parent the parent to set to
+         */
+        void setParent(TrieNode parent) {
+<span class="nc" id="L81">            this.parent = parent;</span>
+<span class="nc" id="L82">        }</span>
+        
+        /**
+         * a property that is set 
+         * for a node - making it 
+         * special.
+         */
+        void setProperty(boolean prop) {
+<span class="nc" id="L90">            this.property = prop;</span>
+<span class="nc" id="L91">        }</span>
+        
+        /** the property of this
+         * node 
+         * @return the property for this
+         * node
+         */
+        boolean getProperty() {
+<span class="nc" id="L99">            return this.property;</span>
+        }
+        /**
+         * add a child to the existing node
+         * @param childName the string name of the child
+         * @param node the node that is the child
+         */
+        void addChild(String childName, TrieNode node) {
+<span class="nc" id="L107">            synchronized(children) {</span>
+<span class="nc bnc" id="L108" title="All 2 branches missed.">                if (children.containsKey(childName)) {</span>
+<span class="nc" id="L109">                    return;</span>
+                }
+<span class="nc" id="L111">                children.put(childName, node);</span>
+<span class="nc" id="L112">            }</span>
+<span class="nc" id="L113">        }</span>
+     
+        /**
+         * delete child from this node
+         * @param childName the string name of the child to 
+         * be deleted
+         */
+        void deleteChild(String childName) {
+<span class="nc" id="L121">            synchronized(children) {</span>
+<span class="nc bnc" id="L122" title="All 2 branches missed.">                if (!children.containsKey(childName)) {</span>
+<span class="nc" id="L123">                    return;</span>
+                }
+<span class="nc" id="L125">                TrieNode childNode = children.get(childName);</span>
+                // this is the only child node.
+<span class="nc bnc" id="L127" title="All 2 branches missed.">                if (childNode.getChildren().length == 1) { </span>
+<span class="nc" id="L128">                    childNode.setParent(null);</span>
+<span class="nc" id="L129">                    children.remove(childName);</span>
+                }
+                else {
+                    // their are more child nodes
+                    // so just reset property.
+<span class="nc" id="L134">                    childNode.setProperty(false);</span>
+                }
+<span class="nc" id="L136">            }</span>
+<span class="nc" id="L137">        }</span>
+        
+        /**
+         * return the child of a node mapping
+         * to the input childname
+         * @param childName the name of the child
+         * @return the child of a node
+         */
+        TrieNode getChild(String childName) {
+<span class="nc" id="L146">            synchronized(children) {</span>
+<span class="nc bnc" id="L147" title="All 2 branches missed.">               if (!children.containsKey(childName)) {</span>
+<span class="nc" id="L148">                   return null;</span>
+               }
+               else {
+<span class="nc" id="L151">                   return children.get(childName);</span>
+               }
+            }
+        }
+
+        /**
+         * get the list of children of this 
+         * trienode.
+         * @param node to get its children
+         * @return the string list of its children
+         */
+        String[] getChildren() {
+<span class="nc" id="L163">           synchronized(children) {</span>
+<span class="nc" id="L164">               return children.keySet().toArray(new String[0]);</span>
+           }
+        }
+        
+        /**
+         * get the string representation
+         * for this node
+         */
+        public String toString() {
+<span class="nc" id="L173">            StringBuilder sb = new StringBuilder();</span>
+<span class="nc" id="L174">            sb.append(&quot;Children of trienode: &quot;);</span>
+<span class="nc" id="L175">            synchronized(children) {</span>
+<span class="nc bnc" id="L176" title="All 2 branches missed.">                for (String str: children.keySet()) {</span>
+<span class="nc" id="L177">                    sb.append(&quot; &quot; + str);</span>
+<span class="nc" id="L178">                }</span>
+<span class="nc" id="L179">            }</span>
+<span class="nc" id="L180">            return sb.toString();</span>
+        }
+    }
+    
+    /**
+     * construct a new PathTrie with
+     * a root node of /
+     */
+<span class="fc" id="L188">    public PathTrie() {</span>
+<span class="fc" id="L189">        this.rootNode = new TrieNode(null);</span>
+<span class="fc" id="L190">    }</span>
+    
+    /**
+     * add a path to the path trie 
+     * @param path
+     */
+    public void addPath(String path) {
+<span class="nc bnc" id="L197" title="All 2 branches missed.">        if (path == null) {</span>
+<span class="nc" id="L198">            return;</span>
+        }
+<span class="nc" id="L200">        String[] pathComponents = path.split(&quot;/&quot;);</span>
+<span class="nc" id="L201">        TrieNode parent = rootNode;</span>
+<span class="nc" id="L202">        String part = null;</span>
+<span class="nc bnc" id="L203" title="All 2 branches missed.">        if (pathComponents.length &lt;= 1) {</span>
+<span class="nc" id="L204">            throw new IllegalArgumentException(&quot;Invalid path &quot; + path);</span>
+        }
+<span class="nc bnc" id="L206" title="All 2 branches missed.">        for (int i=1; i&lt;pathComponents.length; i++) {</span>
+<span class="nc" id="L207">            part = pathComponents[i];</span>
+<span class="nc bnc" id="L208" title="All 2 branches missed.">            if (parent.getChild(part) == null) {</span>
+<span class="nc" id="L209">                parent.addChild(part, new TrieNode(parent));</span>
+            }
+<span class="nc" id="L211">            parent = parent.getChild(part);</span>
+        }
+<span class="nc" id="L213">        parent.setProperty(true);</span>
+<span class="nc" id="L214">    }</span>
+    
+    /**
+     * delete a path from the trie
+     * @param path the path to be deleted
+     */
+    public void deletePath(String path) {
+<span class="nc bnc" id="L221" title="All 2 branches missed.">        if (path == null) {</span>
+<span class="nc" id="L222">            return;</span>
+        }
+<span class="nc" id="L224">        String[] pathComponents = path.split(&quot;/&quot;);</span>
+<span class="nc" id="L225">        TrieNode parent = rootNode;</span>
+<span class="nc" id="L226">        String part = null;</span>
+<span class="nc bnc" id="L227" title="All 2 branches missed.">        if (pathComponents.length &lt;= 1) { </span>
+<span class="nc" id="L228">            throw new IllegalArgumentException(&quot;Invalid path &quot; + path);</span>
+        }
+<span class="nc bnc" id="L230" title="All 2 branches missed.">        for (int i=1; i&lt;pathComponents.length; i++) {</span>
+<span class="nc" id="L231">            part = pathComponents[i];</span>
+<span class="nc bnc" id="L232" title="All 2 branches missed.">            if (parent.getChild(part) == null) {</span>
+                //the path does not exist 
+<span class="nc" id="L234">                return;</span>
+            }
+<span class="nc" id="L236">            parent = parent.getChild(part);</span>
+<span class="nc" id="L237">            LOG.info(&quot;{}&quot;,parent);</span>
+        }
+<span class="nc" id="L239">        TrieNode realParent  = parent.getParent();</span>
+<span class="nc" id="L240">        realParent.deleteChild(part);</span>
+<span class="nc" id="L241">    }</span>
+    
+    /**
+     * return the largest prefix for the input path.
+     * @param path the input path
+     * @return the largest prefix for the input path.
+     */
+    public String findMaxPrefix(String path) {
+<span class="nc bnc" id="L249" title="All 2 branches missed.">        if (path == null) {</span>
+<span class="nc" id="L250">            return null;</span>
+        }
+<span class="nc bnc" id="L252" title="All 2 branches missed.">        if (&quot;/&quot;.equals(path)) {</span>
+<span class="nc" id="L253">            return path;</span>
+        }
+<span class="nc" id="L255">        String[] pathComponents = path.split(&quot;/&quot;);</span>
+<span class="nc" id="L256">        TrieNode parent = rootNode;</span>
+<span class="nc" id="L257">        List&lt;String&gt; components = new ArrayList&lt;String&gt;();</span>
+<span class="nc bnc" id="L258" title="All 2 branches missed.">        if (pathComponents.length &lt;= 1) {</span>
+<span class="nc" id="L259">            throw new IllegalArgumentException(&quot;Invalid path &quot; + path);</span>
+        }
+<span class="nc" id="L261">        int i = 1;</span>
+<span class="nc" id="L262">        String part = null;</span>
+<span class="nc" id="L263">        StringBuilder sb = new StringBuilder();</span>
+<span class="nc" id="L264">        int lastindex = -1;</span>
+<span class="nc bnc" id="L265" title="All 2 branches missed.">        while((i &lt; pathComponents.length)) {</span>
+<span class="nc bnc" id="L266" title="All 2 branches missed.">            if (parent.getChild(pathComponents[i]) != null) {</span>
+<span class="nc" id="L267">                part = pathComponents[i];</span>
+<span class="nc" id="L268">                parent = parent.getChild(part);</span>
+<span class="nc" id="L269">                components.add(part);</span>
+<span class="nc bnc" id="L270" title="All 2 branches missed.">                if (parent.getProperty()) {</span>
+<span class="nc" id="L271">                    lastindex = i-1;</span>
+                }
+            }
+            else {
+                break;
+            }
+<span class="nc" id="L277">            i++;</span>
+        }
+<span class="nc bnc" id="L279" title="All 2 branches missed.">        for (int j=0; j&lt; (lastindex+1); j++) {</span>
+<span class="nc" id="L280">            sb.append(&quot;/&quot; + components.get(j));</span>
+        }
+<span class="nc" id="L282">        return sb.toString();</span>
+    }
+
+    /**
+     * clear all nodes
+     */
+    public void clear() {
+<span class="nc bnc" id="L289" title="All 2 branches missed.">        for(String child : rootNode.getChildren()) {</span>
+<span class="nc" id="L290">            rootNode.deleteChild(child);</span>
+        }
+<span class="nc" id="L292">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

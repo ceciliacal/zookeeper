@@ -1,0 +1,332 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SessionTrackerImpl.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server</a> &gt; <span class="el_source">SessionTrackerImpl.java</span></div><h1>SessionTrackerImpl.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server;
+
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.text.MessageFormat;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.KeeperException.SessionExpiredException;
+import org.apache.zookeeper.common.Time;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This is a full featured SessionTracker. It tracks session in grouped by tick
+ * interval. It always rounds up the tick interval to provide a sort of grace
+ * period. Sessions are thus expired in batches made up of sessions that expire
+ * in a given interval.
+ */
+public class SessionTrackerImpl extends ZooKeeperCriticalThread implements
+        SessionTracker {
+<span class="fc" id="L47">    private static final Logger LOG = LoggerFactory.getLogger(SessionTrackerImpl.class);</span>
+
+<span class="fc" id="L49">    protected final ConcurrentHashMap&lt;Long, SessionImpl&gt; sessionsById =</span>
+        new ConcurrentHashMap&lt;Long, SessionImpl&gt;();
+
+    private final ExpiryQueue&lt;SessionImpl&gt; sessionExpiryQueue;
+
+    private final ConcurrentMap&lt;Long, Integer&gt; sessionsWithTimeout;
+<span class="fc" id="L55">    private final AtomicLong nextSessionId = new AtomicLong();</span>
+
+    public static class SessionImpl implements Session {
+<span class="fc" id="L58">        SessionImpl(long sessionId, int timeout) {</span>
+<span class="fc" id="L59">            this.sessionId = sessionId;</span>
+<span class="fc" id="L60">            this.timeout = timeout;</span>
+<span class="fc" id="L61">            isClosing = false;</span>
+<span class="fc" id="L62">        }</span>
+
+        final long sessionId;
+        final int timeout;
+        boolean isClosing;
+
+        Object owner;
+
+<span class="nc" id="L70">        public long getSessionId() { return sessionId; }</span>
+<span class="nc" id="L71">        public int getTimeout() { return timeout; }</span>
+<span class="fc" id="L72">        public boolean isClosing() { return isClosing; }</span>
+
+        public String toString() {
+<span class="nc" id="L75">            return &quot;0x&quot; + Long.toHexString(sessionId);</span>
+        }
+    }
+
+    /**
+     * Generates an initial sessionId. High order byte is serverId, next 5
+     * 5 bytes are from timestamp, and low order 2 bytes are 0s.
+     */
+    public static long initializeNextSession(long id) {
+        long nextSid;
+<span class="fc" id="L85">        nextSid = (Time.currentElapsedTime() &lt;&lt; 24) &gt;&gt;&gt; 8;</span>
+<span class="fc" id="L86">        nextSid =  nextSid | (id &lt;&lt;56);</span>
+<span class="pc bpc" id="L87" title="1 of 2 branches missed.">        if (nextSid == EphemeralType.CONTAINER_EPHEMERAL_OWNER) {</span>
+<span class="nc" id="L88">            ++nextSid;  // this is an unlikely edge case, but check it just in case</span>
+        }
+<span class="fc" id="L90">        return nextSid;</span>
+    }
+
+    private final SessionExpirer expirer;
+
+    public SessionTrackerImpl(SessionExpirer expirer,
+            ConcurrentMap&lt;Long, Integer&gt; sessionsWithTimeout, int tickTime,
+            long serverId, ZooKeeperServerListener listener)
+    {
+<span class="fc" id="L99">        super(&quot;SessionTracker&quot;, listener);</span>
+<span class="fc" id="L100">        this.expirer = expirer;</span>
+<span class="fc" id="L101">        this.sessionExpiryQueue = new ExpiryQueue&lt;SessionImpl&gt;(tickTime);</span>
+<span class="fc" id="L102">        this.sessionsWithTimeout = sessionsWithTimeout;</span>
+<span class="fc" id="L103">        this.nextSessionId.set(initializeNextSession(serverId));</span>
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">        for (Entry&lt;Long, Integer&gt; e : sessionsWithTimeout.entrySet()) {</span>
+<span class="nc" id="L105">            addSession(e.getKey(), e.getValue());</span>
+<span class="nc" id="L106">        }</span>
+
+<span class="fc" id="L108">        EphemeralType.validateServerId(serverId);</span>
+<span class="fc" id="L109">    }</span>
+
+<span class="fc" id="L111">    volatile boolean running = true;</span>
+
+    public void dumpSessions(PrintWriter pwriter) {
+<span class="nc" id="L114">        pwriter.print(&quot;Session &quot;);</span>
+<span class="nc" id="L115">        sessionExpiryQueue.dump(pwriter);</span>
+<span class="nc" id="L116">    }</span>
+
+    /**
+     * Returns a mapping from time to session IDs of sessions expiring at that time.
+     */
+    synchronized public Map&lt;Long, Set&lt;Long&gt;&gt; getSessionExpiryMap() {
+        // Convert time -&gt; sessions map to time -&gt; session IDs map
+<span class="nc" id="L123">        Map&lt;Long, Set&lt;SessionImpl&gt;&gt; expiryMap = sessionExpiryQueue.getExpiryMap();</span>
+<span class="nc" id="L124">        Map&lt;Long, Set&lt;Long&gt;&gt; sessionExpiryMap = new TreeMap&lt;Long, Set&lt;Long&gt;&gt;();</span>
+<span class="nc bnc" id="L125" title="All 2 branches missed.">        for (Entry&lt;Long, Set&lt;SessionImpl&gt;&gt; e : expiryMap.entrySet()) {</span>
+<span class="nc" id="L126">            Set&lt;Long&gt; ids = new HashSet&lt;Long&gt;();</span>
+<span class="nc" id="L127">            sessionExpiryMap.put(e.getKey(), ids);</span>
+<span class="nc bnc" id="L128" title="All 2 branches missed.">            for (SessionImpl s : e.getValue()) {</span>
+<span class="nc" id="L129">                ids.add(s.sessionId);</span>
+<span class="nc" id="L130">            }</span>
+<span class="nc" id="L131">        }</span>
+<span class="nc" id="L132">        return sessionExpiryMap;</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="nc" id="L137">        StringWriter sw = new StringWriter();</span>
+<span class="nc" id="L138">        PrintWriter pwriter = new PrintWriter(sw);</span>
+<span class="nc" id="L139">        dumpSessions(pwriter);</span>
+<span class="nc" id="L140">        pwriter.flush();</span>
+<span class="nc" id="L141">        pwriter.close();</span>
+<span class="nc" id="L142">        return sw.toString();</span>
+    }
+
+    @Override
+    public void run() {
+        try {
+<span class="fc bfc" id="L148" title="All 2 branches covered.">            while (running) {</span>
+<span class="fc" id="L149">                long waitTime = sessionExpiryQueue.getWaitTime();</span>
+<span class="pc bpc" id="L150" title="1 of 2 branches missed.">                if (waitTime &gt; 0) {</span>
+<span class="fc" id="L151">                    Thread.sleep(waitTime);</span>
+<span class="fc" id="L152">                    continue;</span>
+                }
+
+<span class="nc bnc" id="L155" title="All 2 branches missed.">                for (SessionImpl s : sessionExpiryQueue.poll()) {</span>
+<span class="nc" id="L156">                    setSessionClosing(s.sessionId);</span>
+<span class="nc" id="L157">                    expirer.expire(s);</span>
+<span class="nc" id="L158">                }</span>
+<span class="nc" id="L159">            }</span>
+<span class="nc" id="L160">        } catch (InterruptedException e) {</span>
+<span class="nc" id="L161">            handleException(this.getName(), e);</span>
+<span class="fc" id="L162">        }</span>
+<span class="fc" id="L163">        LOG.info(&quot;SessionTrackerImpl exited loop!&quot;);</span>
+<span class="fc" id="L164">    }</span>
+
+    synchronized public boolean touchSession(long sessionId, int timeout) {
+<span class="fc" id="L167">        SessionImpl s = sessionsById.get(sessionId);</span>
+
+<span class="pc bpc" id="L169" title="1 of 2 branches missed.">        if (s == null) {</span>
+<span class="nc" id="L170">            logTraceTouchInvalidSession(sessionId, timeout);</span>
+<span class="nc" id="L171">            return false;</span>
+        }
+
+<span class="pc bpc" id="L174" title="1 of 2 branches missed.">        if (s.isClosing()) {</span>
+<span class="nc" id="L175">            logTraceTouchClosingSession(sessionId, timeout);</span>
+<span class="nc" id="L176">            return false;</span>
+        }
+
+<span class="fc" id="L179">        updateSessionExpiry(s, timeout);</span>
+<span class="fc" id="L180">        return true;</span>
+    }
+
+    private void updateSessionExpiry(SessionImpl s, int timeout) {
+<span class="fc" id="L184">        logTraceTouchSession(s.sessionId, timeout, &quot;&quot;);</span>
+<span class="fc" id="L185">        sessionExpiryQueue.update(s, timeout);</span>
+<span class="fc" id="L186">    }</span>
+
+    private void logTraceTouchSession(long sessionId, int timeout, String sessionStatus){
+<span class="pc bpc" id="L189" title="1 of 2 branches missed.">        if (!LOG.isTraceEnabled())</span>
+<span class="fc" id="L190">            return;</span>
+
+<span class="nc" id="L192">        String msg = MessageFormat.format(</span>
+                &quot;SessionTrackerImpl --- Touch {0}session: 0x{1} with timeout {2}&quot;,
+<span class="nc" id="L194">                sessionStatus, Long.toHexString(sessionId), Integer.toString(timeout));</span>
+
+<span class="nc" id="L196">        ZooTrace.logTraceMessage(LOG, ZooTrace.CLIENT_PING_TRACE_MASK, msg);</span>
+<span class="nc" id="L197">    }</span>
+
+    private void logTraceTouchInvalidSession(long sessionId, int timeout) {
+<span class="nc" id="L200">        logTraceTouchSession(sessionId, timeout, &quot;invalid &quot;);</span>
+<span class="nc" id="L201">    }</span>
+
+    private void logTraceTouchClosingSession(long sessionId, int timeout) {
+<span class="nc" id="L204">        logTraceTouchSession(sessionId, timeout, &quot;closing &quot;);</span>
+<span class="nc" id="L205">    }</span>
+
+    public int getSessionTimeout(long sessionId) {
+<span class="nc" id="L208">        return sessionsWithTimeout.get(sessionId);</span>
+    }
+
+    synchronized public void setSessionClosing(long sessionId) {
+<span class="pc bpc" id="L212" title="1 of 2 branches missed.">        if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L213">            LOG.trace(&quot;Session closing: 0x&quot; + Long.toHexString(sessionId));</span>
+        }
+<span class="fc" id="L215">        SessionImpl s = sessionsById.get(sessionId);</span>
+<span class="pc bpc" id="L216" title="1 of 2 branches missed.">        if (s == null) {</span>
+<span class="nc" id="L217">            return;</span>
+        }
+<span class="fc" id="L219">        s.isClosing = true;</span>
+<span class="fc" id="L220">    }</span>
+
+    synchronized public void removeSession(long sessionId) {
+<span class="fc" id="L223">        LOG.debug(&quot;Removing session 0x&quot; + Long.toHexString(sessionId));</span>
+<span class="fc" id="L224">        SessionImpl s = sessionsById.remove(sessionId);</span>
+<span class="fc" id="L225">        sessionsWithTimeout.remove(sessionId);</span>
+<span class="pc bpc" id="L226" title="1 of 2 branches missed.">        if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L227">            ZooTrace.logTraceMessage(LOG, ZooTrace.SESSION_TRACE_MASK,</span>
+                    &quot;SessionTrackerImpl --- Removing session 0x&quot;
+<span class="nc" id="L229">                    + Long.toHexString(sessionId));</span>
+        }
+<span class="pc bpc" id="L231" title="1 of 2 branches missed.">        if (s != null) {</span>
+<span class="fc" id="L232">            sessionExpiryQueue.remove(s);</span>
+        }
+<span class="fc" id="L234">    }</span>
+
+    public void shutdown() {
+<span class="fc" id="L237">        LOG.info(&quot;Shutting down&quot;);</span>
+
+<span class="fc" id="L239">        running = false;</span>
+<span class="pc bpc" id="L240" title="1 of 2 branches missed.">        if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L241">            ZooTrace.logTraceMessage(LOG, ZooTrace.getTextTraceLevel(),</span>
+                                     &quot;Shutdown SessionTrackerImpl!&quot;);
+        }
+<span class="fc" id="L244">    }</span>
+
+    public long createSession(int sessionTimeout) {
+<span class="fc" id="L247">        long sessionId = nextSessionId.getAndIncrement();</span>
+<span class="fc" id="L248">        addSession(sessionId, sessionTimeout);</span>
+<span class="fc" id="L249">        return sessionId;</span>
+    }
+
+    public boolean addGlobalSession(long id, int sessionTimeout) {
+<span class="fc" id="L253">        return addSession(id, sessionTimeout);</span>
+    }
+
+    public synchronized boolean addSession(long id, int sessionTimeout) {
+<span class="fc" id="L257">        sessionsWithTimeout.put(id, sessionTimeout);</span>
+
+<span class="fc" id="L259">        boolean added = false;</span>
+
+<span class="fc" id="L261">        SessionImpl session = sessionsById.get(id);</span>
+<span class="fc bfc" id="L262" title="All 2 branches covered.">        if (session == null){</span>
+<span class="fc" id="L263">            session = new SessionImpl(id, sessionTimeout);</span>
+        }
+
+        // findbugs2.0.3 complains about get after put.
+        // long term strategy would be use computeIfAbsent after JDK 1.8
+<span class="fc" id="L268">        SessionImpl existedSession = sessionsById.putIfAbsent(id, session);</span>
+
+<span class="fc bfc" id="L270" title="All 2 branches covered.">        if (existedSession != null) {</span>
+<span class="fc" id="L271">            session = existedSession;</span>
+        } else {
+<span class="fc" id="L273">            added = true;</span>
+<span class="fc" id="L274">            LOG.debug(&quot;Adding session 0x&quot; + Long.toHexString(id));</span>
+        }
+
+<span class="pc bpc" id="L277" title="1 of 2 branches missed.">        if (LOG.isTraceEnabled()) {</span>
+<span class="nc bnc" id="L278" title="All 2 branches missed.">            String actionStr = added ? &quot;Adding&quot; : &quot;Existing&quot;;</span>
+<span class="nc" id="L279">            ZooTrace.logTraceMessage(LOG, ZooTrace.SESSION_TRACE_MASK,</span>
+                    &quot;SessionTrackerImpl --- &quot; + actionStr + &quot; session 0x&quot;
+<span class="nc" id="L281">                    + Long.toHexString(id) + &quot; &quot; + sessionTimeout);</span>
+        }
+
+<span class="fc" id="L284">        updateSessionExpiry(session, sessionTimeout);</span>
+<span class="fc" id="L285">        return added;</span>
+    }
+
+    public boolean isTrackingSession(long sessionId) {
+<span class="nc" id="L289">        return sessionsById.containsKey(sessionId);</span>
+    }
+
+    public synchronized void checkSession(long sessionId, Object owner)
+            throws KeeperException.SessionExpiredException,
+            KeeperException.SessionMovedException,
+            KeeperException.UnknownSessionException {
+<span class="fc" id="L296">        LOG.debug(&quot;Checking session 0x&quot; + Long.toHexString(sessionId));</span>
+<span class="fc" id="L297">        SessionImpl session = sessionsById.get(sessionId);</span>
+
+<span class="pc bpc" id="L299" title="1 of 2 branches missed.">        if (session == null) {</span>
+<span class="nc" id="L300">            throw new KeeperException.UnknownSessionException();</span>
+        }
+
+<span class="pc bpc" id="L303" title="1 of 2 branches missed.">        if (session.isClosing()) {</span>
+<span class="nc" id="L304">            throw new KeeperException.SessionExpiredException();</span>
+        }
+
+<span class="pc bpc" id="L307" title="1 of 2 branches missed.">        if (session.owner == null) {</span>
+<span class="fc" id="L308">            session.owner = owner;</span>
+<span class="nc bnc" id="L309" title="All 2 branches missed.">        } else if (session.owner != owner) {</span>
+<span class="nc" id="L310">            throw new KeeperException.SessionMovedException();</span>
+        }
+<span class="fc" id="L312">    }</span>
+
+    synchronized public void setOwner(long id, Object owner) throws SessionExpiredException {
+<span class="fc" id="L315">        SessionImpl session = sessionsById.get(id);</span>
+<span class="pc bpc" id="L316" title="2 of 4 branches missed.">        if (session == null || session.isClosing()) {</span>
+<span class="nc" id="L317">            throw new KeeperException.SessionExpiredException();</span>
+        }
+<span class="fc" id="L319">        session.owner = owner;</span>
+<span class="fc" id="L320">    }</span>
+
+    public void checkGlobalSession(long sessionId, Object owner)
+            throws KeeperException.SessionExpiredException,
+            KeeperException.SessionMovedException {
+        try {
+<span class="nc" id="L326">            checkSession(sessionId, owner);</span>
+<span class="nc" id="L327">        } catch (KeeperException.UnknownSessionException e) {</span>
+<span class="nc" id="L328">            throw new KeeperException.SessionExpiredException();</span>
+<span class="nc" id="L329">        }</span>
+<span class="nc" id="L330">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

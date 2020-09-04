@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>MBeanRegistry.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.jmx</a> &gt; <span class="el_source">MBeanRegistry.java</span></div><h1>MBeanRegistry.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.jmx;
+
+import java.lang.management.ManagementFactory;
+import java.util.Collection;
+import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.concurrent.ConcurrentHashMap;
+
+import javax.management.JMException;
+import javax.management.MBeanServer;
+import javax.management.MBeanServerFactory;
+import javax.management.MalformedObjectNameException;
+import javax.management.ObjectName;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This class provides a unified interface for registering/unregistering of
+ * zookeeper MBeans with the platform MBean server. It builds a hierarchy of MBeans
+ * where each MBean represented by a filesystem-like path. Eventually, this hierarchy
+ * will be stored in the zookeeper data tree instance as a virtual data tree.
+ */
+<span class="pc bpc" id="L43" title="1 of 2 branches missed.">public class MBeanRegistry {</span>
+<span class="fc" id="L44">    private static final Logger LOG = LoggerFactory.getLogger(MBeanRegistry.class);</span>
+    
+<span class="fc" id="L46">    private static volatile MBeanRegistry instance = new MBeanRegistry();</span>
+    
+<span class="fc" id="L48">    private final Object LOCK = new Object();</span>
+    
+<span class="fc" id="L50">    private Map&lt;ZKMBeanInfo, String&gt; mapBean2Path =</span>
+        new ConcurrentHashMap&lt;ZKMBeanInfo, String&gt;();
+    
+    private MBeanServer mBeanServer;
+
+    /**
+     * Useful for unit tests. Change the MBeanRegistry instance
+     *
+     * @param instance new instance
+     */
+    public static void setInstance(MBeanRegistry instance) {
+<span class="nc" id="L61">        MBeanRegistry.instance = instance;</span>
+<span class="nc" id="L62">    }</span>
+
+    public static MBeanRegistry getInstance() {
+<span class="fc" id="L65">        return instance;</span>
+    }
+
+<span class="fc" id="L68">    public MBeanRegistry () {</span>
+        try {
+<span class="fc" id="L70">            mBeanServer = ManagementFactory.getPlatformMBeanServer();        </span>
+<span class="nc" id="L71">        } catch (Error e) {</span>
+            // Account for running within IKVM and create a new MBeanServer
+            // if the PlatformMBeanServer does not exist.
+<span class="nc" id="L74">            mBeanServer =  MBeanServerFactory.createMBeanServer();</span>
+<span class="fc" id="L75">        }</span>
+<span class="fc" id="L76">    }</span>
+
+    /**
+     * Return the underlying MBeanServer that is being
+     * used to register MBean's. The returned MBeanServer
+     * may be a new empty MBeanServer if running through IKVM.
+     */
+    public MBeanServer getPlatformMBeanServer() {
+<span class="fc" id="L84">        return mBeanServer;</span>
+    }
+
+    /**
+     * Registers a new MBean with the platform MBean server. 
+     * @param bean the bean being registered
+     * @param parent if not null, the new bean will be registered as a child
+     * node of this parent.
+     */
+    public void register(ZKMBeanInfo bean, ZKMBeanInfo parent)
+        throws JMException
+    {
+<span class="pc bpc" id="L96" title="2 of 4 branches missed.">        assert bean != null;</span>
+<span class="fc" id="L97">        String path = null;</span>
+<span class="fc bfc" id="L98" title="All 2 branches covered.">        if (parent != null) {</span>
+<span class="fc" id="L99">            path = mapBean2Path.get(parent);</span>
+<span class="pc bpc" id="L100" title="2 of 4 branches missed.">            assert path != null;</span>
+        }
+<span class="fc" id="L102">        path = makeFullPath(path, parent);</span>
+<span class="pc bpc" id="L103" title="1 of 2 branches missed.">        if(bean.isHidden())</span>
+<span class="nc" id="L104">            return;</span>
+<span class="fc" id="L105">        ObjectName oname = makeObjectName(path, bean);</span>
+        try {
+<span class="fc" id="L107">            synchronized (LOCK) {</span>
+<span class="fc" id="L108">                mBeanServer.registerMBean(bean, oname);</span>
+<span class="fc" id="L109">                mapBean2Path.put(bean, path);</span>
+<span class="fc" id="L110">            }</span>
+<span class="nc" id="L111">        } catch (JMException e) {</span>
+<span class="nc" id="L112">            LOG.warn(&quot;Failed to register MBean &quot; + bean.getName());</span>
+<span class="nc" id="L113">            throw e;</span>
+<span class="fc" id="L114">        }</span>
+<span class="fc" id="L115">    }</span>
+
+    /**
+     * Unregister the MBean identified by the path.
+     * @param path
+     * @param bean
+     */
+    private void unregister(String path,ZKMBeanInfo bean) throws JMException  {
+<span class="pc bpc" id="L123" title="1 of 2 branches missed.">        if(path==null)</span>
+<span class="nc" id="L124">            return;</span>
+<span class="pc bpc" id="L125" title="1 of 2 branches missed.">        if (!bean.isHidden()) {</span>
+<span class="fc" id="L126">            final ObjectName objName = makeObjectName(path, bean);</span>
+<span class="fc" id="L127">            LOG.debug(&quot;Unregister MBean [{}]&quot;, objName);</span>
+<span class="fc" id="L128">            synchronized (LOCK) {</span>
+<span class="fc" id="L129">               mBeanServer.unregisterMBean(objName);</span>
+<span class="fc" id="L130">            }</span>
+        }        
+<span class="fc" id="L132">    }</span>
+    
+    /**
+     * @return a {@link Collection} with the {@link ZKMBeanInfo} instances not
+     *         unregistered. Mainly for testing purposes.
+     */
+    public Set&lt;ZKMBeanInfo&gt; getRegisteredBeans() {
+<span class="nc" id="L139">        return new HashSet&lt;ZKMBeanInfo&gt;(mapBean2Path.keySet());</span>
+    }
+
+    /**
+     * Unregister MBean.
+     * @param bean
+     */
+    public void unregister(ZKMBeanInfo bean) {
+<span class="pc bpc" id="L147" title="1 of 2 branches missed.">        if(bean==null)</span>
+<span class="nc" id="L148">            return;</span>
+<span class="fc" id="L149">        String path = mapBean2Path.remove(bean);</span>
+        try {
+<span class="fc" id="L151">            unregister(path,bean);</span>
+<span class="nc" id="L152">        } catch (JMException e) {</span>
+<span class="nc" id="L153">            LOG.warn(&quot;Error during unregister of [{}]&quot;, bean.getName(), e);</span>
+<span class="nc" id="L154">        } catch (Throwable t) {</span>
+<span class="nc" id="L155">            LOG.error(&quot;Unexpected exception during unregister of [{}]. It should be reviewed and fixed.&quot;, bean.getName(), t);</span>
+<span class="pc" id="L156">        }</span>
+<span class="fc" id="L157">    }</span>
+
+    /**
+     * Generate a filesystem-like path.
+     * @param prefix path prefix
+     * @param name path elements
+     * @return absolute path
+     */
+    public String makeFullPath(String prefix, String... name) {
+<span class="fc bfc" id="L166" title="All 4 branches covered.">        StringBuilder sb=new StringBuilder(prefix == null ? &quot;/&quot; : (prefix.equals(&quot;/&quot;)?prefix:prefix+&quot;/&quot;));</span>
+<span class="fc" id="L167">        boolean first=true;</span>
+<span class="fc bfc" id="L168" title="All 2 branches covered.">        for (String s : name) {</span>
+<span class="fc bfc" id="L169" title="All 2 branches covered.">            if(s==null) continue;</span>
+<span class="fc bfc" id="L170" title="All 2 branches covered.">            if(!first){</span>
+<span class="fc" id="L171">                sb.append(&quot;/&quot;);</span>
+            }else
+<span class="fc" id="L173">                first=false;</span>
+<span class="fc" id="L174">            sb.append(s);</span>
+        }
+<span class="fc" id="L176">        return sb.toString();</span>
+    }
+    
+    protected String makeFullPath(String prefix, ZKMBeanInfo bean) {
+<span class="fc bfc" id="L180" title="All 2 branches covered.">        return makeFullPath(prefix, bean == null ? null : bean.getName());</span>
+    }
+
+    /**
+     * This takes a path, such as /a/b/c, and converts it to 
+     * name0=a,name1=b,name2=c
+     */
+    private int tokenize(StringBuilder sb, String path, int index){
+<span class="fc" id="L188">        String[] tokens = path.split(&quot;/&quot;);</span>
+<span class="fc bfc" id="L189" title="All 2 branches covered.">        for (String s: tokens) {</span>
+<span class="fc bfc" id="L190" title="All 2 branches covered.">            if (s.length()==0)</span>
+<span class="fc" id="L191">                continue;</span>
+<span class="fc" id="L192">            sb.append(&quot;name&quot;).append(index++)</span>
+<span class="fc" id="L193">                    .append(&quot;=&quot;).append(s).append(&quot;,&quot;);</span>
+        }
+<span class="fc" id="L195">        return index;</span>
+    }
+    /**
+     * Builds an MBean path and creates an ObjectName instance using the path. 
+     * @param path MBean path
+     * @param bean the MBean instance
+     * @return ObjectName to be registered with the platform MBean server
+     */
+    protected ObjectName makeObjectName(String path, ZKMBeanInfo bean)
+        throws MalformedObjectNameException
+    {
+<span class="pc bpc" id="L206" title="1 of 2 branches missed.">        if(path==null)</span>
+<span class="nc" id="L207">            return null;</span>
+<span class="fc" id="L208">        StringBuilder beanName = new StringBuilder(CommonNames.DOMAIN + &quot;:&quot;);</span>
+<span class="fc" id="L209">        int counter=0;</span>
+<span class="fc" id="L210">        counter=tokenize(beanName,path,counter);</span>
+<span class="fc" id="L211">        tokenize(beanName,bean.getName(),counter);</span>
+<span class="fc" id="L212">        beanName.deleteCharAt(beanName.length()-1);</span>
+        try {
+<span class="fc" id="L214">            return new ObjectName(beanName.toString());</span>
+<span class="nc" id="L215">        } catch (MalformedObjectNameException e) {</span>
+<span class="nc" id="L216">            LOG.warn(&quot;Invalid name \&quot;&quot; + beanName.toString() + &quot;\&quot; for class &quot;</span>
+<span class="nc" id="L217">                    + bean.getClass().toString());</span>
+<span class="nc" id="L218">            throw e;</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

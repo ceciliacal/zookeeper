@@ -1,0 +1,1666 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ClientCnxn.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">ClientCnxn.java</span></div><h1>ClientCnxn.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper;
+
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.ConnectException;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketAddress;
+import java.net.SocketException;
+import java.nio.ByteBuffer;
+import java.util.HashSet;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.Set;
+import java.util.Map.Entry;
+import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.LinkedBlockingQueue;
+
+import javax.security.auth.login.LoginException;
+import javax.security.sasl.SaslException;
+
+import org.apache.jute.BinaryInputArchive;
+import org.apache.jute.BinaryOutputArchive;
+import org.apache.jute.Record;
+import org.apache.zookeeper.AsyncCallback.ACLCallback;
+import org.apache.zookeeper.AsyncCallback.Children2Callback;
+import org.apache.zookeeper.AsyncCallback.ChildrenCallback;
+import org.apache.zookeeper.AsyncCallback.Create2Callback;
+import org.apache.zookeeper.AsyncCallback.DataCallback;
+import org.apache.zookeeper.AsyncCallback.MultiCallback;
+import org.apache.zookeeper.AsyncCallback.StatCallback;
+import org.apache.zookeeper.AsyncCallback.StringCallback;
+import org.apache.zookeeper.AsyncCallback.VoidCallback;
+import org.apache.zookeeper.KeeperException.Code;
+import org.apache.zookeeper.OpResult.ErrorResult;
+import org.apache.zookeeper.Watcher.Event;
+import org.apache.zookeeper.Watcher.Event.EventType;
+import org.apache.zookeeper.Watcher.Event.KeeperState;
+import org.apache.zookeeper.ZooDefs.OpCode;
+import org.apache.zookeeper.ZooKeeper.States;
+import org.apache.zookeeper.ZooKeeper.WatchRegistration;
+import org.apache.zookeeper.client.ZKClientConfig;
+import org.apache.zookeeper.client.HostProvider;
+import org.apache.zookeeper.client.ZooKeeperSaslClient;
+import org.apache.zookeeper.common.Time;
+import org.apache.zookeeper.proto.AuthPacket;
+import org.apache.zookeeper.proto.ConnectRequest;
+import org.apache.zookeeper.proto.Create2Response;
+import org.apache.zookeeper.proto.CreateResponse;
+import org.apache.zookeeper.proto.ExistsResponse;
+import org.apache.zookeeper.proto.GetACLResponse;
+import org.apache.zookeeper.proto.GetChildren2Response;
+import org.apache.zookeeper.proto.GetChildrenResponse;
+import org.apache.zookeeper.proto.GetDataResponse;
+import org.apache.zookeeper.proto.GetSASLRequest;
+import org.apache.zookeeper.proto.ReplyHeader;
+import org.apache.zookeeper.proto.RequestHeader;
+import org.apache.zookeeper.proto.SetACLResponse;
+import org.apache.zookeeper.proto.SetDataResponse;
+import org.apache.zookeeper.proto.SetWatches;
+import org.apache.zookeeper.proto.WatcherEvent;
+import org.apache.zookeeper.server.ByteBufferInputStream;
+import org.apache.zookeeper.server.ZooKeeperThread;
+import org.apache.zookeeper.server.ZooTrace;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+
+/**
+ * This class manages the socket i/o for the client. ClientCnxn maintains a list
+ * of available servers to connect to and &quot;transparently&quot; switches servers it is
+ * connected to as needed.
+ *
+ */
+@SuppressFBWarnings({&quot;EI_EXPOSE_REP&quot;, &quot;EI_EXPOSE_REP2&quot;})
+public class ClientCnxn {
+<span class="fc" id="L103">    private static final Logger LOG = LoggerFactory.getLogger(ClientCnxn.class);</span>
+
+    /* ZOOKEEPER-706: If a session has a large number of watches set then
+     * attempting to re-establish those watches after a connection loss may
+     * fail due to the SetWatches request exceeding the server's configured
+     * jute.maxBuffer value. To avoid this we instead split the watch
+     * re-establishement across multiple SetWatches calls. This constant
+     * controls the size of each call. It is set to 128kB to be conservative
+     * with respect to the server's 1MB default for jute.maxBuffer.
+     */
+    private static final int SET_WATCHES_MAX_LENGTH = 128 * 1024;
+
+    static class AuthData {
+<span class="nc" id="L116">        AuthData(String scheme, byte data[]) {</span>
+<span class="nc" id="L117">            this.scheme = scheme;</span>
+<span class="nc" id="L118">            this.data = data;</span>
+<span class="nc" id="L119">        }</span>
+
+        String scheme;
+
+        byte data[];
+    }
+
+<span class="fc" id="L126">    private final CopyOnWriteArraySet&lt;AuthData&gt; authInfo = new CopyOnWriteArraySet&lt;AuthData&gt;();</span>
+
+    /**
+     * These are the packets that have been sent and are waiting for a response.
+     */
+<span class="fc" id="L131">    private final LinkedList&lt;Packet&gt; pendingQueue = new LinkedList&lt;Packet&gt;();</span>
+
+    /**
+     * These are the packets that need to be sent.
+     */
+<span class="fc" id="L136">    private final LinkedBlockingDeque&lt;Packet&gt; outgoingQueue = new LinkedBlockingDeque&lt;Packet&gt;();</span>
+
+    private int connectTimeout;
+
+    /**
+     * The timeout in ms the client negotiated with the server. This is the
+     * &quot;real&quot; timeout, not the timeout request by the client (which may have
+     * been increased/decreased by the server which applies bounds to this
+     * value.
+     */
+    private volatile int negotiatedSessionTimeout;
+
+    private int readTimeout;
+
+    private final int sessionTimeout;
+
+    private final ZooKeeper zooKeeper;
+
+    private final ClientWatchManager watcher;
+
+    private long sessionId;
+
+<span class="fc" id="L158">    private byte sessionPasswd[] = new byte[16];</span>
+
+    /**
+     * If true, the connection is allowed to go to r-o mode. This field's value
+     * is sent, besides other data, during session creation handshake. If the
+     * server on the other side of the wire is partitioned it'll accept
+     * read-only clients only.
+     */
+    private boolean readOnly;
+
+    final String chrootPath;
+
+    final SendThread sendThread;
+
+    final EventThread eventThread;
+
+    /**
+     * Set to true when close is called. Latches the connection such that we
+     * don't attempt to re-connect to the server if in the middle of closing the
+     * connection (client sends session disconnect to server as part of close
+     * operation)
+     */
+<span class="fc" id="L180">    private volatile boolean closing = false;</span>
+    
+    /**
+     * A set of ZooKeeper hosts this client could connect to.
+     */
+    private final HostProvider hostProvider;
+
+    /**
+     * Is set to true when a connection to a r/w server is established for the
+     * first time; never changed afterwards.
+     * &lt;p&gt;
+     * Is used to handle situations when client without sessionId connects to a
+     * read-only server. Such client receives &quot;fake&quot; sessionId from read-only
+     * server, but this sessionId is invalid for other servers. So when such
+     * client finds a r/w server, it sends 0 instead of fake sessionId during
+     * connection handshake and establishes new, valid session.
+     * &lt;p&gt;
+     * If this field is false (which implies we haven't seen r/w server before)
+     * then non-zero sessionId is fake, otherwise it is valid.
+     */
+<span class="fc" id="L200">    volatile boolean seenRwServerBefore = false;</span>
+
+
+    public ZooKeeperSaslClient zooKeeperSaslClient;
+
+    private final ZKClientConfig clientConfig;
+    /**
+     * If any request's response in not received in configured requestTimeout
+     * then it is assumed that the response packet is lost.
+     */
+    private long requestTimeout;
+
+    public long getSessionId() {
+<span class="fc" id="L213">        return sessionId;</span>
+    }
+
+    public byte[] getSessionPasswd() {
+<span class="nc" id="L217">        return sessionPasswd;</span>
+    }
+
+    public int getSessionTimeout() {
+<span class="nc" id="L221">        return negotiatedSessionTimeout;</span>
+    }
+
+    @Override
+    public String toString() {
+<span class="nc" id="L226">        StringBuilder sb = new StringBuilder();</span>
+
+<span class="nc" id="L228">        SocketAddress local = sendThread.getClientCnxnSocket().getLocalSocketAddress();</span>
+<span class="nc" id="L229">        SocketAddress remote = sendThread.getClientCnxnSocket().getRemoteSocketAddress();</span>
+<span class="nc" id="L230">        sb</span>
+<span class="nc" id="L231">            .append(&quot;sessionid:0x&quot;).append(Long.toHexString(getSessionId()))</span>
+<span class="nc" id="L232">            .append(&quot; local:&quot;).append(local)</span>
+<span class="nc" id="L233">            .append(&quot; remoteserver:&quot;).append(remote)</span>
+<span class="nc" id="L234">            .append(&quot; lastZxid:&quot;).append(lastZxid)</span>
+<span class="nc" id="L235">            .append(&quot; xid:&quot;).append(xid)</span>
+<span class="nc" id="L236">            .append(&quot; sent:&quot;).append(sendThread.getClientCnxnSocket().getSentCount())</span>
+<span class="nc" id="L237">            .append(&quot; recv:&quot;).append(sendThread.getClientCnxnSocket().getRecvCount())</span>
+<span class="nc" id="L238">            .append(&quot; queuedpkts:&quot;).append(outgoingQueue.size())</span>
+<span class="nc" id="L239">            .append(&quot; pendingresp:&quot;).append(pendingQueue.size())</span>
+<span class="nc" id="L240">            .append(&quot; queuedevents:&quot;).append(eventThread.waitingEvents.size());</span>
+
+<span class="nc" id="L242">        return sb.toString();</span>
+    }
+
+    /**
+     * This class allows us to pass the headers and the relevant records around.
+     */
+    static class Packet {
+        RequestHeader requestHeader;
+
+        ReplyHeader replyHeader;
+
+        Record request;
+
+        Record response;
+
+        ByteBuffer bb;
+
+        /** Client's view of the path (may differ due to chroot) **/
+        String clientPath;
+        /** Servers's view of the path (may differ due to chroot) **/
+        String serverPath;
+
+        boolean finished;
+
+        AsyncCallback cb;
+
+        Object ctx;
+
+        WatchRegistration watchRegistration;
+
+        public boolean readOnly;
+
+        WatchDeregistration watchDeregistration;
+
+        /** Convenience ctor */
+        Packet(RequestHeader requestHeader, ReplyHeader replyHeader,
+               Record request, Record response,
+               WatchRegistration watchRegistration) {
+<span class="fc" id="L280">            this(requestHeader, replyHeader, request, response,</span>
+                 watchRegistration, false);
+<span class="fc" id="L282">        }</span>
+
+        Packet(RequestHeader requestHeader, ReplyHeader replyHeader,
+               Record request, Record response,
+<span class="fc" id="L286">               WatchRegistration watchRegistration, boolean readOnly) {</span>
+
+<span class="fc" id="L288">            this.requestHeader = requestHeader;</span>
+<span class="fc" id="L289">            this.replyHeader = replyHeader;</span>
+<span class="fc" id="L290">            this.request = request;</span>
+<span class="fc" id="L291">            this.response = response;</span>
+<span class="fc" id="L292">            this.readOnly = readOnly;</span>
+<span class="fc" id="L293">            this.watchRegistration = watchRegistration;</span>
+<span class="fc" id="L294">        }</span>
+
+        public void createBB() {
+            try {
+<span class="fc" id="L298">                ByteArrayOutputStream baos = new ByteArrayOutputStream();</span>
+<span class="fc" id="L299">                BinaryOutputArchive boa = BinaryOutputArchive.getArchive(baos);</span>
+<span class="fc" id="L300">                boa.writeInt(-1, &quot;len&quot;); // We'll fill this in later</span>
+<span class="fc bfc" id="L301" title="All 2 branches covered.">                if (requestHeader != null) {</span>
+<span class="fc" id="L302">                    requestHeader.serialize(boa, &quot;header&quot;);</span>
+                }
+<span class="fc bfc" id="L304" title="All 2 branches covered.">                if (request instanceof ConnectRequest) {</span>
+<span class="fc" id="L305">                    request.serialize(boa, &quot;connect&quot;);</span>
+                    // append &quot;am-I-allowed-to-be-readonly&quot; flag
+<span class="fc" id="L307">                    boa.writeBool(readOnly, &quot;readOnly&quot;);</span>
+<span class="fc bfc" id="L308" title="All 2 branches covered.">                } else if (request != null) {</span>
+<span class="fc" id="L309">                    request.serialize(boa, &quot;request&quot;);</span>
+                }
+<span class="fc" id="L311">                baos.close();</span>
+<span class="fc" id="L312">                this.bb = ByteBuffer.wrap(baos.toByteArray());</span>
+<span class="fc" id="L313">                this.bb.putInt(this.bb.capacity() - 4);</span>
+<span class="fc" id="L314">                this.bb.rewind();</span>
+<span class="nc" id="L315">            } catch (IOException e) {</span>
+<span class="nc" id="L316">                LOG.warn(&quot;Ignoring unexpected exception&quot;, e);</span>
+<span class="fc" id="L317">            }</span>
+<span class="fc" id="L318">        }</span>
+
+        @Override
+        public String toString() {
+<span class="nc" id="L322">            StringBuilder sb = new StringBuilder();</span>
+
+<span class="nc" id="L324">            sb.append(&quot;clientPath:&quot; + clientPath);</span>
+<span class="nc" id="L325">            sb.append(&quot; serverPath:&quot; + serverPath);</span>
+<span class="nc" id="L326">            sb.append(&quot; finished:&quot; + finished);</span>
+
+<span class="nc" id="L328">            sb.append(&quot; header:: &quot; + requestHeader);</span>
+<span class="nc" id="L329">            sb.append(&quot; replyHeader:: &quot; + replyHeader);</span>
+<span class="nc" id="L330">            sb.append(&quot; request:: &quot; + request);</span>
+<span class="nc" id="L331">            sb.append(&quot; response:: &quot; + response);</span>
+
+            // jute toString is horrible, remove unnecessary newlines
+<span class="nc" id="L334">            return sb.toString().replaceAll(&quot;\r*\n+&quot;, &quot; &quot;);</span>
+        }
+    }
+
+    /**
+     * Creates a connection object. The actual network connect doesn't get
+     * established until needed. The start() instance method must be called
+     * subsequent to construction.
+     *
+     * @param chrootPath - the chroot of this client. Should be removed from this Class in ZOOKEEPER-838
+     * @param hostProvider
+     *                the list of ZooKeeper servers to connect to
+     * @param sessionTimeout
+     *                the timeout for connections.
+     * @param zooKeeper
+     *                the zookeeper object that this connection is related to.
+     * @param watcher watcher for this connection
+     * @param clientCnxnSocket
+     *                the socket implementation used (e.g. NIO/Netty)
+     * @param canBeReadOnly
+     *                whether the connection is allowed to go to read-only
+     *                mode in case of partitioning
+     * @throws IOException
+     */
+    public ClientCnxn(String chrootPath, HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
+            ClientWatchManager watcher, ClientCnxnSocket clientCnxnSocket, boolean canBeReadOnly)
+            throws IOException {
+<span class="nc" id="L361">        this(chrootPath, hostProvider, sessionTimeout, zooKeeper, watcher,</span>
+             clientCnxnSocket, 0, new byte[16], canBeReadOnly);
+<span class="nc" id="L363">    }</span>
+
+    /**
+     * Creates a connection object. The actual network connect doesn't get
+     * established until needed. The start() instance method must be called
+     * subsequent to construction.
+     *
+     * @param chrootPath - the chroot of this client. Should be removed from this Class in ZOOKEEPER-838
+     * @param hostProvider
+     *                the list of ZooKeeper servers to connect to
+     * @param sessionTimeout
+     *                the timeout for connections.
+     * @param zooKeeper
+     *                the zookeeper object that this connection is related to.
+     * @param watcher watcher for this connection
+     * @param clientCnxnSocket
+     *                the socket implementation used (e.g. NIO/Netty)
+     * @param sessionId session id if re-establishing session
+     * @param sessionPasswd session passwd if re-establishing session
+     * @param canBeReadOnly
+     *                whether the connection is allowed to go to read-only
+     *                mode in case of partitioning
+     * @throws IOException
+     */
+    public ClientCnxn(String chrootPath, HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
+            ClientWatchManager watcher, ClientCnxnSocket clientCnxnSocket,
+<span class="fc" id="L389">            long sessionId, byte[] sessionPasswd, boolean canBeReadOnly) {</span>
+<span class="fc" id="L390">        this.zooKeeper = zooKeeper;</span>
+<span class="fc" id="L391">        this.watcher = watcher;</span>
+<span class="fc" id="L392">        this.sessionId = sessionId;</span>
+<span class="fc" id="L393">        this.sessionPasswd = sessionPasswd;</span>
+<span class="fc" id="L394">        this.sessionTimeout = sessionTimeout;</span>
+<span class="fc" id="L395">        this.hostProvider = hostProvider;</span>
+<span class="fc" id="L396">        this.chrootPath = chrootPath;</span>
+
+<span class="fc" id="L398">        connectTimeout = sessionTimeout / hostProvider.size();</span>
+<span class="fc" id="L399">        readTimeout = sessionTimeout * 2 / 3;</span>
+<span class="fc" id="L400">        readOnly = canBeReadOnly;</span>
+
+<span class="fc" id="L402">        sendThread = new SendThread(clientCnxnSocket);</span>
+<span class="fc" id="L403">        eventThread = new EventThread();</span>
+<span class="fc" id="L404">        this.clientConfig=zooKeeper.getClientConfig();</span>
+<span class="fc" id="L405">        initRequestTimeout();</span>
+<span class="fc" id="L406">    }</span>
+
+    public void start() {
+<span class="fc" id="L409">        sendThread.start();</span>
+<span class="fc" id="L410">        eventThread.start();</span>
+<span class="fc" id="L411">    }</span>
+
+<span class="fc" id="L413">    private Object eventOfDeath = new Object();</span>
+
+    private static class WatcherSetEventPair {
+        private final Set&lt;Watcher&gt; watchers;
+        private final WatchedEvent event;
+
+<span class="fc" id="L419">        public WatcherSetEventPair(Set&lt;Watcher&gt; watchers, WatchedEvent event) {</span>
+<span class="fc" id="L420">            this.watchers = watchers;</span>
+<span class="fc" id="L421">            this.event = event;</span>
+<span class="fc" id="L422">        }</span>
+    }
+
+    /**
+     * Guard against creating &quot;-EventThread-EventThread-EventThread-...&quot; thread
+     * names when ZooKeeper object is being created from within a watcher.
+     * See ZOOKEEPER-795 for details.
+     */
+    private static String makeThreadName(String suffix) {
+<span class="fc" id="L431">        String name = Thread.currentThread().getName().</span>
+<span class="fc" id="L432">            replaceAll(&quot;-EventThread&quot;, &quot;&quot;);</span>
+<span class="fc" id="L433">        return name + suffix;</span>
+    }
+
+    class EventThread extends ZooKeeperThread {
+<span class="fc" id="L437">        private final LinkedBlockingQueue&lt;Object&gt; waitingEvents =</span>
+            new LinkedBlockingQueue&lt;Object&gt;();
+
+        /** This is really the queued session state until the event
+         * thread actually processes the event and hands it to the watcher.
+         * But for all intents and purposes this is the state.
+         */
+<span class="fc" id="L444">        private volatile KeeperState sessionState = KeeperState.Disconnected;</span>
+
+<span class="fc" id="L446">       private volatile boolean wasKilled = false;</span>
+<span class="fc" id="L447">       private volatile boolean isRunning = false;</span>
+
+<span class="fc" id="L449">        EventThread() {</span>
+<span class="fc" id="L450">            super(makeThreadName(&quot;-EventThread&quot;));</span>
+<span class="fc" id="L451">            setDaemon(true);</span>
+<span class="fc" id="L452">        }</span>
+
+        public void queueEvent(WatchedEvent event) {
+<span class="fc" id="L455">            queueEvent(event, null);</span>
+<span class="fc" id="L456">        }</span>
+
+        private void queueEvent(WatchedEvent event,
+                Set&lt;Watcher&gt; materializedWatchers) {
+<span class="pc bpc" id="L460" title="1 of 2 branches missed.">            if (event.getType() == EventType.None</span>
+<span class="pc bpc" id="L461" title="1 of 2 branches missed.">                    &amp;&amp; sessionState == event.getState()) {</span>
+<span class="nc" id="L462">                return;</span>
+            }
+<span class="fc" id="L464">            sessionState = event.getState();</span>
+            final Set&lt;Watcher&gt; watchers;
+<span class="pc bpc" id="L466" title="1 of 2 branches missed.">            if (materializedWatchers == null) {</span>
+                // materialize the watchers based on the event
+<span class="fc" id="L468">                watchers = watcher.materialize(event.getState(),</span>
+<span class="fc" id="L469">                        event.getType(), event.getPath());</span>
+            } else {
+<span class="nc" id="L471">                watchers = new HashSet&lt;Watcher&gt;();</span>
+<span class="nc" id="L472">                watchers.addAll(materializedWatchers);</span>
+            }
+<span class="fc" id="L474">            WatcherSetEventPair pair = new WatcherSetEventPair(watchers, event);</span>
+            // queue the pair (watch set &amp; event) for later processing
+<span class="fc" id="L476">            waitingEvents.add(pair);</span>
+<span class="fc" id="L477">        }</span>
+
+        public void queueCallback(AsyncCallback cb, int rc, String path,
+                Object ctx) {
+<span class="nc" id="L481">            waitingEvents.add(new LocalCallback(cb, rc, path, ctx));</span>
+<span class="nc" id="L482">        }</span>
+
+       @SuppressFBWarnings(&quot;JLM_JSR166_UTILCONCURRENT_MONITORENTER&quot;)
+       public void queuePacket(Packet packet) {
+<span class="nc bnc" id="L486" title="All 2 branches missed.">          if (wasKilled) {</span>
+<span class="nc" id="L487">             synchronized (waitingEvents) {</span>
+<span class="nc bnc" id="L488" title="All 2 branches missed.">                if (isRunning) waitingEvents.add(packet);</span>
+<span class="nc" id="L489">                else processEvent(packet);</span>
+<span class="nc" id="L490">             }</span>
+          } else {
+<span class="nc" id="L492">             waitingEvents.add(packet);</span>
+          }
+<span class="nc" id="L494">       }</span>
+
+        public void queueEventOfDeath() {
+<span class="fc" id="L497">            waitingEvents.add(eventOfDeath);</span>
+<span class="fc" id="L498">        }</span>
+
+        @Override
+        @SuppressFBWarnings(&quot;JLM_JSR166_UTILCONCURRENT_MONITORENTER&quot;)
+        public void run() {
+           try {
+<span class="fc" id="L504">              isRunning = true;</span>
+              while (true) {
+<span class="fc" id="L506">                 Object event = waitingEvents.take();</span>
+<span class="fc bfc" id="L507" title="All 2 branches covered.">                 if (event == eventOfDeath) {</span>
+<span class="fc" id="L508">                    wasKilled = true;</span>
+                 } else {
+<span class="fc" id="L510">                    processEvent(event);</span>
+                 }
+<span class="fc bfc" id="L512" title="All 2 branches covered.">                 if (wasKilled)</span>
+<span class="fc" id="L513">                    synchronized (waitingEvents) {</span>
+<span class="pc bpc" id="L514" title="1 of 2 branches missed.">                       if (waitingEvents.isEmpty()) {</span>
+<span class="fc" id="L515">                          isRunning = false;</span>
+<span class="fc" id="L516">                          break;</span>
+                       }
+<span class="nc" id="L518">                    }</span>
+<span class="fc" id="L519">              }</span>
+<span class="nc" id="L520">           } catch (InterruptedException e) {</span>
+<span class="nc" id="L521">              LOG.error(&quot;Event thread exiting due to interruption&quot;, e);</span>
+<span class="fc" id="L522">           }</span>
+
+<span class="fc" id="L524">            LOG.info(&quot;EventThread shut down for session: 0x{}&quot;,</span>
+<span class="fc" id="L525">                     Long.toHexString(getSessionId()));</span>
+<span class="fc" id="L526">        }</span>
+
+       private void processEvent(Object event) {
+          try {
+<span class="pc bpc" id="L530" title="1 of 2 branches missed.">              if (event instanceof WatcherSetEventPair) {</span>
+                  // each watcher will process the event
+<span class="fc" id="L532">                  WatcherSetEventPair pair = (WatcherSetEventPair) event;</span>
+<span class="fc bfc" id="L533" title="All 2 branches covered.">                  for (Watcher watcher : pair.watchers) {</span>
+                      try {
+<span class="fc" id="L535">                          watcher.process(pair.event);</span>
+<span class="nc" id="L536">                      } catch (Throwable t) {</span>
+<span class="nc" id="L537">                          LOG.error(&quot;Error while calling watcher &quot;, t);</span>
+<span class="fc" id="L538">                      }</span>
+<span class="fc" id="L539">                  }</span>
+<span class="pc bnc" id="L540" title="All 2 branches missed.">                } else if (event instanceof LocalCallback) {</span>
+<span class="nc" id="L541">                    LocalCallback lcb = (LocalCallback) event;</span>
+<span class="nc bnc" id="L542" title="All 2 branches missed.">                    if (lcb.cb instanceof StatCallback) {</span>
+<span class="nc" id="L543">                        ((StatCallback) lcb.cb).processResult(lcb.rc, lcb.path,</span>
+<span class="nc" id="L544">                                lcb.ctx, null);</span>
+<span class="nc bnc" id="L545" title="All 2 branches missed.">                    } else if (lcb.cb instanceof DataCallback) {</span>
+<span class="nc" id="L546">                        ((DataCallback) lcb.cb).processResult(lcb.rc, lcb.path,</span>
+<span class="nc" id="L547">                                lcb.ctx, null, null);</span>
+<span class="nc bnc" id="L548" title="All 2 branches missed.">                    } else if (lcb.cb instanceof ACLCallback) {</span>
+<span class="nc" id="L549">                        ((ACLCallback) lcb.cb).processResult(lcb.rc, lcb.path,</span>
+<span class="nc" id="L550">                                lcb.ctx, null, null);</span>
+<span class="nc bnc" id="L551" title="All 2 branches missed.">                    } else if (lcb.cb instanceof ChildrenCallback) {</span>
+<span class="nc" id="L552">                        ((ChildrenCallback) lcb.cb).processResult(lcb.rc,</span>
+<span class="nc" id="L553">                                lcb.path, lcb.ctx, null);</span>
+<span class="nc bnc" id="L554" title="All 2 branches missed.">                    } else if (lcb.cb instanceof Children2Callback) {</span>
+<span class="nc" id="L555">                        ((Children2Callback) lcb.cb).processResult(lcb.rc,</span>
+<span class="nc" id="L556">                                lcb.path, lcb.ctx, null, null);</span>
+<span class="nc bnc" id="L557" title="All 2 branches missed.">                    } else if (lcb.cb instanceof StringCallback) {</span>
+<span class="nc" id="L558">                        ((StringCallback) lcb.cb).processResult(lcb.rc,</span>
+<span class="nc" id="L559">                                lcb.path, lcb.ctx, null);</span>
+                    } else {
+<span class="nc" id="L561">                        ((VoidCallback) lcb.cb).processResult(lcb.rc, lcb.path,</span>
+<span class="nc" id="L562">                                lcb.ctx);</span>
+                    }
+<span class="nc" id="L564">                } else {</span>
+<span class="nc" id="L565">                  Packet p = (Packet) event;</span>
+<span class="nc" id="L566">                  int rc = 0;</span>
+<span class="nc" id="L567">                  String clientPath = p.clientPath;</span>
+<span class="nc bnc" id="L568" title="All 2 branches missed.">                  if (p.replyHeader.getErr() != 0) {</span>
+<span class="nc" id="L569">                      rc = p.replyHeader.getErr();</span>
+                  }
+<span class="nc bnc" id="L571" title="All 2 branches missed.">                  if (p.cb == null) {</span>
+<span class="nc" id="L572">                      LOG.warn(&quot;Somehow a null cb got to EventThread!&quot;);</span>
+<span class="nc bnc" id="L573" title="All 6 branches missed.">                  } else if (p.response instanceof ExistsResponse</span>
+                          || p.response instanceof SetDataResponse
+                          || p.response instanceof SetACLResponse) {
+<span class="nc" id="L576">                      StatCallback cb = (StatCallback) p.cb;</span>
+<span class="nc bnc" id="L577" title="All 2 branches missed.">                      if (rc == 0) {</span>
+<span class="nc bnc" id="L578" title="All 2 branches missed.">                          if (p.response instanceof ExistsResponse) {</span>
+<span class="nc" id="L579">                              cb.processResult(rc, clientPath, p.ctx,</span>
+                                      ((ExistsResponse) p.response)
+<span class="nc" id="L581">                                              .getStat());</span>
+<span class="nc bnc" id="L582" title="All 2 branches missed.">                          } else if (p.response instanceof SetDataResponse) {</span>
+<span class="nc" id="L583">                              cb.processResult(rc, clientPath, p.ctx,</span>
+                                      ((SetDataResponse) p.response)
+<span class="nc" id="L585">                                              .getStat());</span>
+<span class="nc bnc" id="L586" title="All 2 branches missed.">                          } else if (p.response instanceof SetACLResponse) {</span>
+<span class="nc" id="L587">                              cb.processResult(rc, clientPath, p.ctx,</span>
+                                      ((SetACLResponse) p.response)
+<span class="nc" id="L589">                                              .getStat());</span>
+                          }
+                      } else {
+<span class="nc" id="L592">                          cb.processResult(rc, clientPath, p.ctx, null);</span>
+                      }
+<span class="nc bnc" id="L594" title="All 2 branches missed.">                  } else if (p.response instanceof GetDataResponse) {</span>
+<span class="nc" id="L595">                      DataCallback cb = (DataCallback) p.cb;</span>
+<span class="nc" id="L596">                      GetDataResponse rsp = (GetDataResponse) p.response;</span>
+<span class="nc bnc" id="L597" title="All 2 branches missed.">                      if (rc == 0) {</span>
+<span class="nc" id="L598">                          cb.processResult(rc, clientPath, p.ctx, rsp</span>
+<span class="nc" id="L599">                                  .getData(), rsp.getStat());</span>
+                      } else {
+<span class="nc" id="L601">                          cb.processResult(rc, clientPath, p.ctx, null,</span>
+                                  null);
+                      }
+<span class="nc bnc" id="L604" title="All 2 branches missed.">                  } else if (p.response instanceof GetACLResponse) {</span>
+<span class="nc" id="L605">                      ACLCallback cb = (ACLCallback) p.cb;</span>
+<span class="nc" id="L606">                      GetACLResponse rsp = (GetACLResponse) p.response;</span>
+<span class="nc bnc" id="L607" title="All 2 branches missed.">                      if (rc == 0) {</span>
+<span class="nc" id="L608">                          cb.processResult(rc, clientPath, p.ctx, rsp</span>
+<span class="nc" id="L609">                                  .getAcl(), rsp.getStat());</span>
+                      } else {
+<span class="nc" id="L611">                          cb.processResult(rc, clientPath, p.ctx, null,</span>
+                                  null);
+                      }
+<span class="nc bnc" id="L614" title="All 2 branches missed.">                  } else if (p.response instanceof GetChildrenResponse) {</span>
+<span class="nc" id="L615">                      ChildrenCallback cb = (ChildrenCallback) p.cb;</span>
+<span class="nc" id="L616">                      GetChildrenResponse rsp = (GetChildrenResponse) p.response;</span>
+<span class="nc bnc" id="L617" title="All 2 branches missed.">                      if (rc == 0) {</span>
+<span class="nc" id="L618">                          cb.processResult(rc, clientPath, p.ctx, rsp</span>
+<span class="nc" id="L619">                                  .getChildren());</span>
+                      } else {
+<span class="nc" id="L621">                          cb.processResult(rc, clientPath, p.ctx, null);</span>
+                      }
+<span class="nc bnc" id="L623" title="All 2 branches missed.">                  } else if (p.response instanceof GetChildren2Response) {</span>
+<span class="nc" id="L624">                      Children2Callback cb = (Children2Callback) p.cb;</span>
+<span class="nc" id="L625">                      GetChildren2Response rsp = (GetChildren2Response) p.response;</span>
+<span class="nc bnc" id="L626" title="All 2 branches missed.">                      if (rc == 0) {</span>
+<span class="nc" id="L627">                          cb.processResult(rc, clientPath, p.ctx, rsp</span>
+<span class="nc" id="L628">                                  .getChildren(), rsp.getStat());</span>
+                      } else {
+<span class="nc" id="L630">                          cb.processResult(rc, clientPath, p.ctx, null, null);</span>
+                      }
+<span class="nc bnc" id="L632" title="All 2 branches missed.">                  } else if (p.response instanceof CreateResponse) {</span>
+<span class="nc" id="L633">                      StringCallback cb = (StringCallback) p.cb;</span>
+<span class="nc" id="L634">                      CreateResponse rsp = (CreateResponse) p.response;</span>
+<span class="nc bnc" id="L635" title="All 2 branches missed.">                      if (rc == 0) {</span>
+<span class="nc" id="L636">                          cb.processResult(rc, clientPath, p.ctx,</span>
+<span class="nc bnc" id="L637" title="All 2 branches missed.">                                  (chrootPath == null</span>
+<span class="nc" id="L638">                                          ? rsp.getPath()</span>
+<span class="nc" id="L639">                                          : rsp.getPath()</span>
+<span class="nc" id="L640">                                    .substring(chrootPath.length())));</span>
+                      } else {
+<span class="nc" id="L642">                          cb.processResult(rc, clientPath, p.ctx, null);</span>
+                      }
+<span class="nc bnc" id="L644" title="All 2 branches missed.">                  } else if (p.response instanceof Create2Response) {</span>
+<span class="nc" id="L645">                	  Create2Callback cb = (Create2Callback) p.cb;</span>
+<span class="nc" id="L646">                      Create2Response rsp = (Create2Response) p.response;</span>
+<span class="nc bnc" id="L647" title="All 2 branches missed.">                      if (rc == 0) {</span>
+<span class="nc" id="L648">                          cb.processResult(rc, clientPath, p.ctx,</span>
+<span class="nc bnc" id="L649" title="All 2 branches missed.">                                  (chrootPath == null</span>
+<span class="nc" id="L650">                                          ? rsp.getPath()</span>
+<span class="nc" id="L651">                                          : rsp.getPath()</span>
+<span class="nc" id="L652">                                    .substring(chrootPath.length())), rsp.getStat());</span>
+                      } else {
+<span class="nc" id="L654">                          cb.processResult(rc, clientPath, p.ctx, null, null);</span>
+                      }                   
+<span class="nc bnc" id="L656" title="All 2 branches missed.">                  } else if (p.response instanceof MultiResponse) {</span>
+<span class="nc" id="L657">                	  MultiCallback cb = (MultiCallback) p.cb;</span>
+<span class="nc" id="L658">                	  MultiResponse rsp = (MultiResponse) p.response;</span>
+<span class="nc bnc" id="L659" title="All 2 branches missed.">                	  if (rc == 0) {</span>
+<span class="nc" id="L660">                		  List&lt;OpResult&gt; results = rsp.getResultList();</span>
+<span class="nc" id="L661">                		  int newRc = rc;</span>
+<span class="nc bnc" id="L662" title="All 2 branches missed.">                		  for (OpResult result : results) {</span>
+<span class="nc bnc" id="L663" title="All 2 branches missed.">                			  if (result instanceof ErrorResult</span>
+<span class="nc" id="L664">                					  &amp;&amp; KeeperException.Code.OK.intValue() != (newRc = ((ErrorResult) result)</span>
+<span class="nc bnc" id="L665" title="All 2 branches missed.">                					  .getErr())) {</span>
+<span class="nc" id="L666">                				  break;</span>
+                			  }
+<span class="nc" id="L668">                		  }</span>
+<span class="nc" id="L669">                		  cb.processResult(newRc, clientPath, p.ctx, results);</span>
+<span class="nc" id="L670">                	  } else {</span>
+<span class="nc" id="L671">                		  cb.processResult(rc, clientPath, p.ctx, null);</span>
+                	  }
+<span class="nc bnc" id="L673" title="All 2 branches missed.">                  }  else if (p.cb instanceof VoidCallback) {</span>
+<span class="nc" id="L674">                      VoidCallback cb = (VoidCallback) p.cb;</span>
+<span class="nc" id="L675">                      cb.processResult(rc, clientPath, p.ctx);</span>
+                  }
+              }
+<span class="nc" id="L678">          } catch (Throwable t) {</span>
+<span class="nc" id="L679">              LOG.error(&quot;Caught unexpected throwable&quot;, t);</span>
+<span class="fc" id="L680">          }</span>
+<span class="fc" id="L681">       }</span>
+    }
+
+    // @VisibleForTesting
+    protected void finishPacket(Packet p) {
+<span class="fc" id="L686">        int err = p.replyHeader.getErr();</span>
+<span class="pc bpc" id="L687" title="1 of 2 branches missed.">        if (p.watchRegistration != null) {</span>
+<span class="nc" id="L688">            p.watchRegistration.register(err);</span>
+        }
+        // Add all the removed watch events to the event queue, so that the
+        // clients will be notified with 'Data/Child WatchRemoved' event type.
+<span class="fc bfc" id="L692" title="All 2 branches covered.">        if (p.watchDeregistration != null) {</span>
+<span class="fc" id="L693">            Map&lt;EventType, Set&lt;Watcher&gt;&gt; materializedWatchers = null;</span>
+            try {
+<span class="nc" id="L695">                materializedWatchers = p.watchDeregistration.unregister(err);</span>
+<span class="nc bnc" id="L696" title="All 2 branches missed.">                for (Entry&lt;EventType, Set&lt;Watcher&gt;&gt; entry : materializedWatchers</span>
+<span class="nc" id="L697">                        .entrySet()) {</span>
+<span class="nc" id="L698">                    Set&lt;Watcher&gt; watchers = entry.getValue();</span>
+<span class="nc bnc" id="L699" title="All 2 branches missed.">                    if (watchers.size() &gt; 0) {</span>
+<span class="nc" id="L700">                        queueEvent(p.watchDeregistration.getClientPath(), err,</span>
+<span class="nc" id="L701">                                watchers, entry.getKey());</span>
+                        // ignore connectionloss when removing from local
+                        // session
+<span class="nc" id="L704">                        p.replyHeader.setErr(Code.OK.intValue());</span>
+                    }
+<span class="nc" id="L706">                }</span>
+<span class="fc" id="L707">            } catch (KeeperException.NoWatcherException nwe) {</span>
+<span class="fc" id="L708">                p.replyHeader.setErr(nwe.code().intValue());</span>
+<span class="nc" id="L709">            } catch (KeeperException ke) {</span>
+<span class="nc" id="L710">                p.replyHeader.setErr(ke.code().intValue());</span>
+<span class="pc" id="L711">            }</span>
+        }
+
+<span class="pc bpc" id="L714" title="1 of 2 branches missed.">        if (p.cb == null) {</span>
+<span class="fc" id="L715">            synchronized (p) {</span>
+<span class="fc" id="L716">                p.finished = true;</span>
+<span class="fc" id="L717">                p.notifyAll();</span>
+<span class="fc" id="L718">            }</span>
+        } else {
+<span class="nc" id="L720">            p.finished = true;</span>
+<span class="nc" id="L721">            eventThread.queuePacket(p);</span>
+        }
+<span class="fc" id="L723">    }</span>
+
+    void queueEvent(String clientPath, int err,
+            Set&lt;Watcher&gt; materializedWatchers, EventType eventType) {
+<span class="nc" id="L727">        KeeperState sessionState = KeeperState.SyncConnected;</span>
+<span class="nc bnc" id="L728" title="All 2 branches missed.">        if (KeeperException.Code.SESSIONEXPIRED.intValue() == err</span>
+<span class="nc bnc" id="L729" title="All 2 branches missed.">                || KeeperException.Code.CONNECTIONLOSS.intValue() == err) {</span>
+<span class="nc" id="L730">            sessionState = Event.KeeperState.Disconnected;</span>
+        }
+<span class="nc" id="L732">        WatchedEvent event = new WatchedEvent(eventType, sessionState,</span>
+                clientPath);
+<span class="nc" id="L734">        eventThread.queueEvent(event, materializedWatchers);</span>
+<span class="nc" id="L735">    }</span>
+
+    void queueCallback(AsyncCallback cb, int rc, String path, Object ctx) {
+<span class="nc" id="L738">        eventThread.queueCallback(cb, rc, path, ctx);</span>
+<span class="nc" id="L739">    }</span>
+
+    private void conLossPacket(Packet p) {
+<span class="nc bnc" id="L742" title="All 2 branches missed.">        if (p.replyHeader == null) {</span>
+<span class="nc" id="L743">            return;</span>
+        }
+<span class="nc bnc" id="L745" title="All 3 branches missed.">        switch (state) {</span>
+        case AUTH_FAILED:
+<span class="nc" id="L747">            p.replyHeader.setErr(KeeperException.Code.AUTHFAILED.intValue());</span>
+<span class="nc" id="L748">            break;</span>
+        case CLOSED:
+<span class="nc" id="L750">            p.replyHeader.setErr(KeeperException.Code.SESSIONEXPIRED.intValue());</span>
+<span class="nc" id="L751">            break;</span>
+        default:
+<span class="nc" id="L753">            p.replyHeader.setErr(KeeperException.Code.CONNECTIONLOSS.intValue());</span>
+        }
+<span class="nc" id="L755">        finishPacket(p);</span>
+<span class="nc" id="L756">    }</span>
+
+    private volatile long lastZxid;
+
+    public long getLastZxid() {
+<span class="nc" id="L761">        return lastZxid;</span>
+    }
+
+    static class EndOfStreamException extends IOException {
+        private static final long serialVersionUID = -5438877188796231422L;
+
+        public EndOfStreamException(String msg) {
+<span class="nc" id="L768">            super(msg);</span>
+<span class="nc" id="L769">        }</span>
+        
+        @Override
+        public String toString() {
+<span class="nc" id="L773">            return &quot;EndOfStreamException: &quot; + getMessage();</span>
+        }
+    }
+
+    private static class SessionTimeoutException extends IOException {
+        private static final long serialVersionUID = 824482094072071178L;
+
+        public SessionTimeoutException(String msg) {
+<span class="nc" id="L781">            super(msg);</span>
+<span class="nc" id="L782">        }</span>
+    }
+    
+    private static class SessionExpiredException extends IOException {
+        private static final long serialVersionUID = -1388816932076193249L;
+
+        public SessionExpiredException(String msg) {
+<span class="nc" id="L789">            super(msg);</span>
+<span class="nc" id="L790">        }</span>
+    }
+
+    private static class RWServerFoundException extends IOException {
+        private static final long serialVersionUID = 90431199887158758L;
+
+        public RWServerFoundException(String msg) {
+<span class="nc" id="L797">            super(msg);</span>
+<span class="nc" id="L798">        }</span>
+    }
+
+    /**
+     * This class services the outgoing request queue and generates the heart
+     * beats. It also spawns the ReadThread.
+     */
+    class SendThread extends ZooKeeperThread {
+        private long lastPingSentNs;
+        private final ClientCnxnSocket clientCnxnSocket;
+<span class="fc" id="L808">        private Random r = new Random();</span>
+<span class="fc" id="L809">        private boolean isFirstConnect = true;</span>
+
+        void readResponse(ByteBuffer incomingBuffer) throws IOException {
+<span class="fc" id="L812">            ByteBufferInputStream bbis = new ByteBufferInputStream(</span>
+                    incomingBuffer);
+<span class="fc" id="L814">            BinaryInputArchive bbia = BinaryInputArchive.getArchive(bbis);</span>
+<span class="fc" id="L815">            ReplyHeader replyHdr = new ReplyHeader();</span>
+
+<span class="fc" id="L817">            replyHdr.deserialize(bbia, &quot;header&quot;);</span>
+<span class="pc bpc" id="L818" title="1 of 2 branches missed.">            if (replyHdr.getXid() == -2) {</span>
+                // -2 is the xid for pings
+<span class="nc bnc" id="L820" title="All 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L821">                    LOG.debug(&quot;Got ping response for sessionid: 0x&quot;</span>
+<span class="nc" id="L822">                            + Long.toHexString(sessionId)</span>
+                            + &quot; after &quot;
+<span class="nc" id="L824">                            + ((System.nanoTime() - lastPingSentNs) / 1000000)</span>
+                            + &quot;ms&quot;);
+                }
+<span class="nc" id="L827">                return;</span>
+            }
+<span class="pc bpc" id="L829" title="1 of 2 branches missed.">            if (replyHdr.getXid() == -4) {</span>
+                // -4 is the xid for AuthPacket               
+<span class="nc bnc" id="L831" title="All 2 branches missed.">                if(replyHdr.getErr() == KeeperException.Code.AUTHFAILED.intValue()) {</span>
+<span class="nc" id="L832">                    state = States.AUTH_FAILED;                    </span>
+<span class="nc" id="L833">                    eventThread.queueEvent( new WatchedEvent(Watcher.Event.EventType.None, </span>
+                            Watcher.Event.KeeperState.AuthFailed, null) );
+<span class="nc" id="L835">                    eventThread.queueEventOfDeath();</span>
+                }
+<span class="nc bnc" id="L837" title="All 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L838">                    LOG.debug(&quot;Got auth sessionid:0x&quot;</span>
+<span class="nc" id="L839">                            + Long.toHexString(sessionId));</span>
+                }
+<span class="nc" id="L841">                return;</span>
+            }
+<span class="pc bpc" id="L843" title="1 of 2 branches missed.">            if (replyHdr.getXid() == -1) {</span>
+                // -1 means notification
+<span class="nc bnc" id="L845" title="All 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L846">                    LOG.debug(&quot;Got notification sessionid:0x&quot;</span>
+<span class="nc" id="L847">                        + Long.toHexString(sessionId));</span>
+                }
+<span class="nc" id="L849">                WatcherEvent event = new WatcherEvent();</span>
+<span class="nc" id="L850">                event.deserialize(bbia, &quot;response&quot;);</span>
+
+                // convert from a server path to a client path
+<span class="nc bnc" id="L853" title="All 2 branches missed.">                if (chrootPath != null) {</span>
+<span class="nc" id="L854">                    String serverPath = event.getPath();</span>
+<span class="nc bnc" id="L855" title="All 2 branches missed.">                    if(serverPath.compareTo(chrootPath)==0)</span>
+<span class="nc" id="L856">                        event.setPath(&quot;/&quot;);</span>
+<span class="nc bnc" id="L857" title="All 2 branches missed.">                    else if (serverPath.length() &gt; chrootPath.length())</span>
+<span class="nc" id="L858">                        event.setPath(serverPath.substring(chrootPath.length()));</span>
+                    else {
+<span class="nc" id="L860">                    	LOG.warn(&quot;Got server path &quot; + event.getPath()</span>
+                    			+ &quot; which is too short for chroot path &quot;
+                    			+ chrootPath);
+                    }
+                }
+
+<span class="nc" id="L866">                WatchedEvent we = new WatchedEvent(event);</span>
+<span class="nc bnc" id="L867" title="All 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L868">                    LOG.debug(&quot;Got &quot; + we + &quot; for sessionid 0x&quot;</span>
+<span class="nc" id="L869">                            + Long.toHexString(sessionId));</span>
+                }
+
+<span class="nc" id="L872">                eventThread.queueEvent( we );</span>
+<span class="nc" id="L873">                return;</span>
+            }
+
+            // If SASL authentication is currently in progress, construct and
+            // send a response packet immediately, rather than queuing a
+            // response as with other packets.
+<span class="pc bpc" id="L879" title="1 of 2 branches missed.">            if (tunnelAuthInProgress()) {</span>
+<span class="nc" id="L880">                GetSASLRequest request = new GetSASLRequest();</span>
+<span class="nc" id="L881">                request.deserialize(bbia,&quot;token&quot;);</span>
+<span class="nc" id="L882">                zooKeeperSaslClient.respondToServer(request.getToken(),</span>
+                  ClientCnxn.this);
+<span class="nc" id="L884">                return;</span>
+            }
+
+            Packet packet;
+<span class="fc" id="L888">            synchronized (pendingQueue) {</span>
+<span class="pc bpc" id="L889" title="1 of 2 branches missed.">                if (pendingQueue.size() == 0) {</span>
+<span class="nc" id="L890">                    throw new IOException(&quot;Nothing in the queue, but got &quot;</span>
+<span class="nc" id="L891">                            + replyHdr.getXid());</span>
+                }
+<span class="fc" id="L893">                packet = pendingQueue.remove();</span>
+<span class="fc" id="L894">            }</span>
+            /*
+             * Since requests are processed in order, we better get a response
+             * to the first request!
+             */
+            try {
+<span class="pc bpc" id="L900" title="1 of 2 branches missed.">                if (packet.requestHeader.getXid() != replyHdr.getXid()) {</span>
+<span class="nc" id="L901">                    packet.replyHeader.setErr(</span>
+<span class="nc" id="L902">                            KeeperException.Code.CONNECTIONLOSS.intValue());</span>
+<span class="nc" id="L903">                    throw new IOException(&quot;Xid out of order. Got Xid &quot;</span>
+<span class="nc" id="L904">                            + replyHdr.getXid() + &quot; with err &quot; +</span>
+<span class="nc" id="L905">                            + replyHdr.getErr() +</span>
+                            &quot; expected Xid &quot;
+<span class="nc" id="L907">                            + packet.requestHeader.getXid()</span>
+                            + &quot; for a packet with details: &quot;
+                            + packet );
+                }
+
+<span class="fc" id="L912">                packet.replyHeader.setXid(replyHdr.getXid());</span>
+<span class="fc" id="L913">                packet.replyHeader.setErr(replyHdr.getErr());</span>
+<span class="fc" id="L914">                packet.replyHeader.setZxid(replyHdr.getZxid());</span>
+<span class="pc bpc" id="L915" title="1 of 2 branches missed.">                if (replyHdr.getZxid() &gt; 0) {</span>
+<span class="fc" id="L916">                    lastZxid = replyHdr.getZxid();</span>
+                }
+<span class="pc bpc" id="L918" title="3 of 4 branches missed.">                if (packet.response != null &amp;&amp; replyHdr.getErr() == 0) {</span>
+<span class="nc" id="L919">                    packet.response.deserialize(bbia, &quot;response&quot;);</span>
+                }
+
+<span class="pc bpc" id="L922" title="1 of 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L923">                    LOG.debug(&quot;Reading reply sessionid:0x&quot;</span>
+<span class="nc" id="L924">                            + Long.toHexString(sessionId) + &quot;, packet:: &quot; + packet);</span>
+                }
+            } finally {
+<span class="fc" id="L927">                finishPacket(packet);</span>
+            }
+<span class="fc" id="L929">        }</span>
+
+<span class="fc" id="L931">        SendThread(ClientCnxnSocket clientCnxnSocket) {</span>
+<span class="fc" id="L932">            super(makeThreadName(&quot;-SendThread()&quot;));</span>
+<span class="fc" id="L933">            state = States.CONNECTING;</span>
+<span class="fc" id="L934">            this.clientCnxnSocket = clientCnxnSocket;</span>
+<span class="fc" id="L935">            setDaemon(true);</span>
+<span class="fc" id="L936">        }</span>
+
+        // TODO: can not name this method getState since Thread.getState()
+        // already exists
+        // It would be cleaner to make class SendThread an implementation of
+        // Runnable
+        /**
+         * Used by ClientCnxnSocket
+         * 
+         * @return
+         */
+        ZooKeeper.States getZkState() {
+<span class="fc" id="L948">            return state;</span>
+        }
+
+        ClientCnxnSocket getClientCnxnSocket() {
+<span class="fc" id="L952">            return clientCnxnSocket;</span>
+        }
+
+        /**
+         * Setup session, previous watches, authentication.
+         */
+        void primeConnection() throws IOException {
+<span class="fc" id="L959">            LOG.info(&quot;Socket connection established, initiating session, client: {}, server: {}&quot;,</span>
+<span class="fc" id="L960">                    clientCnxnSocket.getLocalSocketAddress(),</span>
+<span class="fc" id="L961">                    clientCnxnSocket.getRemoteSocketAddress());</span>
+<span class="fc" id="L962">            isFirstConnect = false;</span>
+<span class="pc bpc" id="L963" title="1 of 2 branches missed.">            long sessId = (seenRwServerBefore) ? sessionId : 0;</span>
+<span class="fc" id="L964">            ConnectRequest conReq = new ConnectRequest(0, lastZxid,</span>
+<span class="fc" id="L965">                    sessionTimeout, sessId, sessionPasswd);</span>
+            // We add backwards since we are pushing into the front
+            // Only send if there's a pending watch
+            // TODO: here we have the only remaining use of zooKeeper in
+            // this class. It's to be eliminated!
+<span class="pc bpc" id="L970" title="1 of 2 branches missed.">            if (!clientConfig.getBoolean(ZKClientConfig.DISABLE_AUTO_WATCH_RESET)) {</span>
+<span class="fc" id="L971">                List&lt;String&gt; dataWatches = zooKeeper.getDataWatches();</span>
+<span class="fc" id="L972">                List&lt;String&gt; existWatches = zooKeeper.getExistWatches();</span>
+<span class="fc" id="L973">                List&lt;String&gt; childWatches = zooKeeper.getChildWatches();</span>
+<span class="pc bpc" id="L974" title="1 of 2 branches missed.">                if (!dataWatches.isEmpty()</span>
+<span class="pc bpc" id="L975" title="2 of 4 branches missed.">                        || !existWatches.isEmpty() || !childWatches.isEmpty()) {</span>
+<span class="nc" id="L976">                    Iterator&lt;String&gt; dataWatchesIter = prependChroot(dataWatches).iterator();</span>
+<span class="nc" id="L977">                    Iterator&lt;String&gt; existWatchesIter = prependChroot(existWatches).iterator();</span>
+<span class="nc" id="L978">                    Iterator&lt;String&gt; childWatchesIter = prependChroot(childWatches).iterator();</span>
+<span class="nc" id="L979">                    long setWatchesLastZxid = lastZxid;</span>
+
+<span class="nc bnc" id="L981" title="All 2 branches missed.">                    while (dataWatchesIter.hasNext()</span>
+<span class="nc bnc" id="L982" title="All 4 branches missed.">                           || existWatchesIter.hasNext() || childWatchesIter.hasNext()) {</span>
+<span class="nc" id="L983">                        List&lt;String&gt; dataWatchesBatch = new ArrayList&lt;String&gt;();</span>
+<span class="nc" id="L984">                        List&lt;String&gt; existWatchesBatch = new ArrayList&lt;String&gt;();</span>
+<span class="nc" id="L985">                        List&lt;String&gt; childWatchesBatch = new ArrayList&lt;String&gt;();</span>
+<span class="nc" id="L986">                        int batchLength = 0;</span>
+
+                        // Note, we may exceed our max length by a bit when we add the last
+                        // watch in the batch. This isn't ideal, but it makes the code simpler.
+<span class="nc bnc" id="L990" title="All 2 branches missed.">                        while (batchLength &lt; SET_WATCHES_MAX_LENGTH) {</span>
+                            final String watch;
+<span class="nc bnc" id="L992" title="All 2 branches missed.">                            if (dataWatchesIter.hasNext()) {</span>
+<span class="nc" id="L993">                                watch = dataWatchesIter.next();</span>
+<span class="nc" id="L994">                                dataWatchesBatch.add(watch);</span>
+<span class="nc bnc" id="L995" title="All 2 branches missed.">                            } else if (existWatchesIter.hasNext()) {</span>
+<span class="nc" id="L996">                                watch = existWatchesIter.next();</span>
+<span class="nc" id="L997">                                existWatchesBatch.add(watch);</span>
+<span class="nc bnc" id="L998" title="All 2 branches missed.">                            } else if (childWatchesIter.hasNext()) {</span>
+<span class="nc" id="L999">                                watch = childWatchesIter.next();</span>
+<span class="nc" id="L1000">                                childWatchesBatch.add(watch);</span>
+                            } else {
+                                break;
+                            }
+<span class="nc" id="L1004">                            batchLength += watch.length();</span>
+<span class="nc" id="L1005">                        }</span>
+
+<span class="nc" id="L1007">                        SetWatches sw = new SetWatches(setWatchesLastZxid,</span>
+                                                       dataWatchesBatch,
+                                                       existWatchesBatch,
+                                                       childWatchesBatch);
+<span class="nc" id="L1011">                        RequestHeader header = new RequestHeader(-8, OpCode.setWatches);</span>
+<span class="nc" id="L1012">                        Packet packet = new Packet(header, new ReplyHeader(), sw, null, null);</span>
+<span class="nc" id="L1013">                        outgoingQueue.addFirst(packet);</span>
+<span class="nc" id="L1014">                    }</span>
+                }
+            }
+
+<span class="pc bpc" id="L1018" title="1 of 2 branches missed.">            for (AuthData id : authInfo) {</span>
+<span class="nc" id="L1019">                outgoingQueue.addFirst(new Packet(new RequestHeader(-4,</span>
+                        OpCode.auth), null, new AuthPacket(0, id.scheme,
+                        id.data), null, null));
+<span class="nc" id="L1022">            }</span>
+<span class="fc" id="L1023">            outgoingQueue.addFirst(new Packet(null, null, conReq,</span>
+<span class="fc" id="L1024">                    null, null, readOnly));</span>
+<span class="fc" id="L1025">            clientCnxnSocket.connectionPrimed();</span>
+<span class="pc bpc" id="L1026" title="1 of 2 branches missed.">            if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L1027">                LOG.debug(&quot;Session establishment request sent on &quot;</span>
+<span class="nc" id="L1028">                        + clientCnxnSocket.getRemoteSocketAddress());</span>
+            }
+<span class="fc" id="L1030">        }</span>
+
+        private List&lt;String&gt; prependChroot(List&lt;String&gt; paths) {
+<span class="nc bnc" id="L1033" title="All 4 branches missed.">            if (chrootPath != null &amp;&amp; !paths.isEmpty()) {</span>
+<span class="nc bnc" id="L1034" title="All 2 branches missed.">                for (int i = 0; i &lt; paths.size(); ++i) {</span>
+<span class="nc" id="L1035">                    String clientPath = paths.get(i);</span>
+                    String serverPath;
+                    // handle clientPath = &quot;/&quot;
+<span class="nc bnc" id="L1038" title="All 2 branches missed.">                    if (clientPath.length() == 1) {</span>
+<span class="nc" id="L1039">                        serverPath = chrootPath;</span>
+                    } else {
+<span class="nc" id="L1041">                        serverPath = chrootPath + clientPath;</span>
+                    }
+<span class="nc" id="L1043">                    paths.set(i, serverPath);</span>
+                }
+            }
+<span class="nc" id="L1046">            return paths;</span>
+        }
+
+        private void sendPing() {
+<span class="nc" id="L1050">            lastPingSentNs = System.nanoTime();</span>
+<span class="nc" id="L1051">            RequestHeader h = new RequestHeader(-2, OpCode.ping);</span>
+<span class="nc" id="L1052">            queuePacket(h, null, null, null, null, null, null, null, null);</span>
+<span class="nc" id="L1053">        }</span>
+
+<span class="fc" id="L1055">        private InetSocketAddress rwServerAddress = null;</span>
+
+        private final static int minPingRwTimeout = 100;
+
+        private final static int maxPingRwTimeout = 60000;
+
+<span class="fc" id="L1061">        private int pingRwTimeout = minPingRwTimeout;</span>
+
+        // Set to true if and only if constructor of ZooKeeperSaslClient
+        // throws a LoginException: see startConnect() below.
+<span class="fc" id="L1065">        private boolean saslLoginFailed = false;</span>
+
+        private void startConnect(InetSocketAddress addr) throws IOException {
+            // initializing it for new connection
+<span class="fc" id="L1069">            saslLoginFailed = false;</span>
+<span class="pc bpc" id="L1070" title="1 of 2 branches missed.">            if(!isFirstConnect){</span>
+                try {
+<span class="nc" id="L1072">                    Thread.sleep(r.nextInt(1000));</span>
+<span class="nc" id="L1073">                } catch (InterruptedException e) {</span>
+<span class="nc" id="L1074">                    LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+<span class="nc" id="L1075">                }</span>
+            }
+<span class="fc" id="L1077">            state = States.CONNECTING;</span>
+
+<span class="fc" id="L1079">            String hostPort = addr.getHostString() + &quot;:&quot; + addr.getPort();</span>
+<span class="fc" id="L1080">            MDC.put(&quot;myid&quot;, hostPort);</span>
+<span class="fc" id="L1081">            setName(getName().replaceAll(&quot;\\(.*\\)&quot;, &quot;(&quot; + hostPort + &quot;)&quot;));</span>
+<span class="pc bpc" id="L1082" title="1 of 2 branches missed.">            if (clientConfig.isSaslClientEnabled()) {</span>
+                try {
+<span class="pc bpc" id="L1084" title="1 of 2 branches missed.">                    if (zooKeeperSaslClient != null) {</span>
+<span class="nc" id="L1085">                        zooKeeperSaslClient.shutdown();</span>
+                    }
+<span class="fc" id="L1087">                    zooKeeperSaslClient = new ZooKeeperSaslClient(SaslServerPrincipal.getServerPrincipal(addr, clientConfig),</span>
+<span class="fc" id="L1088">                        clientConfig);</span>
+<span class="nc" id="L1089">                } catch (LoginException e) {</span>
+                    // An authentication error occurred when the SASL client tried to initialize:
+                    // for Kerberos this means that the client failed to authenticate with the KDC.
+                    // This is different from an authentication error that occurs during communication
+                    // with the Zookeeper server, which is handled below.
+<span class="nc" id="L1094">                    LOG.warn(&quot;SASL configuration failed: &quot; + e + &quot; Will continue connection to Zookeeper server without &quot;</span>
+                      + &quot;SASL authentication, if Zookeeper server allows it.&quot;);
+<span class="nc" id="L1096">                    eventThread.queueEvent(new WatchedEvent(</span>
+                      Watcher.Event.EventType.None,
+                      Watcher.Event.KeeperState.AuthFailed, null));
+<span class="nc" id="L1099">                    saslLoginFailed = true;</span>
+<span class="fc" id="L1100">                }</span>
+            }
+<span class="fc" id="L1102">            logStartConnect(addr);</span>
+
+<span class="fc" id="L1104">            clientCnxnSocket.connect(addr);</span>
+<span class="fc" id="L1105">        }</span>
+
+        private void logStartConnect(InetSocketAddress addr) {
+<span class="fc" id="L1108">            String msg = &quot;Opening socket connection to server &quot; + addr;</span>
+<span class="pc bpc" id="L1109" title="1 of 2 branches missed.">            if (zooKeeperSaslClient != null) {</span>
+<span class="fc" id="L1110">              msg += &quot;. &quot; + zooKeeperSaslClient.getConfigStatus();</span>
+            }
+<span class="fc" id="L1112">            LOG.info(msg);</span>
+<span class="fc" id="L1113">        }</span>
+
+        private static final String RETRY_CONN_MSG =
+            &quot;, closing socket connection and attempting reconnect&quot;;
+        @Override
+        public void run() {
+<span class="fc" id="L1119">            clientCnxnSocket.introduce(this, sessionId, outgoingQueue);</span>
+<span class="fc" id="L1120">            clientCnxnSocket.updateNow();</span>
+<span class="fc" id="L1121">            clientCnxnSocket.updateLastSendAndHeard();</span>
+            int to;
+<span class="fc" id="L1123">            long lastPingRwServer = Time.currentElapsedTime();</span>
+<span class="fc" id="L1124">            final int MAX_SEND_PING_INTERVAL = 10000; //10 seconds</span>
+<span class="fc" id="L1125">            InetSocketAddress serverAddress = null;</span>
+<span class="fc bfc" id="L1126" title="All 2 branches covered.">            while (state.isAlive()) {</span>
+                try {
+<span class="fc bfc" id="L1128" title="All 2 branches covered.">                    if (!clientCnxnSocket.isConnected()) {</span>
+                        // don't re-establish connection if we are closing
+<span class="pc bpc" id="L1130" title="1 of 2 branches missed.">                        if (closing) {</span>
+<span class="nc" id="L1131">                            break;</span>
+                        }
+<span class="pc bpc" id="L1133" title="1 of 2 branches missed.">                        if (rwServerAddress != null) {</span>
+<span class="nc" id="L1134">                            serverAddress = rwServerAddress;</span>
+<span class="nc" id="L1135">                            rwServerAddress = null;</span>
+                        } else {
+<span class="fc" id="L1137">                            serverAddress = hostProvider.next(1000);</span>
+                        }
+<span class="fc" id="L1139">                        startConnect(serverAddress);</span>
+<span class="fc" id="L1140">                        clientCnxnSocket.updateLastSendAndHeard();</span>
+                    }
+
+<span class="fc bfc" id="L1143" title="All 2 branches covered.">                    if (state.isConnected()) {</span>
+                        // determine whether we need to send an AuthFailed event.
+<span class="pc bpc" id="L1145" title="1 of 2 branches missed.">                        if (zooKeeperSaslClient != null) {</span>
+<span class="fc" id="L1146">                            boolean sendAuthEvent = false;</span>
+<span class="pc bpc" id="L1147" title="1 of 2 branches missed.">                            if (zooKeeperSaslClient.getSaslState() == ZooKeeperSaslClient.SaslState.INITIAL) {</span>
+                                try {
+<span class="nc" id="L1149">                                    zooKeeperSaslClient.initialize(ClientCnxn.this);</span>
+<span class="nc" id="L1150">                                } catch (SaslException e) {</span>
+<span class="nc" id="L1151">                                   LOG.error(&quot;SASL authentication with Zookeeper Quorum member failed: &quot; + e);</span>
+<span class="nc" id="L1152">                                    state = States.AUTH_FAILED;</span>
+<span class="nc" id="L1153">                                    sendAuthEvent = true;</span>
+<span class="nc" id="L1154">                                }</span>
+                            }
+<span class="fc" id="L1156">                            KeeperState authState = zooKeeperSaslClient.getKeeperState();</span>
+<span class="pc bpc" id="L1157" title="1 of 2 branches missed.">                            if (authState != null) {</span>
+<span class="nc bnc" id="L1158" title="All 2 branches missed.">                                if (authState == KeeperState.AuthFailed) {</span>
+                                    // An authentication error occurred during authentication with the Zookeeper Server.
+<span class="nc" id="L1160">                                    state = States.AUTH_FAILED;</span>
+<span class="nc" id="L1161">                                    sendAuthEvent = true;</span>
+                                } else {
+<span class="nc bnc" id="L1163" title="All 2 branches missed.">                                    if (authState == KeeperState.SaslAuthenticated) {</span>
+<span class="nc" id="L1164">                                        sendAuthEvent = true;</span>
+                                    }
+                                }
+                            }
+
+<span class="pc bpc" id="L1169" title="1 of 2 branches missed.">                            if (sendAuthEvent) {</span>
+<span class="nc" id="L1170">                                eventThread.queueEvent(new WatchedEvent(</span>
+                                      Watcher.Event.EventType.None,
+                                      authState,null));
+<span class="nc bnc" id="L1173" title="All 2 branches missed.">                                if (state == States.AUTH_FAILED) {</span>
+<span class="nc" id="L1174">                                  eventThread.queueEventOfDeath();</span>
+                                }
+                            }
+                        }
+<span class="fc" id="L1178">                        to = readTimeout - clientCnxnSocket.getIdleRecv();</span>
+                    } else {
+<span class="fc" id="L1180">                        to = connectTimeout - clientCnxnSocket.getIdleRecv();</span>
+                    }
+                    
+<span class="pc bpc" id="L1183" title="1 of 2 branches missed.">                    if (to &lt;= 0) {</span>
+                        String warnInfo;
+<span class="nc" id="L1185">                        warnInfo = &quot;Client session timed out, have not heard from server in &quot;</span>
+<span class="nc" id="L1186">                            + clientCnxnSocket.getIdleRecv()</span>
+                            + &quot;ms&quot;
+                            + &quot; for sessionid 0x&quot;
+<span class="nc" id="L1189">                            + Long.toHexString(sessionId);</span>
+<span class="nc" id="L1190">                        LOG.warn(warnInfo);</span>
+<span class="nc" id="L1191">                        throw new SessionTimeoutException(warnInfo);</span>
+                    }
+<span class="fc bfc" id="L1193" title="All 2 branches covered.">                    if (state.isConnected()) {</span>
+                    	//1000(1 second) is to prevent race condition missing to send the second ping
+                    	//also make sure not to send too many pings when readTimeout is small 
+<span class="fc" id="L1196">                        int timeToNextPing = readTimeout / 2 - clientCnxnSocket.getIdleSend() - </span>
+<span class="fc bfc" id="L1197" title="All 2 branches covered.">                        		((clientCnxnSocket.getIdleSend() &gt; 1000) ? 1000 : 0);</span>
+                        //send a ping request either time is due or no packet sent out within MAX_SEND_PING_INTERVAL
+<span class="pc bpc" id="L1199" title="2 of 4 branches missed.">                        if (timeToNextPing &lt;= 0 || clientCnxnSocket.getIdleSend() &gt; MAX_SEND_PING_INTERVAL) {</span>
+<span class="nc" id="L1200">                            sendPing();</span>
+<span class="nc" id="L1201">                            clientCnxnSocket.updateLastSend();</span>
+                        } else {
+<span class="pc bpc" id="L1203" title="1 of 2 branches missed.">                            if (timeToNextPing &lt; to) {</span>
+<span class="fc" id="L1204">                                to = timeToNextPing;</span>
+                            }
+                        }
+                    }
+
+                    // If we are in read-only mode, seek for read/write server
+<span class="pc bpc" id="L1210" title="1 of 2 branches missed.">                    if (state == States.CONNECTEDREADONLY) {</span>
+<span class="nc" id="L1211">                        long now = Time.currentElapsedTime();</span>
+<span class="nc" id="L1212">                        int idlePingRwServer = (int) (now - lastPingRwServer);</span>
+<span class="nc bnc" id="L1213" title="All 2 branches missed.">                        if (idlePingRwServer &gt;= pingRwTimeout) {</span>
+<span class="nc" id="L1214">                            lastPingRwServer = now;</span>
+<span class="nc" id="L1215">                            idlePingRwServer = 0;</span>
+<span class="nc" id="L1216">                            pingRwTimeout =</span>
+<span class="nc" id="L1217">                                Math.min(2*pingRwTimeout, maxPingRwTimeout);</span>
+<span class="nc" id="L1218">                            pingRwServer();</span>
+                        }
+<span class="nc" id="L1220">                        to = Math.min(to, pingRwTimeout - idlePingRwServer);</span>
+                    }
+
+<span class="fc" id="L1223">                    clientCnxnSocket.doTransport(to, pendingQueue, ClientCnxn.this);</span>
+<span class="nc" id="L1224">                } catch (Throwable e) {</span>
+<span class="nc bnc" id="L1225" title="All 2 branches missed.">                    if (closing) {</span>
+<span class="nc bnc" id="L1226" title="All 2 branches missed.">                        if (LOG.isDebugEnabled()) {</span>
+                            // closing so this is expected
+<span class="nc" id="L1228">                            LOG.debug(&quot;An exception was thrown while closing send thread for session 0x&quot;</span>
+<span class="nc" id="L1229">                                    + Long.toHexString(getSessionId())</span>
+<span class="nc" id="L1230">                                    + &quot; : &quot; + e.getMessage());</span>
+                        }
+<span class="nc" id="L1232">                        break;</span>
+                    } else {
+                        // this is ugly, you have a better way speak up
+<span class="nc bnc" id="L1235" title="All 2 branches missed.">                        if (e instanceof SessionExpiredException) {</span>
+<span class="nc" id="L1236">                            LOG.info(e.getMessage() + &quot;, closing socket connection&quot;);</span>
+<span class="nc bnc" id="L1237" title="All 2 branches missed.">                        } else if (e instanceof SessionTimeoutException) {</span>
+<span class="nc" id="L1238">                            LOG.info(e.getMessage() + RETRY_CONN_MSG);</span>
+<span class="nc bnc" id="L1239" title="All 2 branches missed.">                        } else if (e instanceof EndOfStreamException) {</span>
+<span class="nc" id="L1240">                            LOG.info(e.getMessage() + RETRY_CONN_MSG);</span>
+<span class="nc bnc" id="L1241" title="All 2 branches missed.">                        } else if (e instanceof RWServerFoundException) {</span>
+<span class="nc" id="L1242">                            LOG.info(e.getMessage());</span>
+<span class="nc bnc" id="L1243" title="All 2 branches missed.">                        } else if (e instanceof SocketException) {</span>
+<span class="nc" id="L1244">                            LOG.info(&quot;Socket error occurred: {}: {}&quot;, serverAddress, e.getMessage());</span>
+                        } else {
+<span class="nc" id="L1246">                            LOG.warn(&quot;Session 0x{} for server {}, unexpected error{}&quot;,</span>
+<span class="nc" id="L1247">                                            Long.toHexString(getSessionId()),</span>
+                                            serverAddress,
+                                            RETRY_CONN_MSG,
+                                            e);
+                        }
+                        // At this point, there might still be new packets appended to outgoingQueue.
+                        // they will be handled in next connection or cleared up if closed.
+<span class="nc" id="L1254">                        cleanAndNotifyState();</span>
+                    }
+<span class="pc" id="L1256">                }</span>
+            }
+<span class="fc" id="L1258">            synchronized (state) {</span>
+                // When it comes to this point, it guarantees that later queued
+                // packet to outgoingQueue will be notified of death.
+<span class="fc" id="L1261">                cleanup();</span>
+<span class="fc" id="L1262">            }</span>
+<span class="fc" id="L1263">            clientCnxnSocket.close();</span>
+<span class="pc bpc" id="L1264" title="1 of 2 branches missed.">            if (state.isAlive()) {</span>
+<span class="nc" id="L1265">                eventThread.queueEvent(new WatchedEvent(Event.EventType.None,</span>
+                        Event.KeeperState.Disconnected, null));
+            }
+<span class="fc" id="L1268">            eventThread.queueEvent(new WatchedEvent(Event.EventType.None,</span>
+                        Event.KeeperState.Closed, null));
+<span class="fc" id="L1270">            ZooTrace.logTraceMessage(LOG, ZooTrace.getTextTraceLevel(),</span>
+                    &quot;SendThread exited loop for session: 0x&quot;
+<span class="fc" id="L1272">                           + Long.toHexString(getSessionId()));</span>
+<span class="fc" id="L1273">        }</span>
+
+        private void cleanAndNotifyState() {
+<span class="nc" id="L1276">            cleanup();</span>
+<span class="nc bnc" id="L1277" title="All 2 branches missed.">            if (state.isAlive()) {</span>
+<span class="nc" id="L1278">                eventThread.queueEvent(new WatchedEvent(Event.EventType.None,</span>
+                        Event.KeeperState.Disconnected, null));
+            }
+<span class="nc" id="L1281">            clientCnxnSocket.updateNow();</span>
+<span class="nc" id="L1282">            clientCnxnSocket.updateLastSendAndHeard();</span>
+<span class="nc" id="L1283">        }</span>
+
+        private void pingRwServer() throws RWServerFoundException {
+<span class="nc" id="L1286">            String result = null;</span>
+<span class="nc" id="L1287">            InetSocketAddress addr = hostProvider.next(0);</span>
+<span class="nc" id="L1288">            LOG.info(&quot;Checking server &quot; + addr + &quot; for being r/w.&quot; +</span>
+                    &quot; Timeout &quot; + pingRwTimeout);
+
+<span class="nc" id="L1291">            Socket sock = null;</span>
+<span class="nc" id="L1292">            BufferedReader br = null;</span>
+            try {
+<span class="nc" id="L1294">                sock = new Socket(addr.getHostString(), addr.getPort());</span>
+<span class="nc" id="L1295">                sock.setSoLinger(false, -1);</span>
+<span class="nc" id="L1296">                sock.setSoTimeout(1000);</span>
+<span class="nc" id="L1297">                sock.setTcpNoDelay(true);</span>
+<span class="nc" id="L1298">                sock.getOutputStream().write(&quot;isro&quot;.getBytes());</span>
+<span class="nc" id="L1299">                sock.getOutputStream().flush();</span>
+<span class="nc" id="L1300">                sock.shutdownOutput();</span>
+<span class="nc" id="L1301">                br = new BufferedReader(</span>
+<span class="nc" id="L1302">                        new InputStreamReader(sock.getInputStream()));</span>
+<span class="nc" id="L1303">                result = br.readLine();</span>
+<span class="nc" id="L1304">            } catch (ConnectException e) {</span>
+                // ignore, this just means server is not up
+<span class="nc" id="L1306">            } catch (IOException e) {</span>
+                // some unexpected error, warn about it
+<span class="nc" id="L1308">                LOG.warn(&quot;Exception while seeking for r/w server &quot; +</span>
+<span class="nc" id="L1309">                        e.getMessage(), e);</span>
+            } finally {
+<span class="nc bnc" id="L1311" title="All 2 branches missed.">                if (sock != null) {</span>
+                    try {
+<span class="nc" id="L1313">                        sock.close();</span>
+<span class="nc" id="L1314">                    } catch (IOException e) {</span>
+<span class="nc" id="L1315">                        LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+<span class="nc" id="L1316">                    }</span>
+                }
+<span class="nc bnc" id="L1318" title="All 2 branches missed.">                if (br != null) {</span>
+                    try {
+<span class="nc" id="L1320">                        br.close();</span>
+<span class="nc" id="L1321">                    } catch (IOException e) {</span>
+<span class="nc" id="L1322">                        LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+<span class="nc" id="L1323">                    }</span>
+                }
+            }
+
+<span class="nc bnc" id="L1327" title="All 2 branches missed.">            if (&quot;rw&quot;.equals(result)) {</span>
+<span class="nc" id="L1328">                pingRwTimeout = minPingRwTimeout;</span>
+                // save the found address so that it's used during the next
+                // connection attempt
+<span class="nc" id="L1331">                rwServerAddress = addr;</span>
+<span class="nc" id="L1332">                throw new RWServerFoundException(&quot;Majority server found at &quot;</span>
+<span class="nc" id="L1333">                        + addr.getHostString() + &quot;:&quot; + addr.getPort());</span>
+            }
+<span class="nc" id="L1335">        }</span>
+
+        private void cleanup() {
+<span class="fc" id="L1338">            clientCnxnSocket.cleanup();</span>
+<span class="fc" id="L1339">            synchronized (pendingQueue) {</span>
+<span class="pc bpc" id="L1340" title="1 of 2 branches missed.">                for (Packet p : pendingQueue) {</span>
+<span class="nc" id="L1341">                    conLossPacket(p);</span>
+<span class="nc" id="L1342">                }</span>
+<span class="fc" id="L1343">                pendingQueue.clear();</span>
+<span class="fc" id="L1344">            }</span>
+            // We can't call outgoingQueue.clear() here because
+            // between iterating and clear up there might be new
+            // packets added in queuePacket().
+<span class="fc" id="L1348">            Iterator&lt;Packet&gt; iter = outgoingQueue.iterator();</span>
+<span class="pc bpc" id="L1349" title="1 of 2 branches missed.">            while (iter.hasNext()) {</span>
+<span class="nc" id="L1350">                Packet p = iter.next();</span>
+<span class="nc" id="L1351">                conLossPacket(p);</span>
+<span class="nc" id="L1352">                iter.remove();</span>
+<span class="nc" id="L1353">            }</span>
+<span class="fc" id="L1354">        }</span>
+
+        /**
+         * Callback invoked by the ClientCnxnSocket once a connection has been
+         * established.
+         * 
+         * @param _negotiatedSessionTimeout
+         * @param _sessionId
+         * @param _sessionPasswd
+         * @param isRO
+         * @throws IOException
+         */
+        void onConnected(int _negotiatedSessionTimeout, long _sessionId,
+                byte[] _sessionPasswd, boolean isRO) throws IOException {
+<span class="fc" id="L1368">            negotiatedSessionTimeout = _negotiatedSessionTimeout;</span>
+<span class="pc bpc" id="L1369" title="1 of 2 branches missed.">            if (negotiatedSessionTimeout &lt;= 0) {</span>
+<span class="nc" id="L1370">                state = States.CLOSED;</span>
+
+<span class="nc" id="L1372">                eventThread.queueEvent(new WatchedEvent(</span>
+                        Watcher.Event.EventType.None,
+                        Watcher.Event.KeeperState.Expired, null));
+<span class="nc" id="L1375">                eventThread.queueEventOfDeath();</span>
+
+                String warnInfo;
+<span class="nc" id="L1378">                warnInfo = &quot;Unable to reconnect to ZooKeeper service, session 0x&quot;</span>
+<span class="nc" id="L1379">                    + Long.toHexString(sessionId) + &quot; has expired&quot;;</span>
+<span class="nc" id="L1380">                LOG.warn(warnInfo);</span>
+<span class="nc" id="L1381">                throw new SessionExpiredException(warnInfo);</span>
+            }
+<span class="pc bpc" id="L1383" title="2 of 4 branches missed.">            if (!readOnly &amp;&amp; isRO) {</span>
+<span class="nc" id="L1384">                LOG.error(&quot;Read/write client got connected to read-only server&quot;);</span>
+            }
+<span class="fc" id="L1386">            readTimeout = negotiatedSessionTimeout * 2 / 3;</span>
+<span class="fc" id="L1387">            connectTimeout = negotiatedSessionTimeout / hostProvider.size();</span>
+<span class="fc" id="L1388">            hostProvider.onConnected();</span>
+<span class="fc" id="L1389">            sessionId = _sessionId;</span>
+<span class="fc" id="L1390">            sessionPasswd = _sessionPasswd;</span>
+<span class="pc bpc" id="L1391" title="1 of 2 branches missed.">            state = (isRO) ?</span>
+<span class="pc" id="L1392">                    States.CONNECTEDREADONLY : States.CONNECTED;</span>
+<span class="pc bpc" id="L1393" title="1 of 2 branches missed.">            seenRwServerBefore |= !isRO;</span>
+<span class="fc" id="L1394">            LOG.info(&quot;Session establishment complete on server &quot;</span>
+<span class="fc" id="L1395">                    + clientCnxnSocket.getRemoteSocketAddress()</span>
+<span class="fc" id="L1396">                    + &quot;, sessionid = 0x&quot; + Long.toHexString(sessionId)</span>
+<span class="fc" id="L1397">                    + &quot;, negotiated timeout = &quot; + negotiatedSessionTimeout</span>
+<span class="pc bpc" id="L1398" title="1 of 2 branches missed.">                    + (isRO ? &quot; (READ-ONLY mode)&quot; : &quot;&quot;));</span>
+<span class="pc bpc" id="L1399" title="1 of 2 branches missed.">            KeeperState eventState = (isRO) ?</span>
+<span class="pc" id="L1400">                    KeeperState.ConnectedReadOnly : KeeperState.SyncConnected;</span>
+<span class="fc" id="L1401">            eventThread.queueEvent(new WatchedEvent(</span>
+                    Watcher.Event.EventType.None,
+                    eventState, null));
+<span class="fc" id="L1404">        }</span>
+
+        void close() {
+<span class="fc" id="L1407">            state = States.CLOSED;</span>
+<span class="fc" id="L1408">            clientCnxnSocket.onClosing();</span>
+<span class="fc" id="L1409">        }</span>
+
+        void testableCloseSocket() throws IOException {
+<span class="nc" id="L1412">            clientCnxnSocket.testableCloseSocket();</span>
+<span class="nc" id="L1413">        }</span>
+
+        public boolean tunnelAuthInProgress() {
+            // 1. SASL client is disabled.
+<span class="pc bpc" id="L1417" title="1 of 2 branches missed.">            if (!clientConfig.isSaslClientEnabled()) {</span>
+<span class="nc" id="L1418">                return false;</span>
+            }
+
+            // 2. SASL login failed.
+<span class="pc bpc" id="L1422" title="1 of 2 branches missed.">            if (saslLoginFailed) {</span>
+<span class="nc" id="L1423">                return false;</span>
+            }
+
+            // 3. SendThread has not created the authenticating object yet,
+            // therefore authentication is (at the earliest stage of being) in progress.
+<span class="pc bpc" id="L1428" title="1 of 2 branches missed.">            if (zooKeeperSaslClient == null) {</span>
+<span class="nc" id="L1429">                return true;</span>
+            }
+
+            // 4. authenticating object exists, so ask it for its progress.
+<span class="fc" id="L1433">            return zooKeeperSaslClient.clientTunneledAuthenticationInProgress();</span>
+        }
+
+        public void sendPacket(Packet p) throws IOException {
+<span class="nc" id="L1437">            clientCnxnSocket.sendPacket(p);</span>
+<span class="nc" id="L1438">        }</span>
+    }
+
+    /**
+     * Shutdown the send/event threads. This method should not be called
+     * directly - rather it should be called as part of close operation. This
+     * method is primarily here to allow the tests to verify disconnection
+     * behavior.
+     */
+    public void disconnect() {
+<span class="pc bpc" id="L1448" title="1 of 2 branches missed.">        if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L1449">            LOG.debug(&quot;Disconnecting client for session: 0x&quot;</span>
+<span class="nc" id="L1450">                      + Long.toHexString(getSessionId()));</span>
+        }
+
+<span class="fc" id="L1453">        sendThread.close();</span>
+        try {
+<span class="fc" id="L1455">            sendThread.join();</span>
+<span class="nc" id="L1456">        } catch (InterruptedException ex) {</span>
+<span class="nc" id="L1457">            LOG.warn(&quot;Got interrupted while waiting for the sender thread to close&quot;, ex);</span>
+<span class="fc" id="L1458">        }</span>
+<span class="fc" id="L1459">        eventThread.queueEventOfDeath();</span>
+<span class="pc bpc" id="L1460" title="1 of 2 branches missed.">        if (zooKeeperSaslClient != null) {</span>
+<span class="fc" id="L1461">            zooKeeperSaslClient.shutdown();</span>
+        }
+<span class="fc" id="L1463">    }</span>
+
+    /**
+     * Close the connection, which includes; send session disconnect to the
+     * server, shutdown the send/event threads.
+     *
+     * @throws IOException
+     */
+    public void close() throws IOException {
+<span class="pc bpc" id="L1472" title="1 of 2 branches missed.">        if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L1473">            LOG.debug(&quot;Closing client for session: 0x&quot;</span>
+<span class="nc" id="L1474">                      + Long.toHexString(getSessionId()));</span>
+        }
+
+        try {
+<span class="fc" id="L1478">            RequestHeader h = new RequestHeader();</span>
+<span class="fc" id="L1479">            h.setType(ZooDefs.OpCode.closeSession);</span>
+
+<span class="fc" id="L1481">            submitRequest(h, null, null, null);</span>
+<span class="nc" id="L1482">        } catch (InterruptedException e) {</span>
+            // ignore, close the send/event threads
+        } finally {
+<span class="fc" id="L1485">            disconnect();</span>
+        }
+<span class="fc" id="L1487">    }</span>
+
+    // @VisibleForTesting
+<span class="fc" id="L1490">    protected int xid = 1;</span>
+
+    // @VisibleForTesting
+<span class="fc" id="L1493">    volatile States state = States.NOT_CONNECTED;</span>
+
+    /*
+     * getXid() is called externally by ClientCnxnNIO::doIO() when packets are sent from the outgoingQueue to
+     * the server. Thus, getXid() must be public.
+     */
+    synchronized public int getXid() {
+        // Avoid negative cxid values.  In particular, cxid values of -4, -2, and -1 are special and
+        // must not be used for requests -- see SendThread.readResponse.
+        // Skip from MAX to 1.
+<span class="pc bpc" id="L1503" title="1 of 2 branches missed.">        if (xid == Integer.MAX_VALUE) {</span>
+<span class="nc" id="L1504">            xid = 1;</span>
+        }
+<span class="fc" id="L1506">        return xid++;</span>
+    }
+
+    public ReplyHeader submitRequest(RequestHeader h, Record request,
+            Record response, WatchRegistration watchRegistration)
+            throws InterruptedException {
+<span class="fc" id="L1512">        return submitRequest(h, request, response, watchRegistration, null);</span>
+    }
+
+    public ReplyHeader submitRequest(RequestHeader h, Record request,
+            Record response, WatchRegistration watchRegistration,
+            WatchDeregistration watchDeregistration)
+            throws InterruptedException {
+<span class="fc" id="L1519">        ReplyHeader r = new ReplyHeader();</span>
+<span class="fc" id="L1520">        Packet packet = queuePacket(h, r, request, response, null, null, null,</span>
+                null, watchRegistration, watchDeregistration);
+<span class="fc" id="L1522">        synchronized (packet) {</span>
+<span class="pc bpc" id="L1523" title="1 of 2 branches missed.">            if (requestTimeout &gt; 0) {</span>
+                // Wait for request completion with timeout
+<span class="nc" id="L1525">                waitForPacketFinish(r, packet);</span>
+            } else {
+                // Wait for request completion infinitely
+<span class="fc bfc" id="L1528" title="All 2 branches covered.">                while (!packet.finished) {</span>
+<span class="fc" id="L1529">                    packet.wait();</span>
+                }
+            }
+<span class="fc" id="L1532">        }</span>
+<span class="pc bpc" id="L1533" title="1 of 2 branches missed.">        if (r.getErr() == Code.REQUESTTIMEOUT.intValue()) {</span>
+<span class="nc" id="L1534">            sendThread.cleanAndNotifyState();</span>
+        }
+<span class="fc" id="L1536">        return r;</span>
+    }
+
+    /**
+     * Wait for request completion with timeout.
+     */
+    private void waitForPacketFinish(ReplyHeader r, Packet packet)
+            throws InterruptedException {
+<span class="nc" id="L1544">        long waitStartTime = Time.currentElapsedTime();</span>
+<span class="nc bnc" id="L1545" title="All 2 branches missed.">        while (!packet.finished) {</span>
+<span class="nc" id="L1546">            packet.wait(requestTimeout);</span>
+<span class="nc bnc" id="L1547" title="All 4 branches missed.">            if (!packet.finished &amp;&amp; ((Time.currentElapsedTime()</span>
+                    - waitStartTime) &gt;= requestTimeout)) {
+<span class="nc" id="L1549">                LOG.error(&quot;Timeout error occurred for the packet '{}'.&quot;,</span>
+                        packet);
+<span class="nc" id="L1551">                r.setErr(Code.REQUESTTIMEOUT.intValue());</span>
+<span class="nc" id="L1552">                break;</span>
+            }
+        }
+<span class="nc" id="L1555">    }</span>
+
+    public void saslCompleted() {
+<span class="nc" id="L1558">        sendThread.getClientCnxnSocket().saslCompleted();</span>
+<span class="nc" id="L1559">    }</span>
+
+    public void sendPacket(Record request, Record response, AsyncCallback cb, int opCode)
+    throws IOException {
+        // Generate Xid now because it will be sent immediately,
+        // by call to sendThread.sendPacket() below.
+<span class="nc" id="L1565">        int xid = getXid();</span>
+<span class="nc" id="L1566">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L1567">        h.setXid(xid);</span>
+<span class="nc" id="L1568">        h.setType(opCode);</span>
+
+<span class="nc" id="L1570">        ReplyHeader r = new ReplyHeader();</span>
+<span class="nc" id="L1571">        r.setXid(xid);</span>
+
+<span class="nc" id="L1573">        Packet p = new Packet(h, r, request, response, null, false);</span>
+<span class="nc" id="L1574">        p.cb = cb;</span>
+<span class="nc" id="L1575">        sendThread.sendPacket(p);</span>
+<span class="nc" id="L1576">    }</span>
+
+    public Packet queuePacket(RequestHeader h, ReplyHeader r, Record request,
+            Record response, AsyncCallback cb, String clientPath,
+            String serverPath, Object ctx, WatchRegistration watchRegistration) {
+<span class="nc" id="L1581">        return queuePacket(h, r, request, response, cb, clientPath, serverPath,</span>
+                ctx, watchRegistration, null);
+    }
+
+    public Packet queuePacket(RequestHeader h, ReplyHeader r, Record request,
+            Record response, AsyncCallback cb, String clientPath,
+            String serverPath, Object ctx, WatchRegistration watchRegistration,
+            WatchDeregistration watchDeregistration) {
+<span class="fc" id="L1589">        Packet packet = null;</span>
+
+        // Note that we do not generate the Xid for the packet yet. It is
+        // generated later at send-time, by an implementation of ClientCnxnSocket::doIO(),
+        // where the packet is actually sent.
+<span class="fc" id="L1594">        packet = new Packet(h, r, request, response, watchRegistration);</span>
+<span class="fc" id="L1595">        packet.cb = cb;</span>
+<span class="fc" id="L1596">        packet.ctx = ctx;</span>
+<span class="fc" id="L1597">        packet.clientPath = clientPath;</span>
+<span class="fc" id="L1598">        packet.serverPath = serverPath;</span>
+<span class="fc" id="L1599">        packet.watchDeregistration = watchDeregistration;</span>
+        // The synchronized block here is for two purpose:
+        // 1. synchronize with the final cleanup() in SendThread.run() to avoid race
+        // 2. synchronized against each packet. So if a closeSession packet is added,
+        // later packet will be notified.
+<span class="fc" id="L1604">        synchronized (state) {</span>
+<span class="pc bpc" id="L1605" title="2 of 4 branches missed.">            if (!state.isAlive() || closing) {</span>
+<span class="nc" id="L1606">                conLossPacket(packet);</span>
+            } else {
+                // If the client is asking to close the session then
+                // mark as closing
+<span class="fc bfc" id="L1610" title="All 2 branches covered.">                if (h.getType() == OpCode.closeSession) {</span>
+<span class="fc" id="L1611">                    closing = true;</span>
+                }
+<span class="fc" id="L1613">                outgoingQueue.add(packet);</span>
+            }
+<span class="fc" id="L1615">        }</span>
+<span class="fc" id="L1616">        sendThread.getClientCnxnSocket().packetAdded();</span>
+<span class="fc" id="L1617">        return packet;</span>
+    }
+
+    public void addAuthInfo(String scheme, byte auth[]) {
+<span class="nc bnc" id="L1621" title="All 2 branches missed.">        if (!state.isAlive()) {</span>
+<span class="nc" id="L1622">            return;</span>
+        }
+<span class="nc" id="L1624">        authInfo.add(new AuthData(scheme, auth));</span>
+<span class="nc" id="L1625">        queuePacket(new RequestHeader(-4, OpCode.auth), null,</span>
+                new AuthPacket(0, scheme, auth), null, null, null, null,
+                null, null);
+<span class="nc" id="L1628">    }</span>
+
+    States getState() {
+<span class="fc" id="L1631">        return state;</span>
+    }
+
+    private static class LocalCallback {
+        private final AsyncCallback cb;
+        private final int rc;
+        private final String path;
+        private final Object ctx;
+
+<span class="nc" id="L1640">        public LocalCallback(AsyncCallback cb, int rc, String path, Object ctx) {</span>
+<span class="nc" id="L1641">            this.cb = cb;</span>
+<span class="nc" id="L1642">            this.rc = rc;</span>
+<span class="nc" id="L1643">            this.path = path;</span>
+<span class="nc" id="L1644">            this.ctx = ctx;</span>
+<span class="nc" id="L1645">        }</span>
+    }
+
+    private void initRequestTimeout() {
+        try {
+<span class="fc" id="L1650">            requestTimeout = clientConfig.getLong(</span>
+                    ZKClientConfig.ZOOKEEPER_REQUEST_TIMEOUT,
+                    ZKClientConfig.ZOOKEEPER_REQUEST_TIMEOUT_DEFAULT);
+<span class="fc" id="L1653">            LOG.info(&quot;{} value is {}. feature enabled=&quot;,</span>
+                    ZKClientConfig.ZOOKEEPER_REQUEST_TIMEOUT,
+<span class="pc bpc" id="L1655" title="1 of 2 branches missed.">                    requestTimeout, requestTimeout &gt; 0);</span>
+<span class="nc" id="L1656">        } catch (NumberFormatException e) {</span>
+<span class="nc" id="L1657">            LOG.error(</span>
+                    &quot;Configured value {} for property {} can not be parsed to long.&quot;,
+<span class="nc" id="L1659">                    clientConfig.getProperty(</span>
+                            ZKClientConfig.ZOOKEEPER_REQUEST_TIMEOUT),
+                    ZKClientConfig.ZOOKEEPER_REQUEST_TIMEOUT);
+<span class="nc" id="L1662">            throw e;</span>
+<span class="fc" id="L1663">        }</span>
+<span class="fc" id="L1664">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

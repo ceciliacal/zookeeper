@@ -1,0 +1,705 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>NettyServerCnxnFactory.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server</a> &gt; <span class="el_source">NettyServerCnxnFactory.java</span></div><h1>NettyServerCnxnFactory.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server;
+
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLException;
+import javax.net.ssl.SSLPeerUnverifiedException;
+import javax.net.ssl.SSLSession;
+import javax.net.ssl.X509KeyManager;
+import javax.net.ssl.X509TrustManager;
+
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelDuplexHandler;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelHandler;
+import io.netty.channel.ChannelHandler.Sharable;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelPromise;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.group.ChannelGroup;
+import io.netty.channel.group.ChannelGroupFuture;
+import io.netty.channel.group.DefaultChannelGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.handler.ssl.OpenSsl;
+import io.netty.handler.ssl.OptionalSslHandler;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslHandler;
+import io.netty.util.AttributeKey;
+import io.netty.util.ReferenceCountUtil;
+import io.netty.util.concurrent.DefaultEventExecutor;
+import io.netty.util.concurrent.Future;
+import io.netty.util.concurrent.GenericFutureListener;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.common.ClientX509Util;
+import org.apache.zookeeper.common.NettyUtils;
+import org.apache.zookeeper.common.SSLContextAndOptions;
+import org.apache.zookeeper.common.X509Exception;
+import org.apache.zookeeper.common.X509Exception.SSLContextException;
+import org.apache.zookeeper.server.auth.ProviderRegistry;
+import org.apache.zookeeper.server.auth.X509AuthenticationProvider;
+import org.apache.zookeeper.server.quorum.QuorumPeerConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class NettyServerCnxnFactory extends ServerCnxnFactory {
+<span class="nc" id="L82">    private static final Logger LOG = LoggerFactory.getLogger(NettyServerCnxnFactory.class);</span>
+
+    /**
+     * Allow client-server sockets to accept both SSL and plaintext connections
+     */
+    public static final String PORT_UNIFICATION_KEY = &quot;zookeeper.client.portUnification&quot;;
+    private final boolean shouldUsePortUnification;
+
+    /**
+     * The first byte in TLS protocol is the content type of the subsequent record.
+     * Handshakes use value 22 (0x16) so the first byte offered on any TCP connection
+     * attempting to establish a TLS connection will be this value.
+     * https://tools.ietf.org/html/rfc8446#page-79
+     */
+    private static final byte TLS_HANDSHAKE_RECORD_TYPE = 0x16;
+
+    private final ServerBootstrap bootstrap;
+    private Channel parentChannel;
+<span class="nc" id="L100">    private final ChannelGroup allChannels =</span>
+            new DefaultChannelGroup(&quot;zkServerCnxns&quot;, new DefaultEventExecutor());
+    // Access to ipMap or to any Set contained in the map needs to be
+    // protected with synchronized (ipMap) { ... }
+<span class="nc" id="L104">    private final Map&lt;InetAddress, Set&lt;NettyServerCnxn&gt;&gt; ipMap = new HashMap&lt;&gt;();</span>
+    private InetSocketAddress localAddress;
+<span class="nc" id="L106">    private int maxClientCnxns = 60;</span>
+    private final ClientX509Util x509Util;
+
+<span class="nc" id="L109">    private static final AttributeKey&lt;NettyServerCnxn&gt; CONNECTION_ATTRIBUTE =</span>
+<span class="nc" id="L110">            AttributeKey.valueOf(&quot;NettyServerCnxn&quot;);</span>
+
+<span class="nc" id="L112">    private static final AtomicReference&lt;ByteBufAllocator&gt; TEST_ALLOCATOR =</span>
+            new AtomicReference&lt;&gt;(null);
+
+    /**
+     * A handler that detects whether the client would like to use
+     * TLS or not and responds in kind. The first bytes are examined
+     * for the static TLS headers to make the determination and
+     * placed back in the stream with the correct ChannelHandler
+     * instantiated.
+     */
+    class DualModeSslHandler extends OptionalSslHandler {
+<span class="nc" id="L123">        DualModeSslHandler(SslContext sslContext) {</span>
+<span class="nc" id="L124">            super(sslContext);</span>
+<span class="nc" id="L125">        }</span>
+
+        @Override
+        protected void decode(ChannelHandlerContext context, ByteBuf in, List&lt;Object&gt; out) throws Exception {
+<span class="nc bnc" id="L129" title="All 2 branches missed.">            if (in.readableBytes() &gt;= 5) {</span>
+<span class="nc" id="L130">                super.decode(context, in, out);</span>
+<span class="nc bnc" id="L131" title="All 2 branches missed.">            } else if (in.readableBytes() &gt; 0) {</span>
+                // It requires 5 bytes to detect a proper ssl connection. In the
+                // case that the server receives fewer, check if we can fail to plaintext.
+                // This will occur when for any four letter work commands.
+<span class="nc bnc" id="L135" title="All 2 branches missed.">                if (TLS_HANDSHAKE_RECORD_TYPE != in.getByte(0)) {</span>
+<span class="nc" id="L136">                    LOG.debug(&quot;first byte {} does not match TLS handshake, failing to plaintext&quot;, in.getByte(0));</span>
+<span class="nc" id="L137">                    handleNonSsl(context);</span>
+                }
+            }
+<span class="nc" id="L140">        }</span>
+
+        /**
+         * pulled directly from OptionalSslHandler to allow for access
+         * @param context
+         */
+        private void handleNonSsl(ChannelHandlerContext context) {
+<span class="nc" id="L147">            ChannelHandler handler = this.newNonSslHandler(context);</span>
+<span class="nc bnc" id="L148" title="All 2 branches missed.">            if (handler != null) {</span>
+<span class="nc" id="L149">                context.pipeline().replace(this, this.newNonSslHandlerName(), handler);</span>
+            } else {
+<span class="nc" id="L151">                context.pipeline().remove(this);</span>
+            }
+<span class="nc" id="L153">        }</span>
+
+        @Override
+        protected SslHandler newSslHandler(ChannelHandlerContext context, SslContext sslContext) {
+<span class="nc" id="L157">            NettyServerCnxn cnxn = Objects.requireNonNull(context.channel().attr(CONNECTION_ATTRIBUTE).get());</span>
+<span class="nc" id="L158">            LOG.debug(&quot;creating ssl handler for session {}&quot;, cnxn.getSessionId());</span>
+<span class="nc" id="L159">            SslHandler handler = super.newSslHandler(context, sslContext);</span>
+<span class="nc" id="L160">            Future&lt;Channel&gt; handshakeFuture = handler.handshakeFuture();</span>
+<span class="nc" id="L161">            handshakeFuture.addListener(new CertificateVerifier(handler, cnxn));</span>
+<span class="nc" id="L162">            return handler;</span>
+        }
+
+        @Override
+        protected ChannelHandler newNonSslHandler(ChannelHandlerContext context) {
+<span class="nc" id="L167">            NettyServerCnxn cnxn = Objects.requireNonNull(context.channel().attr(CONNECTION_ATTRIBUTE).get());</span>
+<span class="nc" id="L168">            LOG.debug(&quot;creating plaintext handler for session {}&quot;, cnxn.getSessionId());</span>
+<span class="nc" id="L169">            allChannels.add(context.channel());</span>
+<span class="nc" id="L170">            addCnxn(cnxn);</span>
+<span class="nc" id="L171">            return super.newNonSslHandler(context);</span>
+        }
+    }
+
+    /**
+     * This is an inner class since we need to extend ChannelDuplexHandler, but
+     * NettyServerCnxnFactory already extends ServerCnxnFactory. By making it inner
+     * this class gets access to the member variables and methods.
+     */
+    @Sharable
+<span class="nc" id="L181">    class CnxnChannelHandler extends ChannelDuplexHandler {</span>
+
+        @Override
+        public void channelActive(ChannelHandlerContext ctx) throws Exception {
+<span class="nc bnc" id="L185" title="All 2 branches missed.">            if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L186">                LOG.trace(&quot;Channel active {}&quot;, ctx.channel());</span>
+            }
+
+<span class="nc" id="L189">            NettyServerCnxn cnxn = new NettyServerCnxn(ctx.channel(),</span>
+                    zkServer, NettyServerCnxnFactory.this);
+<span class="nc" id="L191">            ctx.channel().attr(CONNECTION_ATTRIBUTE).set(cnxn);</span>
+
+<span class="nc bnc" id="L193" title="All 2 branches missed.">            if (secure) {</span>
+<span class="nc" id="L194">                SslHandler sslHandler = ctx.pipeline().get(SslHandler.class);</span>
+<span class="nc" id="L195">                Future&lt;Channel&gt; handshakeFuture = sslHandler.handshakeFuture();</span>
+<span class="nc" id="L196">                handshakeFuture.addListener(new CertificateVerifier(sslHandler, cnxn));</span>
+<span class="nc bnc" id="L197" title="All 2 branches missed.">            } else if (!shouldUsePortUnification) {</span>
+<span class="nc" id="L198">                allChannels.add(ctx.channel());</span>
+<span class="nc" id="L199">                addCnxn(cnxn);</span>
+            }
+<span class="nc" id="L201">        }</span>
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+<span class="nc bnc" id="L205" title="All 2 branches missed.">            if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L206">                LOG.trace(&quot;Channel inactive {}&quot;, ctx.channel());</span>
+            }
+<span class="nc" id="L208">            allChannels.remove(ctx.channel());</span>
+<span class="nc" id="L209">            NettyServerCnxn cnxn = ctx.channel().attr(CONNECTION_ATTRIBUTE).getAndSet(null);</span>
+<span class="nc bnc" id="L210" title="All 2 branches missed.">            if (cnxn != null) {</span>
+<span class="nc bnc" id="L211" title="All 2 branches missed.">                if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L212">                    LOG.trace(&quot;Channel inactive caused close {}&quot;, cnxn);</span>
+                }
+<span class="nc" id="L214">                cnxn.close();</span>
+            }
+<span class="nc" id="L216">        }</span>
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+<span class="nc" id="L220">            LOG.warn(&quot;Exception caught&quot;, cause);</span>
+<span class="nc" id="L221">            NettyServerCnxn cnxn = ctx.channel().attr(CONNECTION_ATTRIBUTE).getAndSet(null);</span>
+<span class="nc bnc" id="L222" title="All 2 branches missed.">            if (cnxn != null) {</span>
+<span class="nc bnc" id="L223" title="All 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L224">                    LOG.debug(&quot;Closing {}&quot;, cnxn);</span>
+                }
+<span class="nc" id="L226">                cnxn.close();</span>
+            }
+<span class="nc" id="L228">        }</span>
+
+        @Override
+        public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+            try {
+<span class="nc bnc" id="L233" title="All 2 branches missed.">                if (evt == NettyServerCnxn.AutoReadEvent.ENABLE) {</span>
+<span class="nc" id="L234">                    LOG.debug(&quot;Received AutoReadEvent.ENABLE&quot;);</span>
+<span class="nc" id="L235">                    NettyServerCnxn cnxn = ctx.channel().attr(CONNECTION_ATTRIBUTE).get();</span>
+                    // TODO(ivmaykov): Not sure if cnxn can be null here. It becomes null if channelInactive()
+                    // or exceptionCaught() trigger, but it's unclear to me if userEventTriggered() can run
+                    // after either of those. Check for null just to be safe ...
+<span class="nc bnc" id="L239" title="All 2 branches missed.">                    if (cnxn != null) {</span>
+<span class="nc" id="L240">                        cnxn.processQueuedBuffer();</span>
+                    }
+<span class="nc" id="L242">                    ctx.channel().config().setAutoRead(true);</span>
+<span class="nc bnc" id="L243" title="All 2 branches missed.">                } else if (evt == NettyServerCnxn.AutoReadEvent.DISABLE) {</span>
+<span class="nc" id="L244">                    LOG.debug(&quot;Received AutoReadEvent.DISABLE&quot;);</span>
+<span class="nc" id="L245">                    ctx.channel().config().setAutoRead(false);</span>
+                }
+            } finally {
+<span class="nc" id="L248">                ReferenceCountUtil.release(evt);</span>
+            }
+<span class="nc" id="L250">        }</span>
+
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+            try {
+<span class="nc bnc" id="L255" title="All 2 branches missed.">                if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L256">                    LOG.trace(&quot;message received called {}&quot;, msg);</span>
+                }
+                try {
+<span class="nc bnc" id="L259" title="All 2 branches missed.">                    if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L260">                        LOG.debug(&quot;New message {} from {}&quot;, msg, ctx.channel());</span>
+                    }
+<span class="nc" id="L262">                    NettyServerCnxn cnxn = ctx.channel().attr(CONNECTION_ATTRIBUTE).get();</span>
+<span class="nc bnc" id="L263" title="All 2 branches missed.">                    if (cnxn == null) {</span>
+<span class="nc" id="L264">                        LOG.error(&quot;channelRead() on a closed or closing NettyServerCnxn&quot;);</span>
+                    } else {
+<span class="nc" id="L266">                        cnxn.processMessage((ByteBuf) msg);</span>
+                    }
+<span class="nc" id="L268">                } catch (Exception ex) {</span>
+<span class="nc" id="L269">                    LOG.error(&quot;Unexpected exception in receive&quot;, ex);</span>
+<span class="nc" id="L270">                    throw ex;</span>
+<span class="nc" id="L271">                }</span>
+            } finally {
+<span class="nc" id="L273">                ReferenceCountUtil.release(msg);</span>
+            }
+<span class="nc" id="L275">        }</span>
+
+        // Use a single listener instance to reduce GC
+        // Note: this listener is only added when LOG.isTraceEnabled() is true,
+        // so it should not do any work other than trace logging.
+<span class="nc" id="L280">        private final GenericFutureListener&lt;Future&lt;Void&gt;&gt; onWriteCompletedTracer = (f) -&gt; {</span>
+<span class="nc bnc" id="L281" title="All 2 branches missed.">            LOG.trace(&quot;write {}&quot;, f.isSuccess() ? &quot;complete&quot; : &quot;failed&quot;);</span>
+<span class="nc" id="L282">        };</span>
+
+        @Override
+        public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+<span class="nc bnc" id="L286" title="All 2 branches missed.">            if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L287">                promise.addListener(onWriteCompletedTracer);</span>
+            }
+<span class="nc" id="L289">            super.write(ctx, msg, promise);</span>
+<span class="nc" id="L290">        }</span>
+    }
+
+    final class CertificateVerifier implements GenericFutureListener&lt;Future&lt;Channel&gt;&gt; {
+        private final SslHandler sslHandler;
+        private final NettyServerCnxn cnxn;
+
+<span class="nc" id="L297">        CertificateVerifier(SslHandler sslHandler, NettyServerCnxn cnxn) {</span>
+<span class="nc" id="L298">            this.sslHandler = sslHandler;</span>
+<span class="nc" id="L299">            this.cnxn = cnxn;</span>
+<span class="nc" id="L300">        }</span>
+
+        /**
+         * Only allow the connection to stay open if certificate passes auth
+         */
+        public void operationComplete(Future&lt;Channel&gt; future) {
+<span class="nc bnc" id="L306" title="All 2 branches missed.">            if (future.isSuccess()) {</span>
+<span class="nc bnc" id="L307" title="All 2 branches missed.">                if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L308">                    LOG.debug(&quot;Successful handshake with session 0x{}&quot;,</span>
+<span class="nc" id="L309">                            Long.toHexString(cnxn.getSessionId()));</span>
+                }
+<span class="nc" id="L311">                SSLEngine eng = sslHandler.engine();</span>
+                // Don't try to verify certificate if we didn't ask client to present one
+<span class="nc bnc" id="L313" title="All 4 branches missed.">                if (eng.getNeedClientAuth() || eng.getWantClientAuth()) {</span>
+<span class="nc" id="L314">                    SSLSession session = eng.getSession();</span>
+                    try {
+<span class="nc" id="L316">                        cnxn.setClientCertificateChain(session.getPeerCertificates());</span>
+<span class="nc" id="L317">                    } catch (SSLPeerUnverifiedException e) {</span>
+<span class="nc bnc" id="L318" title="All 2 branches missed.">                        if (eng.getNeedClientAuth()) {</span>
+                            // Certificate was requested but not present
+<span class="nc" id="L320">                            LOG.error(&quot;Error getting peer certificates&quot;, e);</span>
+<span class="nc" id="L321">                            cnxn.close();</span>
+<span class="nc" id="L322">                            return;</span>
+                        } else {
+                            // Certificate was requested but was optional
+                            // TODO: what auth info should we set on the connection?
+<span class="nc" id="L326">                            final Channel futureChannel = future.getNow();</span>
+<span class="nc" id="L327">                            allChannels.add(Objects.requireNonNull(futureChannel));</span>
+<span class="nc" id="L328">                            addCnxn(cnxn);</span>
+<span class="nc" id="L329">                            return;</span>
+                        }
+<span class="nc" id="L331">                    } catch (Exception e) {</span>
+<span class="nc" id="L332">                        LOG.error(&quot;Error getting peer certificates&quot;, e);</span>
+<span class="nc" id="L333">                        cnxn.close();</span>
+<span class="nc" id="L334">                        return;</span>
+<span class="nc" id="L335">                    }</span>
+
+<span class="nc" id="L337">                    String authProviderProp</span>
+<span class="nc" id="L338">                            = System.getProperty(x509Util.getSslAuthProviderProperty(), &quot;x509&quot;);</span>
+
+<span class="nc" id="L340">                    X509AuthenticationProvider authProvider =</span>
+                            (X509AuthenticationProvider)
+<span class="nc" id="L342">                                    ProviderRegistry.getProvider(authProviderProp);</span>
+
+<span class="nc bnc" id="L344" title="All 2 branches missed.">                    if (authProvider == null) {</span>
+<span class="nc" id="L345">                        LOG.error(&quot;X509 Auth provider not found: {}&quot;, authProviderProp);</span>
+<span class="nc" id="L346">                        cnxn.close();</span>
+<span class="nc" id="L347">                        return;</span>
+                    }
+
+<span class="nc" id="L350">                    if (KeeperException.Code.OK !=</span>
+<span class="nc bnc" id="L351" title="All 2 branches missed.">                            authProvider.handleAuthentication(cnxn, null)) {</span>
+<span class="nc" id="L352">                        LOG.error(&quot;Authentication failed for session 0x{}&quot;,</span>
+<span class="nc" id="L353">                                Long.toHexString(cnxn.getSessionId()));</span>
+<span class="nc" id="L354">                        cnxn.close();</span>
+<span class="nc" id="L355">                        return;</span>
+                    }
+                }
+
+<span class="nc" id="L359">                final Channel futureChannel = future.getNow();</span>
+<span class="nc" id="L360">                allChannels.add(Objects.requireNonNull(futureChannel));</span>
+<span class="nc" id="L361">                addCnxn(cnxn);</span>
+<span class="nc" id="L362">            } else {</span>
+<span class="nc" id="L363">                LOG.error(&quot;Unsuccessful handshake with session 0x{}&quot;,</span>
+<span class="nc" id="L364">                        Long.toHexString(cnxn.getSessionId()));</span>
+<span class="nc" id="L365">                cnxn.close();</span>
+            }
+<span class="nc" id="L367">        }</span>
+    }
+    
+<span class="nc" id="L370">    CnxnChannelHandler channelHandler = new CnxnChannelHandler();</span>
+
+    private ServerBootstrap configureBootstrapAllocator(ServerBootstrap bootstrap) {
+<span class="nc" id="L373">        ByteBufAllocator testAllocator = TEST_ALLOCATOR.get();</span>
+<span class="nc bnc" id="L374" title="All 2 branches missed.">        if (testAllocator != null) {</span>
+<span class="nc" id="L375">            return bootstrap</span>
+<span class="nc" id="L376">                    .option(ChannelOption.ALLOCATOR, testAllocator)</span>
+<span class="nc" id="L377">                    .childOption(ChannelOption.ALLOCATOR, testAllocator);</span>
+        } else {
+<span class="nc" id="L379">            return bootstrap;</span>
+        }
+    }
+
+<span class="nc" id="L383">    NettyServerCnxnFactory() {</span>
+<span class="nc" id="L384">        x509Util = new ClientX509Util();</span>
+
+<span class="nc" id="L386">        boolean usePortUnification = Boolean.getBoolean(PORT_UNIFICATION_KEY);</span>
+<span class="nc" id="L387">        LOG.info(&quot;{}={}&quot;, PORT_UNIFICATION_KEY, usePortUnification);</span>
+<span class="nc bnc" id="L388" title="All 2 branches missed.">        if (usePortUnification) {</span>
+            try {
+<span class="nc" id="L390">                QuorumPeerConfig.configureSSLAuth();</span>
+<span class="nc" id="L391">            } catch (QuorumPeerConfig.ConfigException e) {</span>
+<span class="nc" id="L392">                LOG.error(&quot;unable to set up SslAuthProvider, turning off client port unification&quot;, e);</span>
+<span class="nc" id="L393">                usePortUnification = false;</span>
+<span class="nc" id="L394">            }</span>
+        }
+<span class="nc" id="L396">        this.shouldUsePortUnification = usePortUnification;</span>
+
+<span class="nc" id="L398">        EventLoopGroup bossGroup = NettyUtils.newNioOrEpollEventLoopGroup(</span>
+<span class="nc" id="L399">                NettyUtils.getClientReachableLocalInetAddressCount());</span>
+<span class="nc" id="L400">        EventLoopGroup workerGroup = NettyUtils.newNioOrEpollEventLoopGroup();</span>
+<span class="nc" id="L401">        ServerBootstrap bootstrap = new ServerBootstrap()</span>
+<span class="nc" id="L402">                .group(bossGroup, workerGroup)</span>
+<span class="nc" id="L403">                .channel(NettyUtils.nioOrEpollServerSocketChannel())</span>
+                // parent channel options
+<span class="nc" id="L405">                .option(ChannelOption.SO_REUSEADDR, true)</span>
+                // child channels options
+<span class="nc" id="L407">                .childOption(ChannelOption.TCP_NODELAY, true)</span>
+<span class="nc" id="L408">                .childOption(ChannelOption.SO_LINGER, -1)</span>
+<span class="nc" id="L409">                .childHandler(new ChannelInitializer&lt;SocketChannel&gt;() {</span>
+                    @Override
+                    protected void initChannel(SocketChannel ch) throws Exception {
+<span class="nc" id="L412">                        ChannelPipeline pipeline = ch.pipeline();</span>
+<span class="nc bnc" id="L413" title="All 2 branches missed.">                        if (secure) {</span>
+<span class="nc" id="L414">                            initSSL(pipeline, false);</span>
+<span class="nc bnc" id="L415" title="All 2 branches missed.">                        } else if (shouldUsePortUnification) {</span>
+<span class="nc" id="L416">                            initSSL(pipeline, true);</span>
+                        }
+<span class="nc" id="L418">                        pipeline.addLast(&quot;servercnxnfactory&quot;, channelHandler);</span>
+<span class="nc" id="L419">                    }</span>
+                });
+<span class="nc" id="L421">        this.bootstrap = configureBootstrapAllocator(bootstrap);</span>
+<span class="nc" id="L422">        this.bootstrap.validate();</span>
+<span class="nc" id="L423">    }</span>
+
+    private synchronized void initSSL(ChannelPipeline p, boolean supportPlaintext)
+            throws X509Exception, KeyManagementException, NoSuchAlgorithmException {
+<span class="nc" id="L427">        String authProviderProp = System.getProperty(x509Util.getSslAuthProviderProperty());</span>
+        SslContext nettySslContext;
+<span class="nc bnc" id="L429" title="All 2 branches missed.">        if (authProviderProp == null) {</span>
+<span class="nc" id="L430">            SSLContextAndOptions sslContextAndOptions = x509Util.getDefaultSSLContextAndOptions();</span>
+<span class="nc" id="L431">            nettySslContext = sslContextAndOptions.createNettyJdkSslContext(</span>
+<span class="nc" id="L432">                        sslContextAndOptions.getSSLContext(), false);</span>
+<span class="nc" id="L433">        } else {</span>
+<span class="nc" id="L434">            SSLContext sslContext = SSLContext.getInstance(ClientX509Util.DEFAULT_PROTOCOL);</span>
+<span class="nc" id="L435">            X509AuthenticationProvider authProvider =</span>
+<span class="nc" id="L436">                    (X509AuthenticationProvider) ProviderRegistry.getProvider(</span>
+<span class="nc" id="L437">                            System.getProperty(x509Util.getSslAuthProviderProperty(), &quot;x509&quot;));</span>
+
+<span class="nc bnc" id="L439" title="All 2 branches missed.">            if (authProvider == null) {</span>
+<span class="nc" id="L440">                LOG.error(&quot;Auth provider not found: {}&quot;, authProviderProp);</span>
+<span class="nc" id="L441">                throw new SSLContextException(</span>
+                        &quot;Could not create SSLContext with specified auth provider: &quot; +
+                                authProviderProp);
+            }
+
+<span class="nc" id="L446">            sslContext.init(new X509KeyManager[]{authProvider.getKeyManager()},</span>
+<span class="nc" id="L447">                    new X509TrustManager[]{authProvider.getTrustManager()},</span>
+                    null);
+<span class="nc" id="L449">            nettySslContext = x509Util.getDefaultSSLContextAndOptions()</span>
+<span class="nc" id="L450">                    .createNettyJdkSslContext(sslContext,false);</span>
+        }
+
+<span class="nc bnc" id="L453" title="All 2 branches missed.">        if (supportPlaintext) {</span>
+<span class="nc" id="L454">            p.addLast(&quot;ssl&quot;, new DualModeSslHandler(nettySslContext));</span>
+<span class="nc" id="L455">            LOG.debug(&quot;dual mode SSL handler added for channel: {}&quot;, p.channel());</span>
+        } else {
+<span class="nc" id="L457">            p.addLast(&quot;ssl&quot;, nettySslContext.newHandler(p.channel().alloc()));</span>
+<span class="nc" id="L458">            LOG.debug(&quot;SSL handler added for channel: {}&quot;, p.channel());</span>
+        }
+<span class="nc" id="L460">    }</span>
+
+    @Override
+    public void closeAll() {
+<span class="nc bnc" id="L464" title="All 2 branches missed.">        if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L465">            LOG.debug(&quot;closeAll()&quot;);</span>
+        }
+        // clear all the connections on which we are selecting
+<span class="nc" id="L468">        int length = cnxns.size();</span>
+<span class="nc bnc" id="L469" title="All 2 branches missed.">        for (ServerCnxn cnxn : cnxns) {</span>
+            try {
+                // This will remove the cnxn from cnxns
+<span class="nc" id="L472">                cnxn.close();</span>
+<span class="nc" id="L473">            } catch (Exception e) {</span>
+<span class="nc" id="L474">                LOG.warn(&quot;Ignoring exception closing cnxn sessionid 0x&quot;</span>
+<span class="nc" id="L475">                         + Long.toHexString(cnxn.getSessionId()), e);</span>
+<span class="nc" id="L476">            }</span>
+<span class="nc" id="L477">        }</span>
+<span class="nc bnc" id="L478" title="All 2 branches missed.">        if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L479">            LOG.debug(&quot;allChannels size:&quot; + allChannels.size() + &quot; cnxns size:&quot;</span>
+                    + length);
+        }
+<span class="nc" id="L482">    }</span>
+
+    @Override
+    public boolean closeSession(long sessionId) {
+<span class="nc bnc" id="L486" title="All 2 branches missed.">        if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L487">            LOG.debug(&quot;closeSession sessionid:0x&quot; + sessionId);</span>
+        }
+<span class="nc bnc" id="L489" title="All 2 branches missed.">        for (ServerCnxn cnxn : cnxns) {</span>
+<span class="nc bnc" id="L490" title="All 2 branches missed.">            if (cnxn.getSessionId() == sessionId) {</span>
+                try {
+<span class="nc" id="L492">                    cnxn.close();</span>
+<span class="nc" id="L493">                } catch (Exception e) {</span>
+<span class="nc" id="L494">                    LOG.warn(&quot;exception during session close&quot;, e);</span>
+<span class="nc" id="L495">                }</span>
+<span class="nc" id="L496">                return true;</span>
+            }
+<span class="nc" id="L498">        }</span>
+<span class="nc" id="L499">        return false;</span>
+    }
+
+    @Override
+    public void configure(InetSocketAddress addr, int maxClientCnxns, boolean secure)
+            throws IOException
+    {
+<span class="nc" id="L506">        configureSaslLogin();</span>
+<span class="nc" id="L507">        localAddress = addr;</span>
+<span class="nc" id="L508">        this.maxClientCnxns = maxClientCnxns;</span>
+<span class="nc" id="L509">        this.secure = secure;</span>
+<span class="nc" id="L510">    }</span>
+
+    /** {@inheritDoc} */
+    public int getMaxClientCnxnsPerHost() {
+<span class="nc" id="L514">        return maxClientCnxns;</span>
+    }
+
+    /** {@inheritDoc} */
+    public void setMaxClientCnxnsPerHost(int max) {
+<span class="nc" id="L519">        maxClientCnxns = max;</span>
+<span class="nc" id="L520">    }</span>
+
+    @Override
+    public int getLocalPort() {
+<span class="nc" id="L524">        return localAddress.getPort();</span>
+    }
+
+    private boolean killed; // use synchronized(this) to access
+    @Override
+    public void join() throws InterruptedException {
+<span class="nc" id="L530">        synchronized(this) {</span>
+<span class="nc bnc" id="L531" title="All 2 branches missed.">            while(!killed) {</span>
+<span class="nc" id="L532">                wait();</span>
+            }
+<span class="nc" id="L534">        }</span>
+<span class="nc" id="L535">    }</span>
+
+    @Override
+    public void shutdown() {
+<span class="nc" id="L539">        synchronized (this) {</span>
+<span class="nc bnc" id="L540" title="All 2 branches missed.">            if (killed) {</span>
+<span class="nc" id="L541">                LOG.info(&quot;already shutdown {}&quot;, localAddress);</span>
+<span class="nc" id="L542">                return;</span>
+            }
+<span class="nc" id="L544">        }</span>
+<span class="nc" id="L545">        LOG.info(&quot;shutdown called {}&quot;, localAddress);</span>
+
+<span class="nc" id="L547">        x509Util.close();</span>
+
+<span class="nc bnc" id="L549" title="All 2 branches missed.">        if (login != null) {</span>
+<span class="nc" id="L550">            login.shutdown();</span>
+        }
+
+<span class="nc" id="L553">        final EventLoopGroup bossGroup = bootstrap.config().group();</span>
+<span class="nc" id="L554">        final EventLoopGroup workerGroup = bootstrap.config().childGroup();</span>
+        // null if factory never started
+<span class="nc bnc" id="L556" title="All 2 branches missed.">        if (parentChannel != null) {</span>
+<span class="nc" id="L557">            ChannelFuture parentCloseFuture = parentChannel.close();</span>
+<span class="nc bnc" id="L558" title="All 2 branches missed.">            if (bossGroup != null) {</span>
+<span class="nc" id="L559">                parentCloseFuture.addListener(future -&gt; {</span>
+<span class="nc" id="L560">                    bossGroup.shutdownGracefully();</span>
+<span class="nc" id="L561">                });</span>
+            }
+<span class="nc" id="L563">            closeAll();</span>
+<span class="nc" id="L564">            ChannelGroupFuture allChannelsCloseFuture = allChannels.close();</span>
+<span class="nc bnc" id="L565" title="All 2 branches missed.">            if (workerGroup != null) {</span>
+<span class="nc" id="L566">                allChannelsCloseFuture.addListener(future -&gt; {</span>
+<span class="nc" id="L567">                    workerGroup.shutdownGracefully();</span>
+<span class="nc" id="L568">                });</span>
+            }
+<span class="nc" id="L570">        } else {</span>
+<span class="nc bnc" id="L571" title="All 2 branches missed.">            if (bossGroup != null) {</span>
+<span class="nc" id="L572">                bossGroup.shutdownGracefully();</span>
+            }
+<span class="nc bnc" id="L574" title="All 2 branches missed.">            if (workerGroup != null) {</span>
+<span class="nc" id="L575">                workerGroup.shutdownGracefully();</span>
+            }
+        }
+
+<span class="nc bnc" id="L579" title="All 2 branches missed.">        if (zkServer != null) {</span>
+<span class="nc" id="L580">            zkServer.shutdown();</span>
+        }
+<span class="nc" id="L582">        synchronized(this) {</span>
+<span class="nc" id="L583">            killed = true;</span>
+<span class="nc" id="L584">            notifyAll();</span>
+<span class="nc" id="L585">        }</span>
+<span class="nc" id="L586">    }</span>
+    
+    @Override
+    public void start() {
+<span class="nc" id="L590">        LOG.info(&quot;binding to port {}&quot;, localAddress);</span>
+<span class="nc" id="L591">        parentChannel = bootstrap.bind(localAddress).syncUninterruptibly().channel();</span>
+        // Port changes after bind() if the original port was 0, update
+        // localAddress to get the real port.
+<span class="nc" id="L594">        localAddress = (InetSocketAddress) parentChannel.localAddress();</span>
+<span class="nc" id="L595">        LOG.info(&quot;bound to port &quot; + getLocalPort());</span>
+<span class="nc" id="L596">    }</span>
+    
+    public void reconfigure(InetSocketAddress addr) {
+<span class="nc" id="L599">       Channel oldChannel = parentChannel;</span>
+       try {
+<span class="nc" id="L601">           LOG.info(&quot;binding to port {}&quot;, addr);</span>
+<span class="nc" id="L602">           parentChannel = bootstrap.bind(addr).syncUninterruptibly().channel();</span>
+           // Port changes after bind() if the original port was 0, update
+           // localAddress to get the real port.
+<span class="nc" id="L605">           localAddress = (InetSocketAddress) parentChannel.localAddress();</span>
+<span class="nc" id="L606">           LOG.info(&quot;bound to port &quot; + getLocalPort());</span>
+<span class="nc" id="L607">       } catch (Exception e) {</span>
+<span class="nc" id="L608">           LOG.error(&quot;Error while reconfiguring&quot;, e);</span>
+       } finally {
+<span class="nc" id="L610">           oldChannel.close();</span>
+       }
+<span class="nc" id="L612">    }</span>
+    
+    @Override
+    public void startup(ZooKeeperServer zks, boolean startServer)
+            throws IOException, InterruptedException {
+<span class="nc" id="L617">        start();</span>
+<span class="nc" id="L618">        setZooKeeperServer(zks);</span>
+<span class="nc bnc" id="L619" title="All 2 branches missed.">        if (startServer) {</span>
+<span class="nc" id="L620">            zks.startdata();</span>
+<span class="nc" id="L621">            zks.startup();</span>
+        }
+<span class="nc" id="L623">    }</span>
+
+    @Override
+    public Iterable&lt;ServerCnxn&gt; getConnections() {
+<span class="nc" id="L627">        return cnxns;</span>
+    }
+
+    @Override
+    public InetSocketAddress getLocalAddress() {
+<span class="nc" id="L632">        return localAddress;</span>
+    }
+
+    private void addCnxn(NettyServerCnxn cnxn) {
+<span class="nc" id="L636">        cnxns.add(cnxn);</span>
+<span class="nc" id="L637">        synchronized (ipMap){</span>
+<span class="nc" id="L638">            InetAddress addr =</span>
+<span class="nc" id="L639">                ((InetSocketAddress)cnxn.getChannel().remoteAddress()).getAddress();</span>
+<span class="nc" id="L640">            Set&lt;NettyServerCnxn&gt; s = ipMap.get(addr);</span>
+<span class="nc bnc" id="L641" title="All 2 branches missed.">            if (s == null) {</span>
+<span class="nc" id="L642">                s = new HashSet&lt;&gt;();</span>
+<span class="nc" id="L643">                ipMap.put(addr, s);</span>
+            }
+<span class="nc" id="L645">            s.add(cnxn);</span>
+<span class="nc" id="L646">        }</span>
+<span class="nc" id="L647">    }</span>
+
+    void removeCnxnFromIpMap(NettyServerCnxn cnxn, InetAddress remoteAddress) {
+<span class="nc" id="L650">        synchronized (ipMap) {</span>
+<span class="nc" id="L651">            Set&lt;NettyServerCnxn&gt; s = ipMap.get(remoteAddress);</span>
+<span class="nc bnc" id="L652" title="All 2 branches missed.">            if (s != null) {</span>
+<span class="nc" id="L653">                s.remove(cnxn);</span>
+<span class="nc bnc" id="L654" title="All 2 branches missed.">                if (s.isEmpty()) {</span>
+<span class="nc" id="L655">                    ipMap.remove(remoteAddress);</span>
+                }
+<span class="nc" id="L657">                return;</span>
+            }
+<span class="nc" id="L659">        }</span>
+        // Fallthrough and log errors outside the synchronized block
+<span class="nc" id="L661">        LOG.error(</span>
+                &quot;Unexpected null set for remote address {} when removing cnxn {}&quot;,
+                remoteAddress,
+                cnxn);
+<span class="nc" id="L665">    }</span>
+
+    @Override
+    public void resetAllConnectionStats() {
+        // No need to synchronize since cnxns is backed by a ConcurrentHashMap
+<span class="nc bnc" id="L670" title="All 2 branches missed.">        for(ServerCnxn c : cnxns){</span>
+<span class="nc" id="L671">            c.resetStats();</span>
+<span class="nc" id="L672">        }</span>
+<span class="nc" id="L673">    }</span>
+
+    @Override
+    public Iterable&lt;Map&lt;String, Object&gt;&gt; getAllConnectionInfo(boolean brief) {
+<span class="nc" id="L677">        HashSet&lt;Map&lt;String,Object&gt;&gt; info = new HashSet&lt;Map&lt;String,Object&gt;&gt;();</span>
+        // No need to synchronize since cnxns is backed by a ConcurrentHashMap
+<span class="nc bnc" id="L679" title="All 2 branches missed.">        for (ServerCnxn c : cnxns) {</span>
+<span class="nc" id="L680">            info.add(c.getConnectionInfo(brief));</span>
+<span class="nc" id="L681">        }</span>
+<span class="nc" id="L682">        return info;</span>
+    }
+
+    /**
+     * Sets the test ByteBufAllocator. This allocator will be used by all
+     * future instances of this class.
+     * It is not recommended to use this method outside of testing.
+     * @param allocator the ByteBufAllocator to use for all netty buffer
+     *                  allocations.
+     */
+    static void setTestAllocator(ByteBufAllocator allocator) {
+<span class="nc" id="L693">        TEST_ALLOCATOR.set(allocator);</span>
+<span class="nc" id="L694">    }</span>
+
+    /**
+     * Clears the test ByteBufAllocator. The default allocator will be used
+     * by all future instances of this class.
+     * It is not recommended to use this method outside of testing.
+     */
+    static void clearTestAllocator() {
+<span class="nc" id="L702">        TEST_ALLOCATOR.set(null);</span>
+<span class="nc" id="L703">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

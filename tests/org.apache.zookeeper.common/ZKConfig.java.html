@@ -1,0 +1,298 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ZKConfig.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.common</a> &gt; <span class="el_source">ZKConfig.java</span></div><h1>ZKConfig.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.common;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Properties;
+
+import org.apache.zookeeper.Environment;
+import org.apache.zookeeper.server.quorum.QuorumPeerConfig.ConfigException;
+import org.apache.zookeeper.server.util.VerifyingFileFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This class is a base class for the configurations of both client and server.
+ * It supports reading client configuration from both system properties and
+ * configuration file. A user can override any system property by calling
+ * {@link #setProperty(String, String)}.
+ * @since 3.5.2
+ */
+public class ZKConfig {
+
+<span class="fc" id="L44">    private static final Logger LOG = LoggerFactory.getLogger(ZKConfig.class);</span>
+
+    public static final String JUTE_MAXBUFFER = &quot;jute.maxbuffer&quot;;
+
+    /**
+     * Path to a kinit binary: {@value}. Defaults to
+     * &lt;code&gt;&quot;/usr/bin/kinit&quot;&lt;/code&gt;
+     */
+    public static final String KINIT_COMMAND = &quot;zookeeper.kinit&quot;;
+    public static final String JGSS_NATIVE = &quot;sun.security.jgss.native&quot;;
+
+<span class="fc" id="L55">    private final Map&lt;String, String&gt; properties = new HashMap&lt;String, String&gt;();</span>
+
+    /**
+     * properties, which are common to both client and server, are initialized
+     * from system properties
+     */
+<span class="fc" id="L61">    public ZKConfig() {</span>
+<span class="fc" id="L62">        init();</span>
+<span class="fc" id="L63">    }</span>
+
+    /**
+     * @param configPath
+     *            Configuration file path
+     * @throws ConfigException
+     *             if failed to load configuration properties
+     */
+
+    public ZKConfig(String configPath) throws ConfigException {
+<span class="nc" id="L73">        this(new File(configPath));</span>
+<span class="nc" id="L74">    }</span>
+
+    /**
+     *
+     * @param configFile
+     *            Configuration file
+     * @throws ConfigException
+     *             if failed to load configuration properties
+     */
+    public ZKConfig(File configFile) throws ConfigException {
+<span class="nc" id="L84">        this();</span>
+<span class="nc" id="L85">        addConfiguration(configFile);</span>
+<span class="nc" id="L86">    }</span>
+
+    private void init() {
+        /**
+         * backward compatibility for all currently available client properties
+         */
+<span class="fc" id="L92">        handleBackwardCompatibility();</span>
+<span class="fc" id="L93">    }</span>
+
+    /**
+     * Now onwards client code will use properties from this class but older
+     * clients still be setting properties through system properties. So to make
+     * this change backward compatible we should set old system properties in
+     * this configuration.
+     */
+    protected void handleBackwardCompatibility() {
+<span class="fc" id="L102">        properties.put(JUTE_MAXBUFFER, System.getProperty(JUTE_MAXBUFFER));</span>
+<span class="fc" id="L103">        properties.put(KINIT_COMMAND, System.getProperty(KINIT_COMMAND));</span>
+<span class="fc" id="L104">        properties.put(JGSS_NATIVE, System.getProperty(JGSS_NATIVE));</span>
+
+<span class="fc" id="L106">        try (ClientX509Util clientX509Util = new ClientX509Util()) {</span>
+<span class="fc" id="L107">            putSSLProperties(clientX509Util);</span>
+<span class="fc" id="L108">            properties.put(clientX509Util.getSslAuthProviderProperty(),</span>
+<span class="fc" id="L109">                    System.getProperty(clientX509Util.getSslAuthProviderProperty()));</span>
+        }
+
+<span class="fc" id="L112">        try (X509Util x509Util = new QuorumX509Util()) {</span>
+<span class="fc" id="L113">            putSSLProperties(x509Util);</span>
+        }
+<span class="fc" id="L115">    }</span>
+    
+    private void putSSLProperties(X509Util x509Util) {
+<span class="fc" id="L118">        properties.put(x509Util.getSslProtocolProperty(),</span>
+<span class="fc" id="L119">                System.getProperty(x509Util.getSslProtocolProperty()));</span>
+<span class="fc" id="L120">        properties.put(x509Util.getSslEnabledProtocolsProperty(),</span>
+<span class="fc" id="L121">                System.getProperty(x509Util.getSslEnabledProtocolsProperty()));</span>
+<span class="fc" id="L122">        properties.put(x509Util.getSslCipherSuitesProperty(),</span>
+<span class="fc" id="L123">                System.getProperty(x509Util.getSslCipherSuitesProperty()));</span>
+<span class="fc" id="L124">        properties.put(x509Util.getSslKeystoreLocationProperty(),</span>
+<span class="fc" id="L125">                System.getProperty(x509Util.getSslKeystoreLocationProperty()));</span>
+<span class="fc" id="L126">        properties.put(x509Util.getSslKeystorePasswdProperty(),</span>
+<span class="fc" id="L127">                System.getProperty(x509Util.getSslKeystorePasswdProperty()));</span>
+<span class="fc" id="L128">        properties.put(x509Util.getSslKeystoreTypeProperty(),</span>
+<span class="fc" id="L129">                System.getProperty(x509Util.getSslKeystoreTypeProperty()));</span>
+<span class="fc" id="L130">        properties.put(x509Util.getSslTruststoreLocationProperty(),</span>
+<span class="fc" id="L131">                System.getProperty(x509Util.getSslTruststoreLocationProperty()));</span>
+<span class="fc" id="L132">        properties.put(x509Util.getSslTruststorePasswdProperty(),</span>
+<span class="fc" id="L133">                System.getProperty(x509Util.getSslTruststorePasswdProperty()));</span>
+<span class="fc" id="L134">        properties.put(x509Util.getSslTruststoreTypeProperty(),</span>
+<span class="fc" id="L135">                System.getProperty(x509Util.getSslTruststoreTypeProperty()));</span>
+<span class="fc" id="L136">        properties.put(x509Util.getSslHostnameVerificationEnabledProperty(),</span>
+<span class="fc" id="L137">                System.getProperty(x509Util.getSslHostnameVerificationEnabledProperty()));</span>
+<span class="fc" id="L138">        properties.put(x509Util.getSslCrlEnabledProperty(),</span>
+<span class="fc" id="L139">                System.getProperty(x509Util.getSslCrlEnabledProperty()));</span>
+<span class="fc" id="L140">        properties.put(x509Util.getSslOcspEnabledProperty(),</span>
+<span class="fc" id="L141">                System.getProperty(x509Util.getSslOcspEnabledProperty()));</span>
+<span class="fc" id="L142">        properties.put(x509Util.getSslClientAuthProperty(),</span>
+<span class="fc" id="L143">                System.getProperty(x509Util.getSslClientAuthProperty()));</span>
+<span class="fc" id="L144">        properties.put(x509Util.getSslHandshakeDetectionTimeoutMillisProperty(),</span>
+<span class="fc" id="L145">                System.getProperty(x509Util.getSslHandshakeDetectionTimeoutMillisProperty()));</span>
+<span class="fc" id="L146">    }</span>
+
+    /**
+     * Get the property value
+     *
+     * @param key
+     * @return property value
+     */
+    public String getProperty(String key) {
+<span class="fc" id="L155">        return properties.get(key);</span>
+    }
+
+    /**
+     * Get the property value, if it is null return default value
+     *
+     * @param key
+     *            property key
+     * @param defaultValue
+     * @return property value or default value
+     */
+    public String getProperty(String key, String defaultValue) {
+<span class="fc" id="L167">        String value = properties.get(key);</span>
+<span class="pc bpc" id="L168" title="1 of 2 branches missed.">        return (value == null) ? defaultValue : value;</span>
+    }
+
+    /**
+     * Return the value of &quot;java.security.auth.login.config&quot; system property
+     *
+     * @return value
+     */
+    public String getJaasConfKey() {
+<span class="fc" id="L177">        return System.getProperty(Environment.JAAS_CONF_KEY);</span>
+    }
+
+    /**
+     * Maps the specified &lt;code&gt;key&lt;/code&gt; to the specified &lt;code&gt;value&lt;/code&gt;.
+     * key can not be &lt;code&gt;null&lt;/code&gt;. If key is already mapped then the old
+     * value of the &lt;code&gt;key&lt;/code&gt; is replaced by the specified
+     * &lt;code&gt;value&lt;/code&gt;.
+     * 
+     * @param key
+     * @param value
+     */
+    public void setProperty(String key, String value) {
+<span class="pc bpc" id="L190" title="1 of 2 branches missed.">        if (null == key) {</span>
+<span class="nc" id="L191">            throw new IllegalArgumentException(&quot;property key is null.&quot;);</span>
+        }
+<span class="fc" id="L193">        String oldValue = properties.put(key, value);</span>
+<span class="pc bpc" id="L194" title="1 of 2 branches missed.">        if (LOG.isDebugEnabled()) {</span>
+<span class="nc bnc" id="L195" title="All 4 branches missed.">            if (null != oldValue &amp;&amp; !oldValue.equals(value)) {</span>
+<span class="nc" id="L196">                LOG.debug(&quot;key {}'s value {} is replaced with new value {}&quot;, key, oldValue, value);</span>
+            }
+        }
+<span class="fc" id="L199">    }</span>
+
+    /**
+     * Add a configuration resource. The properties form this configuration will
+     * overwrite corresponding already loaded property and system property
+     *
+     * @param configFile
+     *            Configuration file.
+     */
+    public void addConfiguration(File configFile) throws ConfigException {
+<span class="nc" id="L209">        LOG.info(&quot;Reading configuration from: {}&quot;, configFile.getAbsolutePath());</span>
+        try {
+<span class="nc" id="L211">            configFile = (new VerifyingFileFactory.Builder(LOG).warnForRelativePath().failForNonExistingPath().build())</span>
+<span class="nc" id="L212">                    .validate(configFile);</span>
+<span class="nc" id="L213">            Properties cfg = new Properties();</span>
+<span class="nc" id="L214">            FileInputStream in = new FileInputStream(configFile);</span>
+            try {
+<span class="nc" id="L216">                cfg.load(in);</span>
+            } finally {
+<span class="nc" id="L218">                in.close();</span>
+            }
+<span class="nc" id="L220">            parseProperties(cfg);</span>
+<span class="nc" id="L221">        } catch (IOException | IllegalArgumentException e) {</span>
+<span class="nc" id="L222">            LOG.error(&quot;Error while configuration from: {}&quot;, configFile.getAbsolutePath(), e);</span>
+<span class="nc" id="L223">            throw new ConfigException(&quot;Error while processing &quot; + configFile.getAbsolutePath(), e);</span>
+<span class="nc" id="L224">        }</span>
+<span class="nc" id="L225">    }</span>
+
+    /**
+     * Add a configuration resource. The properties form this configuration will
+     * overwrite corresponding already loaded property and system property
+     *
+     * @param configPath
+     *            Configuration file path.
+     */
+    public void addConfiguration(String configPath) throws ConfigException {
+<span class="nc" id="L235">        addConfiguration(new File(configPath));</span>
+<span class="nc" id="L236">    }</span>
+
+    private void parseProperties(Properties cfg) {
+<span class="nc bnc" id="L239" title="All 2 branches missed.">        for (Entry&lt;Object, Object&gt; entry : cfg.entrySet()) {</span>
+<span class="nc" id="L240">            String key = entry.getKey().toString().trim();</span>
+<span class="nc" id="L241">            String value = entry.getValue().toString().trim();</span>
+<span class="nc" id="L242">            setProperty(key, value);</span>
+<span class="nc" id="L243">        }</span>
+<span class="nc" id="L244">    }</span>
+
+    /**
+     * Returns {@code true} if and only if the property named by the argument
+     * exists and is equal to the string {@code &quot;true&quot;}.
+     */
+    public boolean getBoolean(String key) {
+<span class="fc" id="L251">        return getBoolean(key, false);</span>
+    }
+
+    /**
+     * Get the value of the &lt;code&gt;key&lt;/code&gt; property as a &lt;code&gt;boolean&lt;/code&gt;. Returns
+     * {@code true} if and only if the property named by the argument exists and is equal
+     * to the string {@code &quot;true&quot;}. If the property is not set, the provided
+     * &lt;code&gt;defaultValue&lt;/code&gt; is returned.
+     *
+     * @param key
+     *            property key.
+     * @param defaultValue
+     *            default value.
+     * @return return property value as an &lt;code&gt;boolean&lt;/code&gt;, or
+     *         &lt;code&gt;defaultValue&lt;/code&gt;
+     */
+    public boolean getBoolean(String key, boolean defaultValue) {
+<span class="fc" id="L268">        String propertyValue = getProperty(key);</span>
+<span class="pc bpc" id="L269" title="1 of 2 branches missed.">        if (propertyValue == null) {</span>
+<span class="fc" id="L270">            return defaultValue;</span>
+        } else {
+<span class="nc" id="L272">            return Boolean.parseBoolean(propertyValue.trim());</span>
+        }
+    }
+
+    /**
+     * Get the value of the &lt;code&gt;key&lt;/code&gt; property as an &lt;code&gt;int&lt;/code&gt;. If
+     * property is not set, the provided &lt;code&gt;defaultValue&lt;/code&gt; is returned
+     * 
+     * @param key
+     *            property key.
+     * @param defaultValue
+     *            default value.
+     * @throws NumberFormatException
+     *             when the value is invalid
+     * @return return property value as an &lt;code&gt;int&lt;/code&gt;, or
+     *         &lt;code&gt;defaultValue&lt;/code&gt;
+     */
+    public int getInt(String key, int defaultValue) {
+<span class="fc" id="L290">        String value = getProperty(key);</span>
+<span class="pc bpc" id="L291" title="1 of 2 branches missed.">        if (value != null) {</span>
+<span class="nc" id="L292">            return Integer.decode(value.trim());</span>
+        }
+<span class="fc" id="L294">        return defaultValue;</span>
+    }
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

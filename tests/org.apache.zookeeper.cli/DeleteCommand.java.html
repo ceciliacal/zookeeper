@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DeleteCommand.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.cli</a> &gt; <span class="el_source">DeleteCommand.java</span></div><h1>DeleteCommand.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.cli;
+
+import org.apache.commons.cli.*;
+import org.apache.zookeeper.KeeperException;
+
+/**
+ * delete command for cli
+ */
+public class DeleteCommand extends CliCommand {
+
+<span class="nc" id="L28">    private static Options options = new Options();</span>
+    private String[] args;
+    private CommandLine cl;
+
+    static {
+<span class="nc" id="L33">        options.addOption(&quot;v&quot;, true, &quot;version&quot;);</span>
+<span class="nc" id="L34">    }</span>
+
+    public DeleteCommand() {
+<span class="nc" id="L37">        super(&quot;delete&quot;, &quot;[-v version] path&quot;);</span>
+<span class="nc" id="L38">    }</span>
+
+    @Override
+    public CliCommand parse(String[] cmdArgs) throws CliParseException {
+<span class="nc" id="L42">        Parser parser = new PosixParser();</span>
+        try {
+<span class="nc" id="L44">            cl = parser.parse(options, cmdArgs);</span>
+<span class="nc" id="L45">        } catch (ParseException ex) {</span>
+<span class="nc" id="L46">            throw new CliParseException(ex);</span>
+<span class="nc" id="L47">        }</span>
+<span class="nc" id="L48">        args = cl.getArgs();</span>
+<span class="nc bnc" id="L49" title="All 2 branches missed.">        if (args.length &lt; 2) {</span>
+<span class="nc" id="L50">            throw new CliParseException(getUsageStr());</span>
+        }
+        
+<span class="nc" id="L53">        retainCompatibility(cmdArgs);</span>
+
+<span class="nc" id="L55">        return this;</span>
+    }
+
+    private void retainCompatibility(String[] cmdArgs) throws CliParseException {
+<span class="nc bnc" id="L59" title="All 2 branches missed.">        if (args.length &gt; 2) {</span>
+<span class="nc" id="L60">            err.println(&quot;'delete path [version]' has been deprecated. &quot;</span>
+                    + &quot;Please use 'delete [-v version] path' instead.&quot;);
+<span class="nc" id="L62">            Parser parser = new PosixParser();</span>
+            try {
+<span class="nc" id="L64">                cl = parser.parse(options, cmdArgs);</span>
+<span class="nc" id="L65">            } catch (ParseException ex) {</span>
+<span class="nc" id="L66">                throw new CliParseException(ex);</span>
+<span class="nc" id="L67">            }</span>
+<span class="nc" id="L68">            args = cl.getArgs();</span>
+        }
+<span class="nc" id="L70">    }</span>
+
+    @Override
+    public boolean exec() throws CliException {
+<span class="nc" id="L74">        String path = args[1];</span>
+        int version;
+<span class="nc bnc" id="L76" title="All 2 branches missed.">        if (cl.hasOption(&quot;v&quot;)) {</span>
+<span class="nc" id="L77">            version = Integer.parseInt(cl.getOptionValue(&quot;v&quot;));</span>
+        } else {
+<span class="nc" id="L79">            version = -1;</span>
+        }
+        
+        try {
+<span class="nc" id="L83">            zk.delete(path, version);</span>
+<span class="nc" id="L84">        } catch (IllegalArgumentException ex) {</span>
+<span class="nc" id="L85">            throw new MalformedPathException(ex.getMessage());</span>
+<span class="nc" id="L86">        } catch(KeeperException|InterruptedException ex) {</span>
+<span class="nc" id="L87">            throw new CliWrapperException(ex);</span>
+<span class="nc" id="L88">        }</span>
+<span class="nc" id="L89">        return false;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

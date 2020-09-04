@@ -1,0 +1,181 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ReadOnlyZooKeeperServer.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">ReadOnlyZooKeeperServer.java</span></div><h1>ReadOnlyZooKeeperServer.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.quorum;
+
+import java.io.PrintWriter;
+
+import org.apache.zookeeper.jmx.MBeanRegistry;
+import org.apache.zookeeper.server.DataTreeBean;
+import org.apache.zookeeper.server.FinalRequestProcessor;
+import org.apache.zookeeper.server.PrepRequestProcessor;
+import org.apache.zookeeper.server.RequestProcessor;
+import org.apache.zookeeper.server.ZKDatabase;
+import org.apache.zookeeper.server.ZooKeeperServer;
+import org.apache.zookeeper.server.ZooKeeperServerBean;
+import org.apache.zookeeper.server.persistence.FileTxnSnapLog;
+
+/**
+ * A ZooKeeperServer which comes into play when peer is partitioned from the
+ * majority. Handles read-only clients, but drops connections from not-read-only
+ * ones.
+ * &lt;p&gt;
+ * The very first processor in the chain of request processors is a
+ * ReadOnlyRequestProcessor which drops state-changing requests.
+ */
+public class ReadOnlyZooKeeperServer extends ZooKeeperServer {
+
+    protected final QuorumPeer self;
+<span class="nc" id="L44">    private volatile boolean shutdown = false;</span>
+
+    ReadOnlyZooKeeperServer(FileTxnSnapLog logFactory, QuorumPeer self,
+                            ZKDatabase zkDb) {
+<span class="nc" id="L48">        super(logFactory, self.tickTime, self.minSessionTimeout,</span>
+              self.maxSessionTimeout, zkDb);
+<span class="nc" id="L50">        this.self = self;</span>
+<span class="nc" id="L51">    }</span>
+
+    @Override
+    protected void setupRequestProcessors() {
+<span class="nc" id="L55">        RequestProcessor finalProcessor = new FinalRequestProcessor(this);</span>
+<span class="nc" id="L56">        RequestProcessor prepProcessor = new PrepRequestProcessor(this, finalProcessor);</span>
+<span class="nc" id="L57">        ((PrepRequestProcessor) prepProcessor).start();</span>
+<span class="nc" id="L58">        firstProcessor = new ReadOnlyRequestProcessor(this, prepProcessor);</span>
+<span class="nc" id="L59">        ((ReadOnlyRequestProcessor) firstProcessor).start();</span>
+<span class="nc" id="L60">    }</span>
+
+    @Override
+    public synchronized void startup() {
+        // check to avoid startup follows shutdown
+<span class="nc bnc" id="L65" title="All 2 branches missed.">        if (shutdown) {</span>
+<span class="nc" id="L66">            LOG.warn(&quot;Not starting Read-only server as startup follows shutdown!&quot;);</span>
+<span class="nc" id="L67">            return;</span>
+        }
+<span class="nc" id="L69">        registerJMX(new ReadOnlyBean(this), self.jmxLocalPeerBean);</span>
+<span class="nc" id="L70">        super.startup();</span>
+<span class="nc" id="L71">        self.setZooKeeperServer(this);</span>
+<span class="nc" id="L72">        self.adminServer.setZooKeeperServer(this);</span>
+<span class="nc" id="L73">        LOG.info(&quot;Read-only server started&quot;);</span>
+<span class="nc" id="L74">    }</span>
+
+    @Override
+    protected void registerJMX() {
+        // register with JMX
+        try {
+<span class="nc" id="L80">            jmxDataTreeBean = new DataTreeBean(getZKDatabase().getDataTree());</span>
+<span class="nc" id="L81">            MBeanRegistry.getInstance().register(jmxDataTreeBean, jmxServerBean);</span>
+<span class="nc" id="L82">        } catch (Exception e) {</span>
+<span class="nc" id="L83">            LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L84">            jmxDataTreeBean = null;</span>
+<span class="nc" id="L85">        }</span>
+<span class="nc" id="L86">    }</span>
+
+    public void registerJMX(ZooKeeperServerBean serverBean, LocalPeerBean localPeerBean) {
+        // register with JMX
+        try {
+<span class="nc" id="L91">            jmxServerBean = serverBean;</span>
+<span class="nc" id="L92">            MBeanRegistry.getInstance().register(serverBean, localPeerBean);</span>
+<span class="nc" id="L93">        } catch (Exception e) {</span>
+<span class="nc" id="L94">            LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L95">            jmxServerBean = null;</span>
+<span class="nc" id="L96">        }</span>
+<span class="nc" id="L97">    }</span>
+
+    @Override
+    protected void unregisterJMX() {
+        // unregister from JMX
+        try {
+<span class="nc bnc" id="L103" title="All 2 branches missed.">            if (jmxDataTreeBean != null) {</span>
+<span class="nc" id="L104">                MBeanRegistry.getInstance().unregister(jmxDataTreeBean);</span>
+            }
+<span class="nc" id="L106">        } catch (Exception e) {</span>
+<span class="nc" id="L107">            LOG.warn(&quot;Failed to unregister with JMX&quot;, e);</span>
+<span class="nc" id="L108">        }</span>
+<span class="nc" id="L109">        jmxDataTreeBean = null;</span>
+<span class="nc" id="L110">    }</span>
+
+    protected void unregisterJMX(ZooKeeperServer zks) {
+        // unregister from JMX
+        try {
+<span class="nc bnc" id="L115" title="All 2 branches missed.">            if (jmxServerBean != null) {</span>
+<span class="nc" id="L116">                MBeanRegistry.getInstance().unregister(jmxServerBean);</span>
+            }
+<span class="nc" id="L118">        } catch (Exception e) {</span>
+<span class="nc" id="L119">            LOG.warn(&quot;Failed to unregister with JMX&quot;, e);</span>
+<span class="nc" id="L120">        }</span>
+<span class="nc" id="L121">        jmxServerBean = null;</span>
+<span class="nc" id="L122">    }</span>
+
+    @Override
+    public String getState() {
+<span class="nc" id="L126">        return &quot;read-only&quot;;</span>
+    }
+
+    /**
+     * Returns the id of the associated QuorumPeer, which will do for a unique
+     * id of this server.
+     */
+    @Override
+    public long getServerId() {
+<span class="nc" id="L135">        return self.getId();</span>
+    }
+
+    @Override
+    public synchronized void shutdown() {
+<span class="nc bnc" id="L140" title="All 2 branches missed.">        if (!canShutdown()) {</span>
+<span class="nc" id="L141">            LOG.debug(&quot;ZooKeeper server is not running, so not proceeding to shutdown!&quot;);</span>
+<span class="nc" id="L142">            return;</span>
+        }
+<span class="nc" id="L144">        shutdown = true;</span>
+<span class="nc" id="L145">        unregisterJMX(this);</span>
+
+        // set peer's server to null
+<span class="nc" id="L148">        self.setZooKeeperServer(null);</span>
+        // clear all the connections
+<span class="nc" id="L150">        self.closeAllConnections();</span>
+
+<span class="nc" id="L152">        self.adminServer.setZooKeeperServer(null);</span>
+
+        // shutdown the server itself
+<span class="nc" id="L155">        super.shutdown();</span>
+<span class="nc" id="L156">    }</span>
+
+    @Override
+    public void dumpConf(PrintWriter pwriter) {
+<span class="nc" id="L160">        super.dumpConf(pwriter);</span>
+
+<span class="nc" id="L162">        pwriter.print(&quot;initLimit=&quot;);</span>
+<span class="nc" id="L163">        pwriter.println(self.getInitLimit());</span>
+<span class="nc" id="L164">        pwriter.print(&quot;syncLimit=&quot;);</span>
+<span class="nc" id="L165">        pwriter.println(self.getSyncLimit());</span>
+<span class="nc" id="L166">        pwriter.print(&quot;electionAlg=&quot;);</span>
+<span class="nc" id="L167">        pwriter.println(self.getElectionType());</span>
+<span class="nc" id="L168">        pwriter.print(&quot;electionPort=&quot;);</span>
+<span class="nc" id="L169">        pwriter.println(self.getElectionAddress().getPort());</span>
+<span class="nc" id="L170">        pwriter.print(&quot;quorumPort=&quot;);</span>
+<span class="nc" id="L171">        pwriter.println(self.getQuorumAddress().getPort());</span>
+<span class="nc" id="L172">        pwriter.print(&quot;peerType=&quot;);</span>
+<span class="nc" id="L173">        pwriter.println(self.getLearnerType().ordinal());</span>
+<span class="nc" id="L174">    }</span>
+
+    @Override
+    protected void setState(State state) {
+<span class="nc" id="L178">        this.state = state;</span>
+<span class="nc" id="L179">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

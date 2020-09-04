@@ -1,0 +1,780 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ClientBase.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.test</a> &gt; <span class="el_source">ClientBase.java</span></div><h1>ClientBase.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.test;
+
+import static org.apache.zookeeper.client.FourLetterWordMain.send4LetterWord;
+
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+import javax.management.MBeanServerConnection;
+import javax.management.ObjectName;
+
+
+import org.apache.zookeeper.common.Time;
+import org.apache.zookeeper.common.X509Exception.SSLContextException;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.PortAssignment;
+import org.apache.zookeeper.TestableZooKeeper;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher;
+import org.apache.zookeeper.Watcher.Event.KeeperState;
+import org.apache.zookeeper.ZKTestCase;
+import org.apache.zookeeper.ZooKeeper;
+import org.apache.zookeeper.common.IOUtils;
+import org.apache.zookeeper.server.ServerCnxnFactory;
+import org.apache.zookeeper.server.ServerCnxnFactoryAccessor;
+import org.apache.zookeeper.server.ZKDatabase;
+import org.apache.zookeeper.server.ZooKeeperServer;
+import org.apache.zookeeper.server.persistence.FilePadding;
+import org.apache.zookeeper.server.persistence.FileTxnLog;
+import org.apache.zookeeper.server.quorum.QuorumPeer;
+import org.apache.zookeeper.server.util.OSMXBean;
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public abstract class ClientBase extends ZKTestCase {
+<span class="fc" id="L70">    protected static final Logger LOG = LoggerFactory.getLogger(ClientBase.class);</span>
+
+<span class="fc" id="L72">    public static int CONNECTION_TIMEOUT = 30000;</span>
+<span class="fc" id="L73">    static final File BASETEST =</span>
+<span class="fc" id="L74">        new File(System.getProperty(&quot;build.test.dir&quot;, &quot;build&quot;));</span>
+
+<span class="fc" id="L76">    protected String hostPort = &quot;127.0.0.1:&quot; + PortAssignment.unique();</span>
+<span class="fc" id="L77">    protected int maxCnxns = 0;</span>
+<span class="fc" id="L78">    protected ServerCnxnFactory serverFactory = null;</span>
+<span class="fc" id="L79">    protected File tmpDir = null;</span>
+
+    long initialFdCount;
+
+    public ClientBase() {
+<span class="fc" id="L84">        super();</span>
+<span class="fc" id="L85">    }</span>
+
+    /**
+     * In general don't use this. Only use in the special case that you
+     * want to ignore results (for whatever reason) in your test. Don't
+     * use empty watchers in real code!
+     *
+     */
+<span class="nc" id="L93">    protected static class NullWatcher implements Watcher {</span>
+<span class="nc" id="L94">        public void process(WatchedEvent event) { /* nada */ }</span>
+    }
+
+    public static class CountdownWatcher implements Watcher {
+        // XXX this doesn't need to be volatile! (Should probably be final)
+        volatile CountDownLatch clientConnected;
+        // Set to true when connected to a read-only server, or a read-write (quorum) server.
+        volatile boolean connected;
+        // Set to true when connected to a quorum server.
+        volatile boolean syncConnected;
+        // Set to true when connected to a quorum server in read-only mode
+        volatile boolean readOnlyConnected;
+
+<span class="fc" id="L107">        public CountdownWatcher() {</span>
+<span class="fc" id="L108">            reset();</span>
+<span class="fc" id="L109">        }</span>
+        synchronized public void reset() {
+<span class="fc" id="L111">            clientConnected = new CountDownLatch(1);</span>
+<span class="fc" id="L112">            connected = false;</span>
+<span class="fc" id="L113">            syncConnected = false;</span>
+<span class="fc" id="L114">            readOnlyConnected = false;</span>
+<span class="fc" id="L115">        }</span>
+        synchronized public void process(WatchedEvent event) {
+<span class="fc" id="L117">            KeeperState state = event.getState();</span>
+<span class="fc bfc" id="L118" title="All 2 branches covered.">            if (state == KeeperState.SyncConnected) {</span>
+<span class="fc" id="L119">                connected = true;</span>
+<span class="fc" id="L120">                syncConnected = true;</span>
+<span class="fc" id="L121">                readOnlyConnected = false;</span>
+<span class="pc bpc" id="L122" title="1 of 2 branches missed.">            } else if (state == KeeperState.ConnectedReadOnly) {</span>
+<span class="nc" id="L123">                connected = true;</span>
+<span class="nc" id="L124">                syncConnected = false;</span>
+<span class="nc" id="L125">                readOnlyConnected = true;</span>
+            } else {
+<span class="fc" id="L127">                connected = false;</span>
+<span class="fc" id="L128">                syncConnected = false;</span>
+<span class="fc" id="L129">                readOnlyConnected = false;</span>
+            }
+
+<span class="fc" id="L132">            notifyAll();</span>
+<span class="fc bfc" id="L133" title="All 2 branches covered.">            if (connected) {</span>
+<span class="fc" id="L134">                clientConnected.countDown();</span>
+            }
+<span class="fc" id="L136">        }</span>
+        synchronized public boolean isConnected() {
+<span class="nc" id="L138">            return connected;</span>
+        }
+        synchronized public void waitForConnected(long timeout)
+            throws InterruptedException, TimeoutException
+        {
+<span class="fc" id="L143">            long expire = Time.currentElapsedTime() + timeout;</span>
+<span class="fc" id="L144">            long left = timeout;</span>
+<span class="pc bpc" id="L145" title="3 of 4 branches missed.">            while(!connected &amp;&amp; left &gt; 0) {</span>
+<span class="nc" id="L146">                wait(left);</span>
+<span class="nc" id="L147">                left = expire - Time.currentElapsedTime();</span>
+            }
+<span class="pc bpc" id="L149" title="1 of 2 branches missed.">            if (!connected) {</span>
+<span class="nc" id="L150">                throw new TimeoutException(&quot;Failed to connect to ZooKeeper server.&quot;);</span>
+
+            }
+<span class="fc" id="L153">        }</span>
+        synchronized public void waitForSyncConnected(long timeout)
+                throws InterruptedException, TimeoutException
+        {
+<span class="nc" id="L157">            long expire = Time.currentElapsedTime() + timeout;</span>
+<span class="nc" id="L158">            long left = timeout;</span>
+<span class="nc bnc" id="L159" title="All 4 branches missed.">            while(!syncConnected &amp;&amp; left &gt; 0) {</span>
+<span class="nc" id="L160">                wait(left);</span>
+<span class="nc" id="L161">                left = expire - Time.currentElapsedTime();</span>
+            }
+<span class="nc bnc" id="L163" title="All 2 branches missed.">            if (!syncConnected) {</span>
+<span class="nc" id="L164">                throw new TimeoutException(&quot;Failed to connect to read-write ZooKeeper server.&quot;);</span>
+            }
+<span class="nc" id="L166">        }</span>
+        synchronized public void waitForReadOnlyConnected(long timeout)
+                throws InterruptedException, TimeoutException
+        {
+<span class="nc" id="L170">            long expire = System.currentTimeMillis() + timeout;</span>
+<span class="nc" id="L171">            long left = timeout;</span>
+<span class="nc bnc" id="L172" title="All 4 branches missed.">            while(!readOnlyConnected &amp;&amp; left &gt; 0) {</span>
+<span class="nc" id="L173">                wait(left);</span>
+<span class="nc" id="L174">                left = expire - System.currentTimeMillis();</span>
+            }
+<span class="nc bnc" id="L176" title="All 2 branches missed.">            if (!readOnlyConnected) {</span>
+<span class="nc" id="L177">                throw new TimeoutException(&quot;Failed to connect in read-only mode to ZooKeeper server.&quot;);</span>
+            }
+<span class="nc" id="L179">        }</span>
+        synchronized public void waitForDisconnected(long timeout)
+            throws InterruptedException, TimeoutException
+        {
+<span class="nc" id="L183">            long expire = Time.currentElapsedTime() + timeout;</span>
+<span class="nc" id="L184">            long left = timeout;</span>
+<span class="nc bnc" id="L185" title="All 4 branches missed.">            while(connected &amp;&amp; left &gt; 0) {</span>
+<span class="nc" id="L186">                wait(left);</span>
+<span class="nc" id="L187">                left = expire - Time.currentElapsedTime();</span>
+            }
+<span class="nc bnc" id="L189" title="All 2 branches missed.">            if (connected) {</span>
+<span class="nc" id="L190">                throw new TimeoutException(&quot;Did not disconnect&quot;);</span>
+
+            }
+<span class="nc" id="L193">        }</span>
+    }
+
+    protected TestableZooKeeper createClient()
+        throws IOException, InterruptedException
+    {
+<span class="nc" id="L199">        return createClient(hostPort);</span>
+    }
+
+    protected TestableZooKeeper createClient(String hp)
+        throws IOException, InterruptedException
+    {
+<span class="nc" id="L205">        CountdownWatcher watcher = new CountdownWatcher();</span>
+<span class="nc" id="L206">        return createClient(watcher, hp);</span>
+    }
+
+    protected TestableZooKeeper createClient(CountdownWatcher watcher)
+        throws IOException, InterruptedException
+    {
+<span class="nc" id="L212">        return createClient(watcher, hostPort);</span>
+    }
+
+    private LinkedList&lt;ZooKeeper&gt; allClients;
+<span class="fc" id="L216">    private boolean allClientsSetup = false;</span>
+
+    protected TestableZooKeeper createClient(CountdownWatcher watcher, String hp)
+        throws IOException, InterruptedException
+    {
+<span class="nc" id="L221">        return createClient(watcher, hp, CONNECTION_TIMEOUT);</span>
+    }
+
+    protected TestableZooKeeper createClient(CountdownWatcher watcher,
+            String hp, int timeout)
+        throws IOException, InterruptedException
+    {
+<span class="fc" id="L228">        watcher.reset();</span>
+<span class="fc" id="L229">        TestableZooKeeper zk = new TestableZooKeeper(hp, timeout, watcher);</span>
+<span class="pc bpc" id="L230" title="1 of 2 branches missed.">        if (!watcher.clientConnected.await(timeout, TimeUnit.MILLISECONDS))</span>
+        {
+<span class="nc" id="L232">            Assert.fail(&quot;Unable to connect to server&quot;);</span>
+        }
+<span class="fc" id="L234">        synchronized(this) {</span>
+<span class="pc bpc" id="L235" title="1 of 2 branches missed.">            if (!allClientsSetup) {</span>
+<span class="nc" id="L236">                LOG.error(&quot;allClients never setup&quot;);</span>
+<span class="nc" id="L237">                Assert.fail(&quot;allClients never setup&quot;);</span>
+            }
+<span class="pc bpc" id="L239" title="1 of 2 branches missed.">            if (allClients != null) {</span>
+<span class="fc" id="L240">                allClients.add(zk);</span>
+<span class="fc" id="L241">                JMXEnv.ensureAll(getHexSessionId(zk.getSessionId()));</span>
+            } else {
+                // test done - close the zk, not needed
+<span class="nc" id="L244">                zk.close();</span>
+            }
+<span class="fc" id="L246">        }</span>
+
+<span class="fc" id="L248">        return zk;</span>
+    }
+
+    public static class HostPort {
+        String host;
+        int port;
+<span class="fc" id="L254">        public HostPort(String host, int port) {</span>
+<span class="fc" id="L255">            this.host = host;</span>
+<span class="fc" id="L256">            this.port = port;</span>
+<span class="fc" id="L257">        }</span>
+    }
+    public static List&lt;HostPort&gt; parseHostPortList(String hplist) {
+<span class="fc" id="L260">        ArrayList&lt;HostPort&gt; alist = new ArrayList&lt;HostPort&gt;();</span>
+<span class="fc bfc" id="L261" title="All 2 branches covered.">        for (String hp: hplist.split(&quot;,&quot;)) {</span>
+<span class="fc" id="L262">            int idx = hp.lastIndexOf(':');</span>
+<span class="fc" id="L263">            String host = hp.substring(0, idx);</span>
+            int port;
+            try {
+<span class="fc" id="L266">                port = Integer.parseInt(hp.substring(idx + 1));</span>
+<span class="nc" id="L267">            } catch(RuntimeException e) {</span>
+<span class="nc" id="L268">                throw new RuntimeException(&quot;Problem parsing &quot; + hp + e.toString());</span>
+<span class="fc" id="L269">            }</span>
+<span class="fc" id="L270">            alist.add(new HostPort(host,port));</span>
+        }
+<span class="fc" id="L272">        return alist;</span>
+    }
+
+    public static boolean waitForServerUp(String hp, long timeout) {
+<span class="nc" id="L276">        return waitForServerUp(hp, timeout, false);</span>
+    }
+
+    public static boolean waitForServerUp(String hp, long timeout, boolean secure) {
+<span class="fc" id="L280">        long start = Time.currentElapsedTime();</span>
+        while (true) {
+            try {
+                // if there are multiple hostports, just take the first one
+<span class="fc" id="L284">                HostPort hpobj = parseHostPortList(hp).get(0);</span>
+<span class="fc" id="L285">                String result = send4LetterWord(hpobj.host, hpobj.port, &quot;stat&quot;, secure);</span>
+<span class="pc bpc" id="L286" title="1 of 2 branches missed.">                if (result.startsWith(&quot;Zookeeper version:&quot;) &amp;&amp;</span>
+<span class="pc bpc" id="L287" title="1 of 2 branches missed.">                        !result.contains(&quot;READ-ONLY&quot;)) {</span>
+<span class="fc" id="L288">                    return true;</span>
+                }
+<span class="nc" id="L290">            } catch (IOException e) {</span>
+                // ignore as this is expected
+<span class="nc" id="L292">                LOG.info(&quot;server {} not up&quot;, hp, e);</span>
+<span class="nc" id="L293">            } catch (SSLContextException e) {</span>
+<span class="nc" id="L294">                LOG.error(&quot;server {} not up&quot;, hp, e);</span>
+<span class="nc" id="L295">            }</span>
+
+<span class="nc bnc" id="L297" title="All 2 branches missed.">            if (Time.currentElapsedTime() &gt; start + timeout) {</span>
+<span class="nc" id="L298">                break;</span>
+            }
+            try {
+<span class="nc" id="L301">                Thread.sleep(250);</span>
+<span class="nc" id="L302">            } catch (InterruptedException e) {</span>
+                // ignore
+<span class="nc" id="L304">            }</span>
+        }
+<span class="nc" id="L306">        return false;</span>
+    }
+
+    public static boolean waitForServerDown(String hp, long timeout) {
+<span class="nc" id="L310">        return waitForServerDown(hp, timeout, false);</span>
+    }
+
+    public static boolean waitForServerDown(String hp, long timeout, boolean secure) {
+<span class="fc" id="L314">        long start = Time.currentElapsedTime();</span>
+        while (true) {
+            try {
+<span class="fc" id="L317">                HostPort hpobj = parseHostPortList(hp).get(0);</span>
+<span class="nc" id="L318">                send4LetterWord(hpobj.host, hpobj.port, &quot;stat&quot;, secure);</span>
+<span class="fc" id="L319">            } catch (IOException e) {</span>
+<span class="fc" id="L320">                return true;</span>
+<span class="nc" id="L321">            } catch (SSLContextException e) {</span>
+<span class="nc" id="L322">                return true;</span>
+<span class="nc" id="L323">            }</span>
+
+<span class="nc bnc" id="L325" title="All 2 branches missed.">            if (Time.currentElapsedTime() &gt; start + timeout) {</span>
+<span class="nc" id="L326">                break;</span>
+            }
+            try {
+<span class="nc" id="L329">                Thread.sleep(250);</span>
+<span class="nc" id="L330">            } catch (InterruptedException e) {</span>
+                // ignore
+<span class="nc" id="L332">            }</span>
+        }
+<span class="nc" id="L334">        return false;</span>
+    }
+
+    /**
+     * Return true if any of the states is achieved
+     */
+    public static boolean waitForServerState(QuorumPeer qp, int timeout,
+            String... serverStates) {
+<span class="nc" id="L342">        long start = Time.currentElapsedTime();</span>
+        while (true) {
+            try {
+<span class="nc" id="L345">                Thread.sleep(250);</span>
+<span class="nc" id="L346">            } catch (InterruptedException e) {</span>
+                // ignore
+<span class="nc" id="L348">            }</span>
+<span class="nc bnc" id="L349" title="All 2 branches missed.">            for (String state : serverStates) {</span>
+<span class="nc bnc" id="L350" title="All 2 branches missed.">                if (qp.getServerState().equals(state)) {</span>
+<span class="nc" id="L351">                    return true;</span>
+                }
+            }
+<span class="nc bnc" id="L354" title="All 2 branches missed.">            if (Time.currentElapsedTime() &gt; start + timeout) {</span>
+<span class="nc" id="L355">                return false;</span>
+            }
+        }
+    }
+
+    static void verifyThreadTerminated(Thread thread, long millis)
+        throws InterruptedException
+    {
+<span class="nc" id="L363">        thread.join(millis);</span>
+<span class="nc bnc" id="L364" title="All 2 branches missed.">        if (thread.isAlive()) {</span>
+<span class="nc" id="L365">            LOG.error(&quot;Thread &quot; + thread.getName() + &quot; : &quot;</span>
+<span class="nc" id="L366">                    + Arrays.toString(thread.getStackTrace()));</span>
+<span class="nc" id="L367">            Assert.assertFalse(&quot;thread &quot; + thread.getName()</span>
+                    + &quot; still alive after join&quot;, true);
+        }
+<span class="nc" id="L370">    }</span>
+
+    public static File createEmptyTestDir() throws IOException {
+<span class="nc" id="L373">        return createTmpDir(BASETEST, false);</span>
+    }
+
+    public static File createTmpDir() throws IOException {
+<span class="nc" id="L377">        return createTmpDir(BASETEST, true);</span>
+    }
+
+    static File createTmpDir(File parentDir, boolean createInitFile) throws IOException {
+<span class="fc" id="L381">        File tmpFile = File.createTempFile(&quot;test&quot;, &quot;.junit&quot;, parentDir);</span>
+<span class="fc" id="L382">        System.out.println(&quot;----- file: &quot;+tmpFile.getAbsolutePath());</span>
+
+        // don't delete tmpFile - this ensures we don't attempt to create
+        // a tmpDir with a duplicate name
+<span class="fc" id="L386">        File tmpDir = new File(tmpFile + &quot;.dir&quot;);</span>
+<span class="fc" id="L387">        System.out.println(&quot;----- dir: &quot;+tmpDir.getAbsolutePath());</span>
+<span class="fc" id="L388">        Assert.assertFalse(tmpDir.exists()); // never true if tmpfile does it's job</span>
+<span class="fc" id="L389">        Assert.assertTrue(tmpDir.mkdirs());</span>
+
+
+        // todo not every tmp directory needs this file
+<span class="pc bpc" id="L393" title="1 of 2 branches missed.">        if (createInitFile) {</span>
+<span class="fc" id="L394">            createInitializeFile(tmpDir);</span>
+        }
+
+<span class="fc" id="L397">        return tmpDir;</span>
+    }
+
+    public static void createInitializeFile(File dir) throws IOException {
+<span class="fc" id="L401">        File initFile = new File(dir, &quot;initialize&quot;);</span>
+<span class="pc bpc" id="L402" title="1 of 2 branches missed.">        if (!initFile.exists()) {</span>
+<span class="fc" id="L403">            Assert.assertTrue(initFile.createNewFile());</span>
+        }
+<span class="fc" id="L405">    }</span>
+
+    private static int getPort(String hostPort) {
+<span class="fc" id="L408">        String[] split = hostPort.split(&quot;:&quot;);</span>
+<span class="fc" id="L409">        String portstr = split[split.length-1];</span>
+<span class="fc" id="L410">        String[] pc = portstr.split(&quot;/&quot;);</span>
+<span class="pc bpc" id="L411" title="1 of 2 branches missed.">        if (pc.length &gt; 1) {</span>
+<span class="nc" id="L412">            portstr = pc[0];</span>
+        }
+<span class="fc" id="L414">        return Integer.parseInt(portstr);</span>
+    }
+
+    /**
+     * Starting the given server instance
+     */
+    public static void startServerInstance(File dataDir,
+            ServerCnxnFactory factory, String hostPort, int serverId) throws IOException,
+            InterruptedException {
+<span class="fc" id="L423">        final int port = getPort(hostPort);</span>
+<span class="fc" id="L424">        LOG.info(&quot;STARTING server instance 127.0.0.1:{}&quot;, port);</span>
+<span class="fc" id="L425">        ZooKeeperServer zks = new ZooKeeperServer(dataDir, dataDir, 3000);</span>
+<span class="fc" id="L426">        zks.setCreateSessionTrackerServerId(serverId);</span>
+<span class="fc" id="L427">        factory.startup(zks);</span>
+<span class="fc" id="L428">        Assert.assertTrue(&quot;waiting for server up&quot;, ClientBase.waitForServerUp(</span>
+<span class="fc" id="L429">                &quot;127.0.0.1:&quot; + port, CONNECTION_TIMEOUT, factory.isSecure()));</span>
+<span class="fc" id="L430">    }</span>
+
+    /**
+     * This method instantiates a new server. Starting of the server
+     * instance has been moved to a separate method
+     * {@link ClientBase#startServerInstance(File, ServerCnxnFactory, String, int)}.
+     * Because any exception on starting the server would leave the server
+     * running and the caller would not be able to shutdown the instance. This
+     * may affect other test cases.
+     * 
+     * @return newly created server instance
+     * 
+     * @see &lt;a
+     *      href=&quot;https://issues.apache.org/jira/browse/ZOOKEEPER-1852&quot;&gt;ZOOKEEPER-1852&lt;/a&gt;
+     *      for more information.
+     */
+    public static ServerCnxnFactory createNewServerInstance(
+            ServerCnxnFactory factory, String hostPort, int maxCnxns)
+            throws IOException, InterruptedException {
+<span class="fc" id="L449">        final int port = getPort(hostPort);</span>
+<span class="fc" id="L450">        LOG.info(&quot;CREATING server instance 127.0.0.1:{}&quot;, port);</span>
+<span class="pc bpc" id="L451" title="1 of 2 branches missed.">        if (factory == null) {</span>
+<span class="fc" id="L452">            factory = ServerCnxnFactory.createFactory(port, maxCnxns);</span>
+        }
+<span class="fc" id="L454">        return factory;</span>
+    }
+
+    static void shutdownServerInstance(ServerCnxnFactory factory,
+            String hostPort)
+    {
+<span class="pc bpc" id="L460" title="1 of 2 branches missed.">        if (factory != null) {</span>
+<span class="fc" id="L461">            ZKDatabase zkDb = null;</span>
+            {
+<span class="fc" id="L463">                ZooKeeperServer zs = getServer(factory);</span>
+<span class="pc bpc" id="L464" title="1 of 2 branches missed.">                if (zs != null) {</span>
+<span class="fc" id="L465">                    zkDb = zs.getZKDatabase();</span>
+                }
+            }
+<span class="fc" id="L468">            factory.shutdown();</span>
+            try {
+<span class="pc bpc" id="L470" title="1 of 2 branches missed.">                if (zkDb != null) {</span>
+<span class="fc" id="L471">                    zkDb.close();</span>
+                }
+<span class="nc" id="L473">            } catch (IOException ie) {</span>
+<span class="nc" id="L474">                LOG.warn(&quot;Error closing logs &quot;, ie);</span>
+<span class="fc" id="L475">            }</span>
+<span class="fc" id="L476">            final int PORT = getPort(hostPort);</span>
+
+<span class="fc" id="L478">            Assert.assertTrue(&quot;waiting for server down&quot;,</span>
+<span class="fc" id="L479">                       ClientBase.waitForServerDown(&quot;127.0.0.1:&quot; + PORT,</span>
+                                                    CONNECTION_TIMEOUT,
+<span class="fc" id="L481">                                                    factory.isSecure()));</span>
+        }
+<span class="fc" id="L483">    }</span>
+
+    /**
+     * Test specific setup
+     */
+    public static void setupTestEnv() {
+        // during the tests we run with 100K prealloc in the logs.
+        // on windows systems prealloc of 64M was seen to take ~15seconds
+        // resulting in test Assert.failure (client timeout on first session).
+        // set env and directly in order to handle static init/gc issues
+<span class="fc" id="L493">        System.setProperty(&quot;zookeeper.preAllocSize&quot;, &quot;100&quot;);</span>
+<span class="fc" id="L494">        FilePadding.setPreallocSize(100 * 1024);</span>
+<span class="fc" id="L495">    }</span>
+
+    protected void setUpAll() throws Exception {
+<span class="fc" id="L498">        allClients = new LinkedList&lt;ZooKeeper&gt;();</span>
+<span class="fc" id="L499">        allClientsSetup = true;</span>
+<span class="fc" id="L500">    }</span>
+
+    @Before
+    public void setUp() throws Exception {
+<span class="fc" id="L504">        setUpWithServerId(1);</span>
+<span class="fc" id="L505">    }</span>
+
+    protected void setUpWithServerId(int serverId) throws Exception {
+        /* some useful information - log the number of fds used before
+         * and after a test is run. Helps to verify we are freeing resources
+         * correctly. Unfortunately this only works on unix systems (the
+         * only place sun has implemented as part of the mgmt bean api.
+         */
+<span class="fc" id="L513">        OSMXBean osMbean = new OSMXBean();</span>
+<span class="pc bpc" id="L514" title="1 of 2 branches missed.">        if (osMbean.getUnix() == true) {</span>
+<span class="nc" id="L515">            initialFdCount = osMbean.getOpenFileDescriptorCount();  	</span>
+<span class="nc" id="L516">            LOG.info(&quot;Initial fdcount is: &quot;</span>
+                    + initialFdCount);
+        }
+
+<span class="fc" id="L520">        setupTestEnv();</span>
+
+<span class="fc" id="L522">        JMXEnv.setUp();</span>
+
+<span class="fc" id="L524">        setUpAll();</span>
+
+<span class="fc" id="L526">        tmpDir = createTmpDir(BASETEST, true);</span>
+
+<span class="fc" id="L528">        startServer(serverId);</span>
+
+<span class="fc" id="L530">        LOG.info(&quot;Client test setup finished&quot;);</span>
+<span class="fc" id="L531">    }</span>
+
+    protected void startServer() throws Exception {
+<span class="nc" id="L534">        startServer(1);</span>
+<span class="nc" id="L535">    }</span>
+
+    private void startServer(int serverId) throws Exception {
+<span class="fc" id="L538">        LOG.info(&quot;STARTING server&quot;);</span>
+<span class="fc" id="L539">        serverFactory = createNewServerInstance(serverFactory, hostPort,</span>
+                maxCnxns);
+<span class="fc" id="L541">        startServerInstance(tmpDir, serverFactory, hostPort, serverId);</span>
+        // ensure that server and data bean are registered
+<span class="fc" id="L543">        Set&lt;ObjectName&gt; children = JMXEnv.ensureParent(&quot;InMemoryDataTree&quot;,</span>
+                &quot;StandaloneServer_port&quot;);
+        // Remove beans which are related to zk client sessions. Strong
+        // assertions cannot be done for these client sessions because
+        // registeration of these beans with server will happen only on their
+        // respective reconnection interval
+<span class="fc" id="L549">        verifyUnexpectedBeans(children);</span>
+<span class="fc" id="L550">    }</span>
+
+    private void verifyUnexpectedBeans(Set&lt;ObjectName&gt; children) {
+<span class="pc bpc" id="L553" title="1 of 2 branches missed.">        if (allClients != null) {</span>
+<span class="pc bpc" id="L554" title="1 of 2 branches missed.">            for (ZooKeeper zkc : allClients) {</span>
+<span class="nc" id="L555">                Iterator&lt;ObjectName&gt; childItr = children.iterator();</span>
+<span class="nc bnc" id="L556" title="All 2 branches missed.">                while (childItr.hasNext()) {</span>
+<span class="nc" id="L557">                    ObjectName clientBean = childItr.next();</span>
+<span class="nc bnc" id="L558" title="All 2 branches missed.">                    if (clientBean.toString().contains(</span>
+<span class="nc" id="L559">                            getHexSessionId(zkc.getSessionId()))) {</span>
+<span class="nc" id="L560">                        LOG.info(&quot;found name:&quot; + zkc.getSessionId()</span>
+<span class="nc" id="L561">                                + &quot; client bean:&quot; + clientBean.toString());</span>
+<span class="nc" id="L562">                        childItr.remove();</span>
+                    }
+<span class="nc" id="L564">                }</span>
+<span class="nc" id="L565">            }</span>
+        }
+<span class="pc bpc" id="L567" title="1 of 2 branches missed.">        for (ObjectName bean : children) {</span>
+<span class="nc" id="L568">            LOG.info(&quot;unexpected:&quot; + bean.toString());</span>
+<span class="nc" id="L569">        }</span>
+<span class="fc" id="L570">        Assert.assertEquals(&quot;Unexpected bean exists!&quot;, 0, children.size());</span>
+<span class="fc" id="L571">    }</span>
+
+    /**
+     * Returns a string representation of the given long value session id
+     * 
+     * @param sessionId
+     *            long value of session id
+     * @return string representation of session id
+     */
+    protected static String getHexSessionId(long sessionId) {
+<span class="fc" id="L581">        return &quot;0x&quot; + Long.toHexString(sessionId);</span>
+    }
+
+    protected void stopServer() throws Exception {
+<span class="fc" id="L585">        LOG.info(&quot;STOPPING server&quot;);</span>
+<span class="fc" id="L586">        shutdownServerInstance(serverFactory, hostPort);</span>
+<span class="fc" id="L587">        serverFactory = null;</span>
+        // ensure no beans are leftover
+<span class="fc" id="L589">        JMXEnv.ensureOnly();</span>
+<span class="fc" id="L590">    }</span>
+
+
+    protected static ZooKeeperServer getServer(ServerCnxnFactory fac) {
+<span class="fc" id="L594">        ZooKeeperServer zs = ServerCnxnFactoryAccessor.getZkServer(fac);</span>
+
+<span class="fc" id="L596">        return zs;</span>
+    }
+
+    protected void tearDownAll() throws Exception {
+<span class="fc" id="L600">        synchronized (this) {</span>
+<span class="pc bpc" id="L601" title="1 of 4 branches missed.">            if (allClients != null) for (ZooKeeper zk : allClients) {</span>
+                try {
+<span class="pc bpc" id="L603" title="1 of 2 branches missed.">                    if (zk != null)</span>
+<span class="fc" id="L604">                        zk.close();</span>
+<span class="nc" id="L605">                } catch (InterruptedException e) {</span>
+<span class="nc" id="L606">                    LOG.warn(&quot;ignoring interrupt&quot;, e);</span>
+<span class="fc" id="L607">                }</span>
+<span class="fc" id="L608">            }</span>
+<span class="fc" id="L609">            allClients = null;</span>
+<span class="fc" id="L610">        }</span>
+<span class="fc" id="L611">    }</span>
+
+    @After
+    public void tearDown() throws Exception {
+<span class="fc" id="L615">        LOG.info(&quot;tearDown starting&quot;);</span>
+
+<span class="fc" id="L617">        tearDownAll();</span>
+
+<span class="fc" id="L619">        stopServer();</span>
+
+<span class="pc bpc" id="L621" title="1 of 2 branches missed.">        if (tmpDir != null) {</span>
+<span class="fc" id="L622">            Assert.assertTrue(&quot;delete &quot; + tmpDir.toString(), recursiveDelete(tmpDir));</span>
+        }
+
+        // This has to be set to null when the same instance of this class is reused between test cases
+<span class="fc" id="L626">        serverFactory = null;</span>
+
+<span class="fc" id="L628">        JMXEnv.tearDown();</span>
+
+        /* some useful information - log the number of fds used before
+         * and after a test is run. Helps to verify we are freeing resources
+         * correctly. Unfortunately this only works on unix systems (the
+         * only place sun has implemented as part of the mgmt bean api.
+         */
+<span class="fc" id="L635">        OSMXBean osMbean = new OSMXBean();</span>
+<span class="pc bpc" id="L636" title="1 of 2 branches missed.">        if (osMbean.getUnix() == true) {</span>
+<span class="nc" id="L637">            long fdCount = osMbean.getOpenFileDescriptorCount();     </span>
+<span class="nc" id="L638">            String message = &quot;fdcount after test is: &quot;</span>
+                    + fdCount + &quot; at start it was &quot; + initialFdCount;
+<span class="nc" id="L640">            LOG.info(message);</span>
+<span class="nc bnc" id="L641" title="All 2 branches missed.">            if (fdCount &gt; initialFdCount) {</span>
+<span class="nc" id="L642">                LOG.info(&quot;sleeping for 20 secs&quot;);</span>
+                //Thread.sleep(60000);
+                //assertTrue(message, fdCount &lt;= initialFdCount);
+            }
+        }
+<span class="fc" id="L647">    }</span>
+
+    public static MBeanServerConnection jmxConn() throws IOException {
+<span class="nc" id="L650">        return JMXEnv.conn();</span>
+    }
+
+    public static boolean recursiveDelete(File d) {
+<span class="fc" id="L654">       return TestUtils.deleteFileRecursively(d, true);</span>
+    }
+
+    public static void logAllStackTraces() {
+<span class="nc" id="L658">        StringBuilder sb = new StringBuilder();</span>
+<span class="nc" id="L659">        sb.append(&quot;Starting logAllStackTraces()\n&quot;);</span>
+<span class="nc" id="L660">        Map&lt;Thread, StackTraceElement[]&gt; threads = Thread.getAllStackTraces();</span>
+<span class="nc bnc" id="L661" title="All 2 branches missed.">        for (Entry&lt;Thread, StackTraceElement[]&gt; e: threads.entrySet()) {</span>
+<span class="nc" id="L662">            sb.append(&quot;Thread &quot; + e.getKey().getName() + &quot;\n&quot;);</span>
+<span class="nc bnc" id="L663" title="All 2 branches missed.">            for (StackTraceElement elem: e.getValue()) {</span>
+<span class="nc" id="L664">                sb.append(&quot;\tat &quot; + elem + &quot;\n&quot;);</span>
+            }
+<span class="nc" id="L666">        }</span>
+<span class="nc" id="L667">        sb.append(&quot;Ending logAllStackTraces()\n&quot;);</span>
+<span class="nc" id="L668">        LOG.error(sb.toString());</span>
+<span class="nc" id="L669">    }</span>
+
+    /*
+     * Verify that all of the servers see the same number of nodes
+     * at the root
+     */
+    void verifyRootOfAllServersMatch(String hostPort)
+        throws InterruptedException, KeeperException, IOException
+    {
+<span class="nc" id="L678">        String parts[] = hostPort.split(&quot;,&quot;);</span>
+
+        // run through till the counts no longer change on each server
+        // max 15 tries, with 2 second sleeps, so approx 30 seconds
+<span class="nc" id="L682">        int[] counts = new int[parts.length];</span>
+<span class="nc" id="L683">        int failed = 0;</span>
+<span class="nc bnc" id="L684" title="All 2 branches missed.">        for (int j = 0; j &lt; 100; j++) {</span>
+<span class="nc" id="L685">            int newcounts[] = new int[parts.length];</span>
+<span class="nc" id="L686">            int i = 0;</span>
+<span class="nc bnc" id="L687" title="All 2 branches missed.">            for (String hp : parts) {</span>
+                try {
+<span class="nc" id="L689">                    ZooKeeper zk = createClient(hp);</span>
+
+                    try {
+<span class="nc" id="L692">                        newcounts[i++] = zk.getChildren(&quot;/&quot;, false).size();</span>
+                    } finally {
+<span class="nc" id="L694">                        zk.close();</span>
+                    }
+<span class="nc" id="L696">                } catch (Throwable t) {</span>
+<span class="nc" id="L697">                    failed++;</span>
+                    // if session creation Assert.fails dump the thread stack
+                    // and try the next server
+<span class="nc" id="L700">                    logAllStackTraces();</span>
+<span class="nc" id="L701">                }</span>
+            }
+
+<span class="nc bnc" id="L704" title="All 2 branches missed.">            if (Arrays.equals(newcounts, counts)) {</span>
+<span class="nc" id="L705">                LOG.info(&quot;Found match with array:&quot;</span>
+<span class="nc" id="L706">                        + Arrays.toString(newcounts));</span>
+<span class="nc" id="L707">                counts = newcounts;</span>
+<span class="nc" id="L708">                break;</span>
+            } else {
+<span class="nc" id="L710">                counts = newcounts;</span>
+<span class="nc" id="L711">                Thread.sleep(10000);</span>
+            }
+
+            // don't keep this up too long, will Assert.assert false below
+<span class="nc bnc" id="L715" title="All 2 branches missed.">            if (failed &gt; 10) {</span>
+<span class="nc" id="L716">                break;</span>
+            }
+        }
+
+        // verify all the servers reporting same number of nodes
+<span class="nc" id="L721">        String logmsg = &quot;node count not consistent{} {}&quot;;</span>
+<span class="nc bnc" id="L722" title="All 2 branches missed.">        for (int i = 1; i &lt; parts.length; i++) {</span>
+<span class="nc bnc" id="L723" title="All 2 branches missed.">            if (counts[i-1] != counts[i]) {</span>
+<span class="nc" id="L724">                LOG.error(logmsg, Integer.valueOf(counts[i-1]), Integer.valueOf(counts[i]));</span>
+            } else {
+<span class="nc" id="L726">                LOG.info(logmsg, Integer.valueOf(counts[i-1]), Integer.valueOf(counts[i]));</span>
+            }
+        }
+<span class="nc" id="L729">    }</span>
+
+    public static String readFile(File file) throws IOException {
+<span class="nc" id="L732">        ByteArrayOutputStream os = new ByteArrayOutputStream();</span>
+<span class="nc" id="L733">        BufferedInputStream is = new BufferedInputStream(new FileInputStream(file));</span>
+        try {
+<span class="nc" id="L735">            IOUtils.copyBytes(is, os, 1024, true);</span>
+        } finally {
+<span class="nc" id="L737">            is.close();</span>
+        }
+<span class="nc" id="L739">        return os.toString();</span>
+    }
+
+    public static String join(String separator, Object[] parts) {
+<span class="nc" id="L743">        StringBuilder sb = new StringBuilder();</span>
+<span class="nc" id="L744">        boolean first = true;</span>
+<span class="nc bnc" id="L745" title="All 2 branches missed.">        for (Object part : parts) {</span>
+<span class="nc bnc" id="L746" title="All 2 branches missed.">            if (!first) {</span>
+<span class="nc" id="L747">                sb.append(separator);</span>
+<span class="nc" id="L748">                first = false;</span>
+            }
+<span class="nc" id="L750">            sb.append(part);</span>
+        }
+<span class="nc" id="L752">        return sb.toString();</span>
+    }
+
+    public static ZooKeeper createZKClient(String cxnString) throws Exception {
+<span class="nc" id="L756">        return createZKClient(cxnString, CONNECTION_TIMEOUT);</span>
+    }
+
+    /**
+     * Returns ZooKeeper client after connecting to ZooKeeper Server. Session
+     * timeout is {@link #CONNECTION_TIMEOUT}
+     *
+     * @param cxnString
+     *            connection string in the form of host:port
+     * @param sessionTimeout
+     * @throws IOException
+     *             in cases of network failure
+     */
+    public static ZooKeeper createZKClient(String cxnString, int sessionTimeout) throws IOException {
+<span class="nc" id="L770">        CountdownWatcher watcher = new CountdownWatcher();</span>
+<span class="nc" id="L771">        ZooKeeper zk = new ZooKeeper(cxnString, sessionTimeout, watcher);</span>
+        try {
+<span class="nc" id="L773">            watcher.waitForConnected(CONNECTION_TIMEOUT);</span>
+<span class="nc" id="L774">        } catch (InterruptedException | TimeoutException e) {</span>
+<span class="nc" id="L775">            Assert.fail(&quot;ZooKeeper client can not connect to &quot; + cxnString);</span>
+<span class="nc" id="L776">        }</span>
+<span class="nc" id="L777">        return zk;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

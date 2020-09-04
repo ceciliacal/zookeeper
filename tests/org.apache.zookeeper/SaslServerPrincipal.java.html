@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>SaslServerPrincipal.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">SaslServerPrincipal.java</span></div><h1>SaslServerPrincipal.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper;
+
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import org.apache.zookeeper.client.ZKClientConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Computes the Server Principal for a SASL client.
+ */
+<span class="nc" id="L29">public class SaslServerPrincipal {</span>
+<span class="fc" id="L30">    private static final Logger LOG = LoggerFactory.getLogger(SaslServerPrincipal.class);</span>
+
+    /**
+     * Get the name of the server principal for a SASL client.
+     * @param addr the address of the host.
+     * @param clientConfig the configuration for the client.
+     * @return the name of the principal.
+     */
+    static String getServerPrincipal(InetSocketAddress addr, ZKClientConfig clientConfig) {
+<span class="fc" id="L39">        return getServerPrincipal(new WrapperInetSocketAddress(addr), clientConfig);</span>
+    }
+
+    /**
+     * Get the name of the server principal for a SASL client.  This is visible for testing purposes.
+     * @param addr the address of the host.
+     * @param clientConfig the configuration for the client.
+     * @return the name of the principal.
+     */
+    static String getServerPrincipal(WrapperInetSocketAddress addr, ZKClientConfig clientConfig) {
+<span class="fc" id="L49">        String configuredServerPrincipal = clientConfig.getProperty(ZKClientConfig.ZOOKEEPER_SERVER_PRINCIPAL);</span>
+<span class="pc bpc" id="L50" title="1 of 2 branches missed.">        if (configuredServerPrincipal != null) {</span>
+            // If server principal is already configured then return it
+<span class="nc" id="L52">            return configuredServerPrincipal;</span>
+        }
+<span class="fc" id="L54">        String principalUserName = clientConfig.getProperty(ZKClientConfig.ZK_SASL_CLIENT_USERNAME,</span>
+            ZKClientConfig.ZK_SASL_CLIENT_USERNAME_DEFAULT);
+<span class="fc" id="L56">        String hostName = addr.getHostName();</span>
+
+<span class="fc" id="L58">        boolean canonicalize = true;</span>
+<span class="fc" id="L59">        String canonicalizeText = clientConfig.getProperty(ZKClientConfig.ZK_SASL_CLIENT_CANONICALIZE_HOSTNAME,</span>
+            ZKClientConfig.ZK_SASL_CLIENT_CANONICALIZE_HOSTNAME_DEFAULT);
+        try {
+<span class="fc" id="L62">            canonicalize = Boolean.parseBoolean(canonicalizeText);</span>
+<span class="nc" id="L63">        } catch (IllegalArgumentException ea) {</span>
+<span class="nc" id="L64">            LOG.warn(&quot;Could not parse config {} \&quot;{}\&quot; into a boolean using default {}&quot;, ZKClientConfig</span>
+<span class="nc" id="L65">                .ZK_SASL_CLIENT_CANONICALIZE_HOSTNAME, canonicalizeText, canonicalize);</span>
+<span class="fc" id="L66">        }</span>
+
+<span class="pc bpc" id="L68" title="1 of 2 branches missed.">        if (canonicalize) {</span>
+<span class="fc" id="L69">            WrapperInetAddress ia = addr.getAddress();</span>
+<span class="pc bpc" id="L70" title="1 of 2 branches missed.">            if (ia == null) {</span>
+<span class="nc" id="L71">                throw new IllegalArgumentException(&quot;Unable to canonicalize address &quot; + addr + &quot; because it's not resolvable&quot;);</span>
+            }
+
+<span class="fc" id="L74">            String canonicalHostName = ia.getCanonicalHostName();</span>
+            //avoid using literal IP address when security check fails
+<span class="pc bpc" id="L76" title="1 of 2 branches missed.">            if (!canonicalHostName.equals(ia.getHostAddress())) {</span>
+<span class="nc" id="L77">                hostName = canonicalHostName;</span>
+            }
+<span class="pc bpc" id="L79" title="1 of 2 branches missed.">            if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L80">                LOG.debug(&quot;Canonicalized address to {}&quot;, hostName);</span>
+            }
+        }
+<span class="fc" id="L83">        String serverPrincipal = principalUserName + &quot;/&quot; + hostName;</span>
+<span class="fc" id="L84">        return serverPrincipal;</span>
+    }
+
+    /**
+     * This is here to provide a way to unit test the core logic as the methods for
+     * InetSocketAddress are marked as final.
+     */
+    static class WrapperInetSocketAddress {
+        private final InetSocketAddress addr;
+
+<span class="fc" id="L94">        WrapperInetSocketAddress(InetSocketAddress addr) {</span>
+<span class="fc" id="L95">            this.addr = addr;</span>
+<span class="fc" id="L96">        }</span>
+
+        public String getHostName() {
+<span class="fc" id="L99">            return addr.getHostName();</span>
+        }
+
+        public WrapperInetAddress getAddress() {
+<span class="fc" id="L103">            InetAddress ia = addr.getAddress();</span>
+<span class="pc bpc" id="L104" title="1 of 2 branches missed.">            return ia == null ? null : new WrapperInetAddress(ia);</span>
+        }
+
+        @Override
+        public String toString() {
+<span class="nc" id="L109">            return addr.toString();</span>
+        }
+    }
+
+    /**
+     * This is here to provide a way to unit test the core logic as the methods for
+     * InetAddress are marked as final.
+     */
+    static class WrapperInetAddress {
+        private final InetAddress ia;
+
+<span class="fc" id="L120">        WrapperInetAddress(InetAddress ia) {</span>
+<span class="fc" id="L121">            this.ia = ia;</span>
+<span class="fc" id="L122">        }</span>
+
+        public String getCanonicalHostName() {
+<span class="fc" id="L125">            return ia.getCanonicalHostName();</span>
+        }
+
+        public String getHostAddress() {
+<span class="fc" id="L129">            return ia.getHostAddress();</span>
+        }
+
+        @Override
+        public String toString() {
+<span class="nc" id="L134">            return ia.toString();</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

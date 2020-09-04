@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>LeaderSessionTracker.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">LeaderSessionTracker.java</span></div><h1>LeaderSessionTracker.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.server.quorum;
+
+import java.io.PrintWriter;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentMap;
+
+import org.apache.zookeeper.KeeperException.SessionExpiredException;
+import org.apache.zookeeper.KeeperException.SessionMovedException;
+import org.apache.zookeeper.KeeperException.UnknownSessionException;
+import org.apache.zookeeper.server.SessionTrackerImpl;
+import org.apache.zookeeper.server.ZooKeeperServerListener;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * The leader session tracker tracks local and global sessions on the leader.
+ */
+public class LeaderSessionTracker extends UpgradeableSessionTracker {
+<span class="nc" id="L38">    private static final Logger LOG = LoggerFactory.getLogger(LeaderSessionTracker.class);</span>
+
+    private final boolean localSessionsEnabled;
+    private final SessionTrackerImpl globalSessionTracker;
+
+    /**
+     * Server id of the leader
+     */
+    private final long serverId;
+
+    public LeaderSessionTracker(SessionExpirer expirer,
+            ConcurrentMap&lt;Long, Integer&gt; sessionsWithTimeouts,
+            int tickTime, long id, boolean localSessionsEnabled,
+<span class="nc" id="L51">            ZooKeeperServerListener listener) {</span>
+
+<span class="nc" id="L53">        this.globalSessionTracker = new SessionTrackerImpl(</span>
+            expirer, sessionsWithTimeouts, tickTime, id, listener);
+
+<span class="nc" id="L56">        this.localSessionsEnabled = localSessionsEnabled;</span>
+<span class="nc bnc" id="L57" title="All 2 branches missed.">        if (this.localSessionsEnabled) {</span>
+<span class="nc" id="L58">            createLocalSessionTracker(expirer, tickTime, id, listener);</span>
+        }
+<span class="nc" id="L60">        serverId = id;</span>
+<span class="nc" id="L61">    }</span>
+
+    public void removeSession(long sessionId) {
+<span class="nc bnc" id="L64" title="All 2 branches missed.">        if (localSessionTracker != null) {</span>
+<span class="nc" id="L65">            localSessionTracker.removeSession(sessionId);</span>
+        }
+<span class="nc" id="L67">        globalSessionTracker.removeSession(sessionId);</span>
+<span class="nc" id="L68">    }</span>
+
+    public void start() {
+<span class="nc" id="L71">        globalSessionTracker.start();</span>
+<span class="nc bnc" id="L72" title="All 2 branches missed.">        if (localSessionTracker != null) {</span>
+<span class="nc" id="L73">            localSessionTracker.start();</span>
+        }
+<span class="nc" id="L75">    }</span>
+
+    public void shutdown() {
+<span class="nc bnc" id="L78" title="All 2 branches missed.">        if (localSessionTracker != null) {</span>
+<span class="nc" id="L79">            localSessionTracker.shutdown();</span>
+        }
+<span class="nc" id="L81">        globalSessionTracker.shutdown();</span>
+<span class="nc" id="L82">    }</span>
+
+    public boolean isGlobalSession(long sessionId) {
+<span class="nc" id="L85">        return globalSessionTracker.isTrackingSession(sessionId);</span>
+    }
+
+    public boolean addGlobalSession(long sessionId, int sessionTimeout) {
+<span class="nc" id="L89">        boolean added =</span>
+<span class="nc" id="L90">            globalSessionTracker.addSession(sessionId, sessionTimeout);</span>
+<span class="nc bnc" id="L91" title="All 4 branches missed.">        if (localSessionsEnabled &amp;&amp; added) {</span>
+            // Only do extra logging so we know what kind of session this is
+            // if we're supporting both kinds of sessions
+<span class="nc" id="L94">            LOG.info(&quot;Adding global session 0x&quot; + Long.toHexString(sessionId));</span>
+        }
+<span class="nc" id="L96">        return added;</span>
+    }
+
+    public boolean addSession(long sessionId, int sessionTimeout) {
+        boolean added;
+<span class="nc bnc" id="L101" title="All 4 branches missed.">        if (localSessionsEnabled &amp;&amp; !isGlobalSession(sessionId)) {</span>
+<span class="nc" id="L102">            added = localSessionTracker.addSession(sessionId, sessionTimeout);</span>
+            // Check for race condition with session upgrading
+<span class="nc bnc" id="L104" title="All 2 branches missed.">            if (isGlobalSession(sessionId)) {</span>
+<span class="nc" id="L105">                added = false;</span>
+<span class="nc" id="L106">                localSessionTracker.removeSession(sessionId);</span>
+<span class="nc bnc" id="L107" title="All 2 branches missed.">            } else if (added) {</span>
+<span class="nc" id="L108">              LOG.info(&quot;Adding local session 0x&quot; + Long.toHexString(sessionId));</span>
+            }
+        } else {
+<span class="nc" id="L111">            added = addGlobalSession(sessionId, sessionTimeout);</span>
+        }
+<span class="nc" id="L113">        return added;</span>
+    }
+
+    public boolean touchSession(long sessionId, int sessionTimeout) {
+<span class="nc bnc" id="L117" title="All 2 branches missed.">        if (localSessionTracker != null &amp;&amp;</span>
+<span class="nc bnc" id="L118" title="All 2 branches missed.">            localSessionTracker.touchSession(sessionId, sessionTimeout)) {</span>
+<span class="nc" id="L119">            return true;</span>
+        }
+<span class="nc" id="L121">        return globalSessionTracker.touchSession(sessionId, sessionTimeout);</span>
+    }
+
+    public long createSession(int sessionTimeout) {
+<span class="nc bnc" id="L125" title="All 2 branches missed.">        if (localSessionsEnabled) {</span>
+<span class="nc" id="L126">            return localSessionTracker.createSession(sessionTimeout);</span>
+        }
+<span class="nc" id="L128">        return globalSessionTracker.createSession(sessionTimeout);</span>
+    }
+
+    // Returns the serverId from the sessionId (the high order byte)
+    public static long getServerIdFromSessionId(long sessionId) {
+<span class="nc" id="L133">        return sessionId &gt;&gt; 56;</span>
+    }
+
+    public void checkSession(long sessionId, Object owner)
+            throws SessionExpiredException, SessionMovedException,
+            UnknownSessionException {
+<span class="nc bnc" id="L139" title="All 2 branches missed.">        if (localSessionTracker != null) {</span>
+            try {
+<span class="nc" id="L141">                localSessionTracker.checkSession(sessionId, owner);</span>
+                // A session can both be a local and global session during
+                // upgrade
+<span class="nc bnc" id="L144" title="All 2 branches missed.">                if (!isGlobalSession(sessionId)) {</span>
+<span class="nc" id="L145">                    return;</span>
+                }
+<span class="nc" id="L147">            } catch(UnknownSessionException e) {</span>
+                // Ignore. We'll check instead whether it's a global session
+<span class="nc" id="L149">            }</span>
+        }
+        try {
+<span class="nc" id="L152">            globalSessionTracker.checkSession(sessionId, owner);</span>
+            // if we can get here, it is a valid global session
+<span class="nc" id="L154">            return;</span>
+<span class="nc" id="L155">        } catch (UnknownSessionException e) {</span>
+            // Ignore. This may be local session from other servers.
+        }
+
+        /*
+         * if local session is not enabled or it used to be our local session
+         * throw sessions expires
+         */
+<span class="nc bnc" id="L163" title="All 2 branches missed.">        if (!localSessionsEnabled</span>
+<span class="nc bnc" id="L164" title="All 2 branches missed.">                || (getServerIdFromSessionId(sessionId) == serverId)) {</span>
+<span class="nc" id="L165">            throw new SessionExpiredException();</span>
+        }
+<span class="nc" id="L167">    }</span>
+
+    public void checkGlobalSession(long sessionId, Object owner)
+            throws SessionExpiredException, SessionMovedException {
+        try {
+<span class="nc" id="L172">            globalSessionTracker.checkSession(sessionId, owner);</span>
+<span class="nc" id="L173">        } catch (UnknownSessionException e) {</span>
+            // For global session, if we don't know it, it is already expired
+<span class="nc" id="L175">            throw new SessionExpiredException();</span>
+<span class="nc" id="L176">        }</span>
+<span class="nc" id="L177">    }</span>
+
+    public void setOwner(long sessionId, Object owner)
+            throws SessionExpiredException {
+<span class="nc bnc" id="L181" title="All 2 branches missed.">        if (localSessionTracker != null) {</span>
+            try {
+<span class="nc" id="L183">                localSessionTracker.setOwner(sessionId, owner);</span>
+<span class="nc" id="L184">                return;</span>
+<span class="nc" id="L185">            } catch(SessionExpiredException e) {</span>
+                // Ignore. We'll check instead whether it's a global session
+            }
+        }
+<span class="nc" id="L189">        globalSessionTracker.setOwner(sessionId, owner);</span>
+<span class="nc" id="L190">    }</span>
+
+    public void dumpSessions(PrintWriter pwriter) {
+<span class="nc bnc" id="L193" title="All 2 branches missed.">      if (localSessionTracker != null) {</span>
+<span class="nc" id="L194">          pwriter.print(&quot;Local &quot;);</span>
+<span class="nc" id="L195">          localSessionTracker.dumpSessions(pwriter);</span>
+<span class="nc" id="L196">          pwriter.print(&quot;Global &quot;);</span>
+      }
+<span class="nc" id="L198">      globalSessionTracker.dumpSessions(pwriter);</span>
+<span class="nc" id="L199">    }</span>
+
+    public void setSessionClosing(long sessionId) {
+        // call is no-op if session isn't tracked so safe to call both
+<span class="nc bnc" id="L203" title="All 2 branches missed.">        if (localSessionTracker != null) {</span>
+<span class="nc" id="L204">            localSessionTracker.setSessionClosing(sessionId);</span>
+        }
+<span class="nc" id="L206">        globalSessionTracker.setSessionClosing(sessionId);</span>
+<span class="nc" id="L207">    }</span>
+
+    public Map&lt;Long, Set&lt;Long&gt;&gt; getSessionExpiryMap() {
+        Map&lt;Long, Set&lt;Long&gt;&gt; sessionExpiryMap;
+        // combine local and global sessions, getting local first so upgrades
+        // to global are caught
+<span class="nc bnc" id="L213" title="All 2 branches missed.">        if (localSessionTracker != null) {</span>
+<span class="nc" id="L214">            sessionExpiryMap = localSessionTracker.getSessionExpiryMap();</span>
+        } else {
+<span class="nc" id="L216">            sessionExpiryMap = new TreeMap&lt;Long, Set&lt;Long&gt;&gt;();</span>
+        }
+<span class="nc" id="L218">        sessionExpiryMap.putAll(globalSessionTracker.getSessionExpiryMap());</span>
+<span class="nc" id="L219">        return sessionExpiryMap;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

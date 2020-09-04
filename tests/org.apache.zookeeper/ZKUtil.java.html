@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ZKUtil.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">ZKUtil.java</span></div><h1>ZKUtil.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.LinkedList;
+import java.util.List;
+
+import org.apache.zookeeper.AsyncCallback.StringCallback;
+import org.apache.zookeeper.AsyncCallback.VoidCallback;
+import org.apache.zookeeper.KeeperException.Code;
+import org.apache.zookeeper.common.PathUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+<span class="nc" id="L33">public class ZKUtil {</span>
+<span class="nc" id="L34">    private static final Logger LOG = LoggerFactory.getLogger(ZKUtil.class);</span>
+    /**
+     * Recursively delete the node with the given path.
+     * &lt;p&gt;
+     * Important: All versions, of all nodes, under the given node are deleted.
+     * &lt;p&gt;
+     * If there is an error with deleting one of the sub-nodes in the tree,
+     * this operation would abort and would be the responsibility of the app to handle the same.
+     *
+     * See {@link #delete(String, int)} for more details.
+     *
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public static void deleteRecursive(ZooKeeper zk, final String pathRoot)
+        throws InterruptedException, KeeperException
+    {
+<span class="nc" id="L50">        PathUtils.validatePath(pathRoot);</span>
+
+<span class="nc" id="L52">        List&lt;String&gt; tree = listSubTreeBFS(zk, pathRoot);</span>
+<span class="nc" id="L53">        LOG.debug(&quot;Deleting &quot; + tree);</span>
+<span class="nc" id="L54">        LOG.debug(&quot;Deleting &quot; + tree.size() + &quot; subnodes &quot;);</span>
+<span class="nc bnc" id="L55" title="All 2 branches missed.">        for (int i = tree.size() - 1; i &gt;= 0 ; --i) {</span>
+            //Delete the leaves first and eventually get rid of the root
+<span class="nc" id="L57">            zk.delete(tree.get(i), -1); //Delete all versions of the node with -1.</span>
+        }
+<span class="nc" id="L59">    }</span>
+
+
+    /**
+     * Recursively delete the node with the given path. (async version).
+     *
+     * &lt;p&gt;
+     * Important: All versions, of all nodes, under the given node are deleted.
+     * &lt;p&gt;
+     * If there is an error with deleting one of the sub-nodes in the tree,
+     * this operation would abort and would be the responsibility of the app to handle the same.
+     * &lt;p&gt;
+     * @param zk the zookeeper handle
+     * @param pathRoot the path to be deleted
+     * @param cb call back method
+     * @param ctx the context the callback method is called with
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public static void deleteRecursive(ZooKeeper zk, final String pathRoot, VoidCallback cb,
+        Object ctx)
+        throws InterruptedException, KeeperException
+    {
+<span class="nc" id="L81">        PathUtils.validatePath(pathRoot);</span>
+
+<span class="nc" id="L83">        List&lt;String&gt; tree = listSubTreeBFS(zk, pathRoot);</span>
+<span class="nc" id="L84">        LOG.debug(&quot;Deleting &quot; + tree);</span>
+<span class="nc" id="L85">        LOG.debug(&quot;Deleting &quot; + tree.size() + &quot; subnodes &quot;);</span>
+<span class="nc bnc" id="L86" title="All 2 branches missed.">        for (int i = tree.size() - 1; i &gt;= 0 ; --i) {</span>
+            //Delete the leaves first and eventually get rid of the root
+<span class="nc" id="L88">            zk.delete(tree.get(i), -1, cb, ctx); //Delete all versions of the node with -1.</span>
+        }
+<span class="nc" id="L90">    }</span>
+
+    /**
+     * BFS Traversal of the system under pathRoot, with the entries in the list, in the
+     * same order as that of the traversal.
+     * &lt;p&gt;
+     * &lt;b&gt;Important:&lt;/b&gt; This is &lt;i&gt;not an atomic snapshot&lt;/i&gt; of the tree ever, but the
+     *  state as it exists across multiple RPCs from zkClient to the ensemble.
+     * For practical purposes, it is suggested to bring the clients to the ensemble
+     * down (i.e. prevent writes to pathRoot) to 'simulate' a snapshot behavior.
+     *
+     * @param zk the zookeeper handle
+     * @param pathRoot The znode path, for which the entire subtree needs to be listed.
+     * @throws InterruptedException
+     * @throws KeeperException
+     */
+    public static List&lt;String&gt; listSubTreeBFS(ZooKeeper zk, final String pathRoot) throws
+        KeeperException, InterruptedException {
+<span class="nc" id="L108">        Deque&lt;String&gt; queue = new LinkedList&lt;String&gt;();</span>
+<span class="nc" id="L109">        List&lt;String&gt; tree = new ArrayList&lt;String&gt;();</span>
+<span class="nc" id="L110">        queue.add(pathRoot);</span>
+<span class="nc" id="L111">        tree.add(pathRoot);</span>
+        while (true) {
+<span class="nc" id="L113">            String node = queue.pollFirst();</span>
+<span class="nc bnc" id="L114" title="All 2 branches missed.">            if (node == null) {</span>
+<span class="nc" id="L115">                break;</span>
+            }
+<span class="nc" id="L117">            List&lt;String&gt; children = zk.getChildren(node, false);</span>
+<span class="nc bnc" id="L118" title="All 2 branches missed.">            for (final String child : children) {</span>
+<span class="nc" id="L119">                final String childPath = node + &quot;/&quot; + child;</span>
+<span class="nc" id="L120">                queue.add(childPath);</span>
+<span class="nc" id="L121">                tree.add(childPath);</span>
+<span class="nc" id="L122">            }</span>
+<span class="nc" id="L123">        }</span>
+<span class="nc" id="L124">        return tree;</span>
+    }
+
+    /**
+     * Visits the subtree with root as given path and calls the passed callback with each znode
+     * found during the search. It performs a depth-first, pre-order traversal of the tree.
+     * &lt;p&gt;
+     * &lt;b&gt;Important:&lt;/b&gt; This is &lt;i&gt;not an atomic snapshot&lt;/i&gt; of the tree ever, but the
+     * state as it exists across multiple RPCs from zkClient to the ensemble.
+     * For practical purposes, it is suggested to bring the clients to the ensemble
+     * down (i.e. prevent writes to pathRoot) to 'simulate' a snapshot behavior.
+     */
+    public static void visitSubTreeDFS(ZooKeeper zk, final String path, boolean watch,
+        StringCallback cb) throws KeeperException, InterruptedException {
+<span class="nc" id="L138">        PathUtils.validatePath(path);</span>
+
+<span class="nc" id="L140">        zk.getData(path, watch, null);</span>
+<span class="nc" id="L141">        cb.processResult(Code.OK.intValue(), path, null, path);</span>
+<span class="nc" id="L142">        visitSubTreeDFSHelper(zk, path, watch, cb);</span>
+<span class="nc" id="L143">    }</span>
+
+    @SuppressWarnings(&quot;unchecked&quot;)
+    private static void visitSubTreeDFSHelper(ZooKeeper zk, final String path,
+        boolean watch, StringCallback cb)
+            throws KeeperException, InterruptedException {
+        // we've already validated, therefore if the path is of length 1 it's the root
+<span class="nc bnc" id="L150" title="All 2 branches missed.">        final boolean isRoot = path.length() == 1;</span>
+        try {
+<span class="nc" id="L152">            List&lt;String&gt; children = zk.getChildren(path, watch, null);</span>
+<span class="nc" id="L153">            Collections.sort(children);</span>
+
+<span class="nc bnc" id="L155" title="All 2 branches missed.">            for (String child : children) {</span>
+<span class="nc bnc" id="L156" title="All 2 branches missed.">                String childPath = (isRoot ? path : path + &quot;/&quot;) + child;</span>
+<span class="nc" id="L157">                cb.processResult(Code.OK.intValue(), childPath, null, child);</span>
+<span class="nc" id="L158">            }</span>
+
+<span class="nc bnc" id="L160" title="All 2 branches missed.">            for (String child : children) {</span>
+<span class="nc bnc" id="L161" title="All 2 branches missed.">                String childPath = (isRoot ? path : path + &quot;/&quot;) + child;</span>
+<span class="nc" id="L162">                visitSubTreeDFSHelper(zk, childPath, watch, cb);</span>
+<span class="nc" id="L163">            }</span>
+        }
+<span class="nc" id="L165">        catch (KeeperException.NoNodeException e) {</span>
+            // Handle race condition where a node is listed
+            // but gets deleted before it can be queried
+<span class="nc" id="L168">            return; // ignore</span>
+<span class="nc" id="L169">        }</span>
+<span class="nc" id="L170">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

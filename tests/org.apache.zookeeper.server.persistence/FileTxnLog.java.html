@@ -1,0 +1,747 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>FileTxnLog.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.persistence</a> &gt; <span class="el_source">FileTxnLog.java</span></div><h1>FileTxnLog.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.zookeeper.server.persistence;
+
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.Closeable;
+import java.io.EOFException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.FilterInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.util.ArrayList;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.zip.Adler32;
+import java.util.zip.Checksum;
+
+import org.apache.jute.BinaryInputArchive;
+import org.apache.jute.BinaryOutputArchive;
+import org.apache.jute.InputArchive;
+import org.apache.jute.OutputArchive;
+import org.apache.jute.Record;
+import org.apache.zookeeper.server.ServerStats;
+import org.apache.zookeeper.server.util.SerializeUtils;
+import org.apache.zookeeper.txn.TxnHeader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * This class implements the TxnLog interface. It provides api's
+ * to access the txnlogs and add entries to it.
+ * &lt;p&gt;
+ * The format of a Transactional log is as follows:
+ * &lt;blockquote&gt;&lt;pre&gt;
+ * LogFile:
+ *     FileHeader TxnList ZeroPad
+ *
+ * FileHeader: {
+ *     magic 4bytes (ZKLG)
+ *     version 4bytes
+ *     dbid 8bytes
+ *   }
+ *
+ * TxnList:
+ *     Txn || Txn TxnList
+ *
+ * Txn:
+ *     checksum Txnlen TxnHeader Record 0x42
+ *
+ * checksum: 8bytes Adler32 is currently used
+ *   calculated across payload -- Txnlen, TxnHeader, Record and 0x42
+ *
+ * Txnlen:
+ *     len 4bytes
+ *
+ * TxnHeader: {
+ *     sessionid 8bytes
+ *     cxid 4bytes
+ *     zxid 8bytes
+ *     time 8bytes
+ *     type 4bytes
+ *   }
+ *
+ * Record:
+ *     See Jute definition file for details on the various record types
+ *
+ * ZeroPad:
+ *     0 padded to EOF (filled during preallocation stage)
+ * &lt;/pre&gt;&lt;/blockquote&gt;
+ */
+public class FileTxnLog implements TxnLog, Closeable {
+
+    private static final Logger LOG;
+
+<span class="fc" id="L97">    public final static int TXNLOG_MAGIC =</span>
+<span class="fc" id="L98">        ByteBuffer.wrap(&quot;ZKLG&quot;.getBytes()).getInt();</span>
+
+    public final static int VERSION = 2;
+
+    public static final String LOG_FILE_PREFIX = &quot;log&quot;;
+
+    static final String FSYNC_WARNING_THRESHOLD_MS_PROPERTY = &quot;fsync.warningthresholdms&quot;;
+    static final String ZOOKEEPER_FSYNC_WARNING_THRESHOLD_MS_PROPERTY = &quot;zookeeper.&quot; + FSYNC_WARNING_THRESHOLD_MS_PROPERTY;
+
+    /** Maximum time we allow for elapsed fsync before WARNing */
+    private final static long fsyncWarningThresholdMS;
+
+    static {
+<span class="fc" id="L111">        LOG = LoggerFactory.getLogger(FileTxnLog.class);</span>
+
+        /** Local variable to read fsync.warningthresholdms into */
+        Long fsyncWarningThreshold;
+<span class="pc bpc" id="L115" title="1 of 2 branches missed.">        if ((fsyncWarningThreshold = Long.getLong(ZOOKEEPER_FSYNC_WARNING_THRESHOLD_MS_PROPERTY)) == null)</span>
+<span class="fc" id="L116">            fsyncWarningThreshold = Long.getLong(FSYNC_WARNING_THRESHOLD_MS_PROPERTY, 1000);</span>
+<span class="fc" id="L117">        fsyncWarningThresholdMS = fsyncWarningThreshold;</span>
+<span class="fc" id="L118">    }</span>
+
+    long lastZxidSeen;
+<span class="fc" id="L121">    volatile BufferedOutputStream logStream = null;</span>
+    volatile OutputArchive oa;
+<span class="fc" id="L123">    volatile FileOutputStream fos = null;</span>
+
+    File logDir;
+<span class="pc bpc" id="L126" title="1 of 2 branches missed.">    private final boolean forceSync = !System.getProperty(&quot;zookeeper.forceSync&quot;, &quot;yes&quot;).equals(&quot;no&quot;);</span>
+    long dbId;
+<span class="fc" id="L128">    private LinkedList&lt;FileOutputStream&gt; streamsToFlush =</span>
+        new LinkedList&lt;FileOutputStream&gt;();
+<span class="fc" id="L130">    File logFileWrite = null;</span>
+<span class="fc" id="L131">    private FilePadding filePadding = new FilePadding();</span>
+
+    private ServerStats serverStats;
+
+<span class="fc" id="L135">    private volatile long syncElapsedMS = -1L;</span>
+
+    /**
+     * constructor for FileTxnLog. Take the directory
+     * where the txnlogs are stored
+     * @param logDir the directory where the txnlogs are stored
+     */
+<span class="fc" id="L142">    public FileTxnLog(File logDir) {</span>
+<span class="fc" id="L143">        this.logDir = logDir;</span>
+<span class="fc" id="L144">    }</span>
+
+    /**
+      * method to allow setting preallocate size
+      * of log file to pad the file.
+      * @param size the size to set to in bytes
+      */
+    public static void setPreallocSize(long size) {
+<span class="nc" id="L152">        FilePadding.setPreallocSize(size);</span>
+<span class="nc" id="L153">    }</span>
+
+    /**
+     * Setter for ServerStats to monitor fsync threshold exceed
+     * @param serverStats used to update fsyncThresholdExceedCount
+     */
+    @Override
+    public synchronized void setServerStats(ServerStats serverStats) {
+<span class="fc" id="L161">        this.serverStats = serverStats;</span>
+<span class="fc" id="L162">    }</span>
+
+    /**
+     * creates a checksum algorithm to be used
+     * @return the checksum used for this txnlog
+     */
+    protected Checksum makeChecksumAlgorithm(){
+<span class="fc" id="L169">        return new Adler32();</span>
+    }
+
+    /**
+     * rollover the current log file to a new one.
+     * @throws IOException
+     */
+    public synchronized void rollLog() throws IOException {
+<span class="nc bnc" id="L177" title="All 2 branches missed.">        if (logStream != null) {</span>
+<span class="nc" id="L178">            this.logStream.flush();</span>
+<span class="nc" id="L179">            this.logStream = null;</span>
+<span class="nc" id="L180">            oa = null;</span>
+        }
+<span class="nc" id="L182">    }</span>
+
+    /**
+     * close all the open file handles
+     * @throws IOException
+      */
+    public synchronized void close() throws IOException {
+<span class="pc bpc" id="L189" title="1 of 2 branches missed.">        if (logStream != null) {</span>
+<span class="fc" id="L190">            logStream.close();</span>
+        }
+<span class="fc bfc" id="L192" title="All 2 branches covered.">        for (FileOutputStream log : streamsToFlush) {</span>
+<span class="fc" id="L193">            log.close();</span>
+<span class="fc" id="L194">        }</span>
+<span class="fc" id="L195">    }</span>
+
+    /**
+     * append an entry to the transaction log
+     * @param hdr the header of the transaction
+     * @param txn the transaction part of the entry
+     * returns true iff something appended, otw false
+     */
+    public synchronized boolean append(TxnHeader hdr, Record txn)
+        throws IOException
+    {
+<span class="fc bfc" id="L206" title="All 2 branches covered.">        if (hdr == null) {</span>
+<span class="fc" id="L207">            return false;</span>
+        }
+<span class="pc bpc" id="L209" title="1 of 2 branches missed.">        if (hdr.getZxid() &lt;= lastZxidSeen) {</span>
+<span class="nc" id="L210">            LOG.warn(&quot;Current zxid &quot; + hdr.getZxid()</span>
+                    + &quot; is &lt;= &quot; + lastZxidSeen + &quot; for &quot;
+<span class="nc" id="L212">                    + hdr.getType());</span>
+        } else {
+<span class="fc" id="L214">            lastZxidSeen = hdr.getZxid();</span>
+        }
+<span class="fc bfc" id="L216" title="All 2 branches covered.">        if (logStream==null) {</span>
+<span class="pc bpc" id="L217" title="1 of 2 branches missed.">           if(LOG.isInfoEnabled()){</span>
+<span class="fc" id="L218">                LOG.info(&quot;Creating new log file: &quot; + Util.makeLogName(hdr.getZxid()));</span>
+           }
+
+<span class="fc" id="L221">           logFileWrite = new File(logDir, Util.makeLogName(hdr.getZxid()));</span>
+<span class="fc" id="L222">           fos = new FileOutputStream(logFileWrite);</span>
+<span class="fc" id="L223">           logStream=new BufferedOutputStream(fos);</span>
+<span class="fc" id="L224">           oa = BinaryOutputArchive.getArchive(logStream);</span>
+<span class="fc" id="L225">           FileHeader fhdr = new FileHeader(TXNLOG_MAGIC,VERSION, dbId);</span>
+<span class="fc" id="L226">           fhdr.serialize(oa, &quot;fileheader&quot;);</span>
+           // Make sure that the magic number is written before padding.
+<span class="fc" id="L228">           logStream.flush();</span>
+<span class="fc" id="L229">           filePadding.setCurrentSize(fos.getChannel().position());</span>
+<span class="fc" id="L230">           streamsToFlush.add(fos);</span>
+        }
+<span class="fc" id="L232">        filePadding.padFile(fos.getChannel());</span>
+<span class="fc" id="L233">        byte[] buf = Util.marshallTxnEntry(hdr, txn);</span>
+<span class="pc bpc" id="L234" title="2 of 4 branches missed.">        if (buf == null || buf.length == 0) {</span>
+<span class="nc" id="L235">            throw new IOException(&quot;Faulty serialization for header &quot; +</span>
+                    &quot;and txn&quot;);
+        }
+<span class="fc" id="L238">        Checksum crc = makeChecksumAlgorithm();</span>
+<span class="fc" id="L239">        crc.update(buf, 0, buf.length);</span>
+<span class="fc" id="L240">        oa.writeLong(crc.getValue(), &quot;txnEntryCRC&quot;);</span>
+<span class="fc" id="L241">        Util.writeTxnBytes(oa, buf);</span>
+
+<span class="fc" id="L243">        return true;</span>
+    }
+
+    /**
+     * Find the log file that starts at, or just before, the snapshot. Return
+     * this and all subsequent logs. Results are ordered by zxid of file,
+     * ascending order.
+     * @param logDirList array of files
+     * @param snapshotZxid return files at, or before this zxid
+     * @return
+     */
+    public static File[] getLogFiles(File[] logDirList,long snapshotZxid) {
+<span class="fc" id="L255">        List&lt;File&gt; files = Util.sortDataDir(logDirList, LOG_FILE_PREFIX, true);</span>
+<span class="fc" id="L256">        long logZxid = 0;</span>
+        // Find the log file that starts before or at the same time as the
+        // zxid of the snapshot
+<span class="fc bfc" id="L259" title="All 2 branches covered.">        for (File f : files) {</span>
+<span class="fc" id="L260">            long fzxid = Util.getZxidFromName(f.getName(), LOG_FILE_PREFIX);</span>
+<span class="fc bfc" id="L261" title="All 2 branches covered.">            if (fzxid &gt; snapshotZxid) {</span>
+<span class="fc" id="L262">                continue;</span>
+            }
+            // the files
+            // are sorted with zxid's
+<span class="pc bpc" id="L266" title="1 of 2 branches missed.">            if (fzxid &gt; logZxid) {</span>
+<span class="nc" id="L267">                logZxid = fzxid;</span>
+            }
+<span class="fc" id="L269">        }</span>
+<span class="fc" id="L270">        List&lt;File&gt; v=new ArrayList&lt;File&gt;(5);</span>
+<span class="fc bfc" id="L271" title="All 2 branches covered.">        for (File f : files) {</span>
+<span class="fc" id="L272">            long fzxid = Util.getZxidFromName(f.getName(), LOG_FILE_PREFIX);</span>
+<span class="fc bfc" id="L273" title="All 2 branches covered.">            if (fzxid &lt; logZxid) {</span>
+<span class="fc" id="L274">                continue;</span>
+            }
+<span class="fc" id="L276">            v.add(f);</span>
+<span class="fc" id="L277">        }</span>
+<span class="fc" id="L278">        return v.toArray(new File[0]);</span>
+
+    }
+
+    /**
+     * get the last zxid that was logged in the transaction logs
+     * @return the last zxid logged in the transaction logs
+     */
+    public long getLastLoggedZxid() {
+<span class="fc" id="L287">        File[] files = getLogFiles(logDir.listFiles(), 0);</span>
+<span class="pc bpc" id="L288" title="1 of 2 branches missed.">        long maxLog=files.length&gt;0?</span>
+<span class="pc" id="L289">                Util.getZxidFromName(files[files.length-1].getName(),LOG_FILE_PREFIX):-1;</span>
+
+        // if a log file is more recent we must scan it to find
+        // the highest zxid
+<span class="fc" id="L293">        long zxid = maxLog;</span>
+<span class="fc" id="L294">        TxnIterator itr = null;</span>
+        try {
+<span class="fc" id="L296">            FileTxnLog txn = new FileTxnLog(logDir);</span>
+<span class="fc" id="L297">            itr = txn.read(maxLog);</span>
+            while (true) {
+<span class="pc bpc" id="L299" title="1 of 2 branches missed.">                if(!itr.next())</span>
+<span class="fc" id="L300">                    break;</span>
+<span class="nc" id="L301">                TxnHeader hdr = itr.getHeader();</span>
+<span class="nc" id="L302">                zxid = hdr.getZxid();</span>
+<span class="nc" id="L303">            }</span>
+<span class="nc" id="L304">        } catch (IOException e) {</span>
+<span class="nc" id="L305">            LOG.warn(&quot;Unexpected exception&quot;, e);</span>
+        } finally {
+<span class="fc" id="L307">            close(itr);</span>
+        }
+<span class="fc" id="L309">        return zxid;</span>
+    }
+
+    private void close(TxnIterator itr) {
+<span class="pc bpc" id="L313" title="1 of 2 branches missed.">        if (itr != null) {</span>
+            try {
+<span class="fc" id="L315">                itr.close();</span>
+<span class="nc" id="L316">            } catch (IOException ioe) {</span>
+<span class="nc" id="L317">                LOG.warn(&quot;Error closing file iterator&quot;, ioe);</span>
+<span class="fc" id="L318">            }</span>
+        }
+<span class="fc" id="L320">    }</span>
+
+    /**
+     * commit the logs. make sure that everything hits the
+     * disk
+     */
+    public synchronized void commit() throws IOException {
+<span class="pc bpc" id="L327" title="1 of 2 branches missed.">        if (logStream != null) {</span>
+<span class="fc" id="L328">            logStream.flush();</span>
+        }
+<span class="fc bfc" id="L330" title="All 2 branches covered.">        for (FileOutputStream log : streamsToFlush) {</span>
+<span class="fc" id="L331">            log.flush();</span>
+<span class="pc bpc" id="L332" title="1 of 2 branches missed.">            if (forceSync) {</span>
+<span class="fc" id="L333">                long startSyncNS = System.nanoTime();</span>
+
+<span class="fc" id="L335">                FileChannel channel = log.getChannel();</span>
+<span class="fc" id="L336">                channel.force(false);</span>
+
+<span class="fc" id="L338">                syncElapsedMS = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startSyncNS);</span>
+<span class="fc bfc" id="L339" title="All 2 branches covered.">                if (syncElapsedMS &gt; fsyncWarningThresholdMS) {</span>
+<span class="pc bpc" id="L340" title="1 of 2 branches missed.">                    if(serverStats != null) {</span>
+<span class="fc" id="L341">                        serverStats.incrementFsyncThresholdExceedCount();</span>
+                    }
+<span class="fc" id="L343">                    LOG.warn(&quot;fsync-ing the write ahead log in &quot;</span>
+<span class="fc" id="L344">                            + Thread.currentThread().getName()</span>
+                            + &quot; took &quot; + syncElapsedMS
+                            + &quot;ms which will adversely effect operation latency. &quot;
+<span class="fc" id="L347">                            + &quot;File size is &quot; + channel.size() + &quot; bytes. &quot;</span>
+                            + &quot;See the ZooKeeper troubleshooting guide&quot;);
+                }
+            }
+<span class="fc" id="L351">        }</span>
+<span class="pc bpc" id="L352" title="1 of 2 branches missed.">        while (streamsToFlush.size() &gt; 1) {</span>
+<span class="nc" id="L353">            streamsToFlush.removeFirst().close();</span>
+        }
+<span class="fc" id="L355">    }</span>
+
+    /**
+     *
+     * @return elapsed sync time of transaction log in milliseconds
+     */
+    public long getTxnLogSyncElapsedTime() {
+<span class="nc" id="L362">        return syncElapsedMS;</span>
+    }
+
+    /**
+     * start reading all the transactions from the given zxid
+     * @param zxid the zxid to start reading transactions from
+     * @return returns an iterator to iterate through the transaction
+     * logs
+     */
+    public TxnIterator read(long zxid) throws IOException {
+<span class="fc" id="L372">        return read(zxid, true);</span>
+    }
+
+    /**
+     * start reading all the transactions from the given zxid.
+     *
+     * @param zxid the zxid to start reading transactions from
+     * @param fastForward true if the iterator should be fast forwarded to point
+     *        to the txn of a given zxid, else the iterator will point to the
+     *        starting txn of a txnlog that may contain txn of a given zxid
+     * @return returns an iterator to iterate through the transaction logs
+     */
+    public TxnIterator read(long zxid, boolean fastForward) throws IOException {
+<span class="fc" id="L385">        return new FileTxnIterator(logDir, zxid, fastForward);</span>
+    }
+
+    /**
+     * truncate the current transaction logs
+     * @param zxid the zxid to truncate the logs to
+     * @return true if successful false if not
+     */
+    public boolean truncate(long zxid) throws IOException {
+<span class="nc" id="L394">        FileTxnIterator itr = null;</span>
+        try {
+<span class="nc" id="L396">            itr = new FileTxnIterator(this.logDir, zxid);</span>
+<span class="nc" id="L397">            PositionInputStream input = itr.inputStream;</span>
+<span class="nc bnc" id="L398" title="All 2 branches missed.">            if(input == null) {</span>
+<span class="nc" id="L399">                throw new IOException(&quot;No log files found to truncate! This could &quot; +</span>
+                        &quot;happen if you still have snapshots from an old setup or &quot; +
+                        &quot;log files were deleted accidentally or dataLogDir was changed in zoo.cfg.&quot;);
+            }
+<span class="nc" id="L403">            long pos = input.getPosition();</span>
+            // now, truncate at the current position
+<span class="nc" id="L405">            RandomAccessFile raf=new RandomAccessFile(itr.logFile,&quot;rw&quot;);</span>
+<span class="nc" id="L406">            raf.setLength(pos);</span>
+<span class="nc" id="L407">            raf.close();</span>
+<span class="nc bnc" id="L408" title="All 2 branches missed.">            while(itr.goToNextLog()) {</span>
+<span class="nc bnc" id="L409" title="All 2 branches missed.">                if (!itr.logFile.delete()) {</span>
+<span class="nc" id="L410">                    LOG.warn(&quot;Unable to truncate {}&quot;, itr.logFile);</span>
+                }
+            }
+        } finally {
+<span class="nc" id="L414">            close(itr);</span>
+        }
+<span class="nc" id="L416">        return true;</span>
+    }
+
+    /**
+     * read the header of the transaction file
+     * @param file the transaction file to read
+     * @return header that was read from the file
+     * @throws IOException
+     */
+    private static FileHeader readHeader(File file) throws IOException {
+<span class="nc" id="L426">        InputStream is =null;</span>
+        try {
+<span class="nc" id="L428">            is = new BufferedInputStream(new FileInputStream(file));</span>
+<span class="nc" id="L429">            InputArchive ia=BinaryInputArchive.getArchive(is);</span>
+<span class="nc" id="L430">            FileHeader hdr = new FileHeader();</span>
+<span class="nc" id="L431">            hdr.deserialize(ia, &quot;fileheader&quot;);</span>
+<span class="nc" id="L432">            return hdr;</span>
+         } finally {
+             try {
+<span class="nc bnc" id="L435" title="All 2 branches missed.">                 if (is != null) is.close();</span>
+<span class="nc" id="L436">             } catch (IOException e) {</span>
+<span class="nc" id="L437">                 LOG.warn(&quot;Ignoring exception during close&quot;, e);</span>
+<span class="nc" id="L438">             }</span>
+         }
+    }
+
+    /**
+     * the dbid of this transaction database
+     * @return the dbid of this database
+     */
+    public long getDbId() throws IOException {
+<span class="nc" id="L447">        FileTxnIterator itr = new FileTxnIterator(logDir, 0);</span>
+<span class="nc" id="L448">        FileHeader fh=readHeader(itr.logFile);</span>
+<span class="nc" id="L449">        itr.close();</span>
+<span class="nc bnc" id="L450" title="All 2 branches missed.">        if(fh==null)</span>
+<span class="nc" id="L451">            throw new IOException(&quot;Unsupported Format.&quot;);</span>
+<span class="nc" id="L452">        return fh.getDbid();</span>
+    }
+
+    /**
+     * the forceSync value. true if forceSync is enabled, false otherwise.
+     * @return the forceSync value
+     */
+    public boolean isForceSync() {
+<span class="nc" id="L460">        return forceSync;</span>
+    }
+
+    /**
+     * a class that keeps track of the position
+     * in the input stream. The position points to offset
+     * that has been consumed by the applications. It can
+     * wrap buffered input streams to provide the right offset
+     * for the application.
+     */
+    static class PositionInputStream extends FilterInputStream {
+        long position;
+        protected PositionInputStream(InputStream in) {
+<span class="fc" id="L473">            super(in);</span>
+<span class="fc" id="L474">            position = 0;</span>
+<span class="fc" id="L475">        }</span>
+
+        @Override
+        public int read() throws IOException {
+<span class="fc" id="L479">            int rc = super.read();</span>
+<span class="pc bpc" id="L480" title="1 of 2 branches missed.">            if (rc &gt; -1) {</span>
+<span class="fc" id="L481">                position++;</span>
+            }
+<span class="fc" id="L483">            return rc;</span>
+        }
+
+        public int read(byte[] b) throws IOException {
+<span class="nc" id="L487">            int rc = super.read(b);</span>
+<span class="nc bnc" id="L488" title="All 2 branches missed.">            if (rc &gt; 0) {</span>
+<span class="nc" id="L489">                position += rc;</span>
+            }
+<span class="nc" id="L491">            return rc;</span>
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+<span class="fc" id="L496">            int rc = super.read(b, off, len);</span>
+<span class="pc bpc" id="L497" title="1 of 2 branches missed.">            if (rc &gt; 0) {</span>
+<span class="fc" id="L498">                position += rc;</span>
+            }
+<span class="fc" id="L500">            return rc;</span>
+        }
+
+        @Override
+        public long skip(long n) throws IOException {
+<span class="nc" id="L505">            long rc = super.skip(n);</span>
+<span class="nc bnc" id="L506" title="All 2 branches missed.">            if (rc &gt; 0) {</span>
+<span class="nc" id="L507">                position += rc;</span>
+            }
+<span class="nc" id="L509">            return rc;</span>
+        }
+        public long getPosition() {
+<span class="nc" id="L512">            return position;</span>
+        }
+
+        @Override
+        public boolean markSupported() {
+<span class="nc" id="L517">            return false;</span>
+        }
+
+        @Override
+        public void mark(int readLimit) {
+<span class="nc" id="L522">            throw new UnsupportedOperationException(&quot;mark&quot;);</span>
+        }
+
+        @Override
+        public void reset() {
+<span class="nc" id="L527">            throw new UnsupportedOperationException(&quot;reset&quot;);</span>
+        }
+    }
+
+    /**
+     * this class implements the txnlog iterator interface
+     * which is used for reading the transaction logs
+     */
+    public static class FileTxnIterator implements TxnLog.TxnIterator {
+        File logDir;
+        long zxid;
+        TxnHeader hdr;
+        Record record;
+        File logFile;
+        InputArchive ia;
+        static final String CRC_ERROR=&quot;CRC check failed&quot;;
+
+<span class="fc" id="L544">        PositionInputStream inputStream=null;</span>
+        //stored files is the list of files greater than
+        //the zxid we are looking for.
+        private ArrayList&lt;File&gt; storedFiles;
+
+        /**
+         * create an iterator over a transaction database directory
+         * @param logDir the transaction database directory
+         * @param zxid the zxid to start reading from
+         * @param fastForward   true if the iterator should be fast forwarded to
+         *        point to the txn of a given zxid, else the iterator will
+         *        point to the starting txn of a txnlog that may contain txn of
+         *        a given zxid
+         * @throws IOException
+         */
+        public FileTxnIterator(File logDir, long zxid, boolean fastForward)
+<span class="fc" id="L560">                throws IOException {</span>
+<span class="fc" id="L561">            this.logDir = logDir;</span>
+<span class="fc" id="L562">            this.zxid = zxid;</span>
+<span class="fc" id="L563">            init();</span>
+
+<span class="pc bpc" id="L565" title="1 of 4 branches missed.">            if (fastForward &amp;&amp; hdr != null) {</span>
+<span class="pc bpc" id="L566" title="1 of 2 branches missed.">                while (hdr.getZxid() &lt; zxid) {</span>
+<span class="fc bfc" id="L567" title="All 2 branches covered.">                    if (!next())</span>
+<span class="fc" id="L568">                        break;</span>
+                }
+            }
+<span class="fc" id="L571">        }</span>
+
+        /**
+         * create an iterator over a transaction database directory
+         * @param logDir the transaction database directory
+         * @param zxid the zxid to start reading from
+         * @throws IOException
+         */
+        public FileTxnIterator(File logDir, long zxid) throws IOException {
+<span class="nc" id="L580">            this(logDir, zxid, true);</span>
+<span class="nc" id="L581">        }</span>
+
+        /**
+         * initialize to the zxid specified
+         * this is inclusive of the zxid
+         * @throws IOException
+         */
+        void init() throws IOException {
+<span class="fc" id="L589">            storedFiles = new ArrayList&lt;File&gt;();</span>
+<span class="fc" id="L590">            List&lt;File&gt; files = Util.sortDataDir(FileTxnLog.getLogFiles(logDir.listFiles(), 0), LOG_FILE_PREFIX, false);</span>
+<span class="fc bfc" id="L591" title="All 2 branches covered.">            for (File f: files) {</span>
+<span class="pc bpc" id="L592" title="1 of 2 branches missed.">                if (Util.getZxidFromName(f.getName(), LOG_FILE_PREFIX) &gt;= zxid) {</span>
+<span class="nc" id="L593">                    storedFiles.add(f);</span>
+                }
+                // add the last logfile that is less than the zxid
+<span class="pc bpc" id="L596" title="1 of 2 branches missed.">                else if (Util.getZxidFromName(f.getName(), LOG_FILE_PREFIX) &lt; zxid) {</span>
+<span class="fc" id="L597">                    storedFiles.add(f);</span>
+<span class="fc" id="L598">                    break;</span>
+                }
+<span class="nc" id="L600">            }</span>
+<span class="fc" id="L601">            goToNextLog();</span>
+<span class="fc" id="L602">            next();</span>
+<span class="fc" id="L603">        }</span>
+
+        /**
+         * Return total storage size of txnlog that will return by this iterator.
+         */
+        public long getStorageSize() {
+<span class="nc" id="L609">            long sum = 0;</span>
+<span class="nc bnc" id="L610" title="All 2 branches missed.">            for (File f : storedFiles) {</span>
+<span class="nc" id="L611">                sum += f.length();</span>
+<span class="nc" id="L612">            }</span>
+<span class="nc" id="L613">            return sum;</span>
+        }
+
+        /**
+         * go to the next logfile
+         * @return true if there is one and false if there is no
+         * new file to be read
+         * @throws IOException
+         */
+        private boolean goToNextLog() throws IOException {
+<span class="fc bfc" id="L623" title="All 2 branches covered.">            if (storedFiles.size() &gt; 0) {</span>
+<span class="fc" id="L624">                this.logFile = storedFiles.remove(storedFiles.size()-1);</span>
+<span class="fc" id="L625">                ia = createInputArchive(this.logFile);</span>
+<span class="fc" id="L626">                return true;</span>
+            }
+<span class="fc" id="L628">            return false;</span>
+        }
+
+        /**
+         * read the header from the inputarchive
+         * @param ia the inputarchive to be read from
+         * @param is the inputstream
+         * @throws IOException
+         */
+        protected void inStreamCreated(InputArchive ia, InputStream is)
+            throws IOException{
+<span class="fc" id="L639">            FileHeader header= new FileHeader();</span>
+<span class="fc" id="L640">            header.deserialize(ia, &quot;fileheader&quot;);</span>
+<span class="pc bpc" id="L641" title="1 of 2 branches missed.">            if (header.getMagic() != FileTxnLog.TXNLOG_MAGIC) {</span>
+<span class="nc" id="L642">                throw new IOException(&quot;Transaction log: &quot; + this.logFile + &quot; has invalid magic number &quot;</span>
+<span class="nc" id="L643">                        + header.getMagic()</span>
+                        + &quot; != &quot; + FileTxnLog.TXNLOG_MAGIC);
+            }
+<span class="fc" id="L646">        }</span>
+
+        /**
+         * Invoked to indicate that the input stream has been created.
+         * @param ia input archive
+         * @param is file input stream associated with the input archive.
+         * @throws IOException
+         **/
+        protected InputArchive createInputArchive(File logFile) throws IOException {
+<span class="pc bpc" id="L655" title="1 of 2 branches missed.">            if(inputStream==null){</span>
+<span class="fc" id="L656">                inputStream= new PositionInputStream(new BufferedInputStream(new FileInputStream(logFile)));</span>
+<span class="fc" id="L657">                LOG.debug(&quot;Created new input stream &quot; + logFile);</span>
+<span class="fc" id="L658">                ia  = BinaryInputArchive.getArchive(inputStream);</span>
+<span class="fc" id="L659">                inStreamCreated(ia,inputStream);</span>
+<span class="fc" id="L660">                LOG.debug(&quot;Created new input archive &quot; + logFile);</span>
+            }
+<span class="fc" id="L662">            return ia;</span>
+        }
+
+        /**
+         * create a checksum algorithm
+         * @return the checksum algorithm
+         */
+        protected Checksum makeChecksumAlgorithm(){
+<span class="fc" id="L670">            return new Adler32();</span>
+        }
+
+        /**
+         * the iterator that moves to the next transaction
+         * @return true if there is more transactions to be read
+         * false if not.
+         */
+        public boolean next() throws IOException {
+<span class="fc bfc" id="L679" title="All 2 branches covered.">            if (ia == null) {</span>
+<span class="fc" id="L680">                return false;</span>
+            }
+            try {
+<span class="fc" id="L683">                long crcValue = ia.readLong(&quot;crcvalue&quot;);</span>
+<span class="fc" id="L684">                byte[] bytes = Util.readTxnBytes(ia);</span>
+                // Since we preallocate, we define EOF to be an
+<span class="pc bpc" id="L686" title="1 of 4 branches missed.">                if (bytes == null || bytes.length==0) {</span>
+<span class="fc" id="L687">                    throw new EOFException(&quot;Failed to read &quot; + logFile);</span>
+                }
+                // EOF or corrupted record
+                // validate CRC
+<span class="fc" id="L691">                Checksum crc = makeChecksumAlgorithm();</span>
+<span class="fc" id="L692">                crc.update(bytes, 0, bytes.length);</span>
+<span class="pc bpc" id="L693" title="1 of 2 branches missed.">                if (crcValue != crc.getValue())</span>
+<span class="nc" id="L694">                    throw new IOException(CRC_ERROR);</span>
+<span class="fc" id="L695">                hdr = new TxnHeader();</span>
+<span class="fc" id="L696">                record = SerializeUtils.deserializeTxn(bytes, hdr);</span>
+<span class="fc" id="L697">            } catch (EOFException e) {</span>
+<span class="fc" id="L698">                LOG.debug(&quot;EOF exception &quot; + e);</span>
+<span class="fc" id="L699">                inputStream.close();</span>
+<span class="fc" id="L700">                inputStream = null;</span>
+<span class="fc" id="L701">                ia = null;</span>
+<span class="fc" id="L702">                hdr = null;</span>
+                // this means that the file has ended
+                // we should go to the next file
+<span class="pc bpc" id="L705" title="1 of 2 branches missed.">                if (!goToNextLog()) {</span>
+<span class="fc" id="L706">                    return false;</span>
+                }
+                // if we went to the next log file, we should call next() again
+<span class="nc" id="L709">                return next();</span>
+<span class="nc" id="L710">            } catch (IOException e) {</span>
+<span class="nc" id="L711">                inputStream.close();</span>
+<span class="nc" id="L712">                throw e;</span>
+<span class="fc" id="L713">            }</span>
+<span class="fc" id="L714">            return true;</span>
+        }
+
+        /**
+         * return the current header
+         * @return the current header that
+         * is read
+         */
+        public TxnHeader getHeader() {
+<span class="fc" id="L723">            return hdr;</span>
+        }
+
+        /**
+         * return the current transaction
+         * @return the current transaction
+         * that is read
+         */
+        public Record getTxn() {
+<span class="nc" id="L732">            return record;</span>
+        }
+
+        /**
+         * close the iterator
+         * and release the resources.
+         */
+        public void close() throws IOException {
+<span class="pc bpc" id="L740" title="1 of 2 branches missed.">            if (inputStream != null) {</span>
+<span class="nc" id="L741">                inputStream.close();</span>
+            }
+<span class="fc" id="L743">        }</span>
+    }
+
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

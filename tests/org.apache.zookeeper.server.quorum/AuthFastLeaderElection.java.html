@@ -1,0 +1,987 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>AuthFastLeaderElection.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server.quorum</a> &gt; <span class="el_source">AuthFastLeaderElection.java</span></div><h1>AuthFastLeaderElection.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server.quorum;
+
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
+import java.io.IOException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
+import java.net.SocketException;
+import java.nio.ByteBuffer;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
+
+import java.util.concurrent.TimeUnit;
+import java.util.Random;
+import java.util.concurrent.atomic.AtomicLong;
+
+import org.apache.zookeeper.common.Time;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import org.apache.zookeeper.jmx.MBeanRegistry;
+import org.apache.zookeeper.server.ZooKeeperThread;
+import org.apache.zookeeper.server.quorum.Election;
+import org.apache.zookeeper.server.quorum.Vote;
+import org.apache.zookeeper.server.quorum.QuorumPeer.QuorumServer;
+import org.apache.zookeeper.server.quorum.QuorumPeer.ServerState;
+
+/**
+ * @deprecated This class has been deprecated as of release 3.4.0. 
+ */
+@Deprecated
+public class AuthFastLeaderElection implements Election {
+<span class="nc" id="L56">    private static final Logger LOG = LoggerFactory.getLogger(AuthFastLeaderElection.class);</span>
+
+    /* Sequence numbers for messages */
+<span class="nc" id="L59">    static int sequencer = 0;</span>
+<span class="nc" id="L60">    static int maxTag = 0;</span>
+
+    /*
+     * Determine how much time a process has to wait once it believes that it
+     * has reached the end of leader election.
+     */
+<span class="nc" id="L66">    static int finalizeWait = 100;</span>
+
+    /*
+     * Challenge counter to avoid replay attacks
+     */
+
+<span class="nc" id="L72">    static int challengeCounter = 0;</span>
+
+    /*
+     * Flag to determine whether to authenticate or not
+     */
+
+<span class="nc" id="L78">    private boolean authEnabled = false;</span>
+
+<span class="nc" id="L80">    static public class Notification {</span>
+        /*
+         * Proposed leader
+         */
+        long leader;
+
+        /*
+         * zxid of the proposed leader
+         */
+        long zxid;
+
+        /*
+         * Epoch
+         */
+        long epoch;
+
+        /*
+         * current state of sender
+         */
+        QuorumPeer.ServerState state;
+
+        /*
+         * Address of the sender
+         */
+        InetSocketAddress addr;
+    }
+
+    /*
+     * Messages to send, both Notifications and Acks
+     */
+    static public class ToSend {
+<span class="nc" id="L111">        static enum mType {</span>
+<span class="nc" id="L112">            crequest, challenge, notification, ack</span>
+        }
+
+        ToSend(mType type, long tag, long leader, long zxid, long epoch,
+<span class="nc" id="L116">                ServerState state, InetSocketAddress addr) {</span>
+
+<span class="nc bnc" id="L118" title="All 5 branches missed.">            switch (type) {</span>
+            case crequest:
+<span class="nc" id="L120">                this.type = 0;</span>
+<span class="nc" id="L121">                this.tag = tag;</span>
+<span class="nc" id="L122">                this.leader = leader;</span>
+<span class="nc" id="L123">                this.zxid = zxid;</span>
+<span class="nc" id="L124">                this.epoch = epoch;</span>
+<span class="nc" id="L125">                this.state = state;</span>
+<span class="nc" id="L126">                this.addr = addr;</span>
+
+<span class="nc" id="L128">                break;</span>
+            case challenge:
+<span class="nc" id="L130">                this.type = 1;</span>
+<span class="nc" id="L131">                this.tag = tag;</span>
+<span class="nc" id="L132">                this.leader = leader;</span>
+<span class="nc" id="L133">                this.zxid = zxid;</span>
+<span class="nc" id="L134">                this.epoch = epoch;</span>
+<span class="nc" id="L135">                this.state = state;</span>
+<span class="nc" id="L136">                this.addr = addr;</span>
+
+<span class="nc" id="L138">                break;</span>
+            case notification:
+<span class="nc" id="L140">                this.type = 2;</span>
+<span class="nc" id="L141">                this.leader = leader;</span>
+<span class="nc" id="L142">                this.zxid = zxid;</span>
+<span class="nc" id="L143">                this.epoch = epoch;</span>
+<span class="nc" id="L144">                this.state = QuorumPeer.ServerState.LOOKING;</span>
+<span class="nc" id="L145">                this.tag = tag;</span>
+<span class="nc" id="L146">                this.addr = addr;</span>
+
+<span class="nc" id="L148">                break;</span>
+            case ack:
+<span class="nc" id="L150">                this.type = 3;</span>
+<span class="nc" id="L151">                this.tag = tag;</span>
+<span class="nc" id="L152">                this.leader = leader;</span>
+<span class="nc" id="L153">                this.zxid = zxid;</span>
+<span class="nc" id="L154">                this.epoch = epoch;</span>
+<span class="nc" id="L155">                this.state = state;</span>
+<span class="nc" id="L156">                this.addr = addr;</span>
+
+<span class="nc" id="L158">                break;</span>
+            default:
+                break;
+            }
+<span class="nc" id="L162">        }</span>
+
+        /*
+         * Message type: 0 notification, 1 acknowledgement
+         */
+        int type;
+
+        /*
+         * Proposed leader in the case of notification
+         */
+        long leader;
+
+        /*
+         * id contains the tag for acks, and zxid for notifications
+         */
+        long zxid;
+
+        /*
+         * Epoch
+         */
+        long epoch;
+
+        /*
+         * Current state;
+         */
+        QuorumPeer.ServerState state;
+
+        /*
+         * Message tag
+         */
+        long tag;
+
+        InetSocketAddress addr;
+    }
+
+    LinkedBlockingQueue&lt;ToSend&gt; sendqueue;
+
+    LinkedBlockingQueue&lt;Notification&gt; recvqueue;
+
+    private class Messenger {
+
+        final DatagramSocket mySocket;
+        long lastProposedLeader;
+        long lastProposedZxid;
+        long lastEpoch;
+        final Set&lt;Long&gt; ackset;
+        final ConcurrentHashMap&lt;Long, Long&gt; challengeMap;
+        final ConcurrentHashMap&lt;Long, Semaphore&gt; challengeMutex;
+        final ConcurrentHashMap&lt;Long, Semaphore&gt; ackMutex;
+        final ConcurrentHashMap&lt;InetSocketAddress, ConcurrentHashMap&lt;Long, Long&gt;&gt; addrChallengeMap;
+
+        class WorkerReceiver extends ZooKeeperThread {
+
+            DatagramSocket mySocket;
+            Messenger myMsg;
+
+<span class="nc" id="L218">            WorkerReceiver(DatagramSocket s, Messenger msg) {</span>
+<span class="nc" id="L219">                super(&quot;WorkerReceiver-&quot; + s.getRemoteSocketAddress());</span>
+<span class="nc" id="L220">                mySocket = s;</span>
+<span class="nc" id="L221">                myMsg = msg;</span>
+<span class="nc" id="L222">            }</span>
+
+            boolean saveChallenge(long tag, long challenge) {
+<span class="nc" id="L225">                Semaphore s = challengeMutex.get(tag);</span>
+<span class="nc bnc" id="L226" title="All 2 branches missed.">                if (s != null) {</span>
+<span class="nc" id="L227">                        synchronized (Messenger.this) {</span>
+<span class="nc" id="L228">                            challengeMap.put(tag, challenge);</span>
+<span class="nc" id="L229">                            challengeMutex.remove(tag);</span>
+<span class="nc" id="L230">                        }</span>
+
+                
+<span class="nc" id="L233">                        s.release();</span>
+                } else {
+<span class="nc" id="L235">                    LOG.error(&quot;No challenge mutex object&quot;);</span>
+                }
+                
+
+<span class="nc" id="L239">                return true;</span>
+            }
+
+            public void run() {
+<span class="nc" id="L243">                byte responseBytes[] = new byte[48];</span>
+<span class="nc" id="L244">                ByteBuffer responseBuffer = ByteBuffer.wrap(responseBytes);</span>
+<span class="nc" id="L245">                DatagramPacket responsePacket = new DatagramPacket(</span>
+                        responseBytes, responseBytes.length);
+                while (true) {
+                    // Sleeps on receive
+                    try {
+<span class="nc" id="L250">                        responseBuffer.clear();</span>
+<span class="nc" id="L251">                        mySocket.receive(responsePacket);</span>
+<span class="nc" id="L252">                    } catch (IOException e) {</span>
+<span class="nc" id="L253">                        LOG.warn(&quot;Ignoring exception receiving&quot;, e);</span>
+<span class="nc" id="L254">                    }</span>
+                    // Receive new message
+<span class="nc bnc" id="L256" title="All 2 branches missed.">                    if (responsePacket.getLength() != responseBytes.length) {</span>
+<span class="nc" id="L257">                        LOG.warn(&quot;Got a short response: &quot;</span>
+<span class="nc" id="L258">                                + responsePacket.getLength() + &quot; &quot;</span>
+<span class="nc" id="L259">                                + responsePacket.toString());</span>
+<span class="nc" id="L260">                        continue;</span>
+                    }
+<span class="nc" id="L262">                    responseBuffer.clear();</span>
+<span class="nc" id="L263">                    int type = responseBuffer.getInt();</span>
+<span class="nc bnc" id="L264" title="All 4 branches missed.">                    if ((type &gt; 3) || (type &lt; 0)) {</span>
+<span class="nc" id="L265">                        LOG.warn(&quot;Got bad Msg type: &quot; + type);</span>
+<span class="nc" id="L266">                        continue;</span>
+                    }
+<span class="nc" id="L268">                    long tag = responseBuffer.getLong();</span>
+
+<span class="nc" id="L270">                    QuorumPeer.ServerState ackstate = QuorumPeer.ServerState.LOOKING;</span>
+<span class="nc bnc" id="L271" title="All 4 branches missed.">                    switch (responseBuffer.getInt()) {</span>
+                    case 0:
+<span class="nc" id="L273">                        ackstate = QuorumPeer.ServerState.LOOKING;</span>
+<span class="nc" id="L274">                        break;</span>
+                    case 1:
+<span class="nc" id="L276">                        ackstate = QuorumPeer.ServerState.LEADING;</span>
+<span class="nc" id="L277">                        break;</span>
+                    case 2:
+<span class="nc" id="L279">                        ackstate = QuorumPeer.ServerState.FOLLOWING;</span>
+<span class="nc" id="L280">                        break;</span>
+                    default:
+<span class="nc" id="L282">                        LOG.warn(&quot;unknown type &quot; + responseBuffer.getInt());</span>
+                        break;
+                    }
+
+<span class="nc" id="L286">                    Vote current = self.getCurrentVote();</span>
+
+<span class="nc bnc" id="L288" title="All 5 branches missed.">                    switch (type) {</span>
+                    case 0:
+                        // Receive challenge request
+<span class="nc" id="L291">                        ToSend c = new ToSend(ToSend.mType.challenge, tag,</span>
+<span class="nc" id="L292">                                current.getId(), current.getZxid(),</span>
+<span class="nc" id="L293">                                logicalclock.get(), self.getPeerState(),</span>
+                                (InetSocketAddress) responsePacket
+<span class="nc" id="L295">                                        .getSocketAddress());</span>
+<span class="nc" id="L296">                        sendqueue.offer(c);</span>
+<span class="nc" id="L297">                        break;</span>
+                    case 1:
+                        // Receive challenge and store somewhere else
+<span class="nc" id="L300">                        long challenge = responseBuffer.getLong();</span>
+<span class="nc" id="L301">                        saveChallenge(tag, challenge);</span>
+
+<span class="nc" id="L303">                        break;</span>
+                    case 2:
+<span class="nc" id="L305">                        Notification n = new Notification();</span>
+<span class="nc" id="L306">                        n.leader = responseBuffer.getLong();</span>
+<span class="nc" id="L307">                        n.zxid = responseBuffer.getLong();</span>
+<span class="nc" id="L308">                        n.epoch = responseBuffer.getLong();</span>
+<span class="nc" id="L309">                        n.state = ackstate;</span>
+<span class="nc" id="L310">                        n.addr = (InetSocketAddress) responsePacket</span>
+<span class="nc" id="L311">                                .getSocketAddress();</span>
+
+<span class="nc bnc" id="L313" title="All 8 branches missed.">                        if ((myMsg.lastEpoch &lt;= n.epoch)</span>
+                                &amp;&amp; ((n.zxid &gt; myMsg.lastProposedZxid) 
+                                || ((n.zxid == myMsg.lastProposedZxid) 
+                                &amp;&amp; (n.leader &gt; myMsg.lastProposedLeader)))) {
+<span class="nc" id="L317">                            myMsg.lastProposedZxid = n.zxid;</span>
+<span class="nc" id="L318">                            myMsg.lastProposedLeader = n.leader;</span>
+<span class="nc" id="L319">                            myMsg.lastEpoch = n.epoch;</span>
+                        }
+
+                        long recChallenge;
+<span class="nc" id="L323">                        InetSocketAddress addr = (InetSocketAddress) responsePacket</span>
+<span class="nc" id="L324">                                .getSocketAddress();</span>
+<span class="nc bnc" id="L325" title="All 2 branches missed.">                        if (authEnabled) {</span>
+<span class="nc" id="L326">                            ConcurrentHashMap&lt;Long, Long&gt; tmpMap = addrChallengeMap.get(addr);</span>
+<span class="nc bnc" id="L327" title="All 2 branches missed.">                            if(tmpMap != null){</span>
+<span class="nc bnc" id="L328" title="All 2 branches missed.">                                if (tmpMap.get(tag) != null) {</span>
+<span class="nc" id="L329">                                    recChallenge = responseBuffer.getLong();</span>
+
+<span class="nc bnc" id="L331" title="All 2 branches missed.">                                    if (tmpMap.get(tag) == recChallenge) {</span>
+<span class="nc" id="L332">                                        recvqueue.offer(n);</span>
+
+<span class="nc" id="L334">                                        ToSend a = new ToSend(ToSend.mType.ack,</span>
+<span class="nc" id="L335">                                                tag, current.getId(),</span>
+<span class="nc" id="L336">                                                current.getZxid(),</span>
+<span class="nc" id="L337">                                                logicalclock.get(), self.getPeerState(),</span>
+                                                addr);
+
+<span class="nc" id="L340">                                        sendqueue.offer(a);</span>
+<span class="nc" id="L341">                                    } else {</span>
+<span class="nc" id="L342">                                        LOG.warn(&quot;Incorrect challenge: &quot;</span>
+                                                + recChallenge + &quot;, &quot;
+<span class="nc" id="L344">                                                + addrChallengeMap.toString());</span>
+                                    }
+                                } else {
+<span class="nc" id="L347">                                    LOG.warn(&quot;No challenge for host: &quot; + addr</span>
+                                            + &quot; &quot; + tag);
+                                }
+                            }
+<span class="nc" id="L351">                        } else {</span>
+<span class="nc" id="L352">                            recvqueue.offer(n);</span>
+
+<span class="nc" id="L354">                            ToSend a = new ToSend(ToSend.mType.ack, tag,</span>
+<span class="nc" id="L355">                                    current.getId(), current.getZxid(),</span>
+<span class="nc" id="L356">                                    logicalclock.get(), self.getPeerState(),</span>
+                                    (InetSocketAddress) responsePacket
+<span class="nc" id="L358">                                            .getSocketAddress());</span>
+
+<span class="nc" id="L360">                            sendqueue.offer(a);</span>
+                        }
+<span class="nc" id="L362">                        break;</span>
+
+                    // Upon reception of an ack message, remove it from the
+                    // queue
+                    case 3:
+<span class="nc" id="L367">                        Semaphore s = ackMutex.get(tag);</span>
+                        
+<span class="nc bnc" id="L369" title="All 2 branches missed.">                        if(s != null)</span>
+<span class="nc" id="L370">                            s.release();</span>
+<span class="nc" id="L371">                        else LOG.error(&quot;Empty ack semaphore&quot;);</span>
+                        
+<span class="nc" id="L373">                        ackset.add(tag);</span>
+
+<span class="nc bnc" id="L375" title="All 2 branches missed.">                        if (authEnabled) {</span>
+<span class="nc" id="L376">                            ConcurrentHashMap&lt;Long, Long&gt; tmpMap = addrChallengeMap.get(responsePacket</span>
+<span class="nc" id="L377">                                    .getSocketAddress());</span>
+<span class="nc bnc" id="L378" title="All 2 branches missed.">                            if(tmpMap != null) {</span>
+<span class="nc" id="L379">                                tmpMap.remove(tag);</span>
+                            } else {
+<span class="nc" id="L381">                                LOG.warn(&quot;No such address in the ensemble configuration &quot; + responsePacket</span>
+<span class="nc" id="L382">                                    .getSocketAddress());</span>
+                            }
+                        }
+
+<span class="nc bnc" id="L386" title="All 2 branches missed.">                        if (ackstate != QuorumPeer.ServerState.LOOKING) {</span>
+<span class="nc" id="L387">                            Notification outofsync = new Notification();</span>
+<span class="nc" id="L388">                            outofsync.leader = responseBuffer.getLong();</span>
+<span class="nc" id="L389">                            outofsync.zxid = responseBuffer.getLong();</span>
+<span class="nc" id="L390">                            outofsync.epoch = responseBuffer.getLong();</span>
+<span class="nc" id="L391">                            outofsync.state = ackstate;</span>
+<span class="nc" id="L392">                            outofsync.addr = (InetSocketAddress) responsePacket</span>
+<span class="nc" id="L393">                                    .getSocketAddress();</span>
+
+<span class="nc" id="L395">                            recvqueue.offer(outofsync);</span>
+<span class="nc" id="L396">                        }</span>
+
+                        break;
+                    // Default case
+                    default:
+<span class="nc" id="L401">                        LOG.warn(&quot;Received message of incorrect type &quot; + type);</span>
+                        break;
+                    }
+<span class="nc" id="L404">                }</span>
+            }
+        }
+
+        class WorkerSender extends ZooKeeperThread {
+
+            Random rand;
+            int maxAttempts;
+<span class="nc" id="L412">            int ackWait = finalizeWait;</span>
+
+            /*
+             * Receives a socket and max number of attempts as input
+             */
+
+<span class="nc" id="L418">            WorkerSender(int attempts) {</span>
+<span class="nc" id="L419">                super(&quot;WorkerSender&quot;);</span>
+<span class="nc" id="L420">                maxAttempts = attempts;</span>
+<span class="nc" id="L421">                rand = new Random(java.lang.Thread.currentThread().getId()</span>
+<span class="nc" id="L422">                        + Time.currentElapsedTime());</span>
+<span class="nc" id="L423">            }</span>
+
+            long genChallenge() {
+<span class="nc" id="L426">                byte buf[] = new byte[8];</span>
+
+<span class="nc" id="L428">                buf[0] = (byte) ((challengeCounter &amp; 0xff000000) &gt;&gt;&gt; 24);</span>
+<span class="nc" id="L429">                buf[1] = (byte) ((challengeCounter &amp; 0x00ff0000) &gt;&gt;&gt; 16);</span>
+<span class="nc" id="L430">                buf[2] = (byte) ((challengeCounter &amp; 0x0000ff00) &gt;&gt;&gt; 8);</span>
+<span class="nc" id="L431">                buf[3] = (byte) ((challengeCounter &amp; 0x000000ff));</span>
+
+<span class="nc" id="L433">                challengeCounter++;</span>
+<span class="nc" id="L434">                int secret = rand.nextInt(java.lang.Integer.MAX_VALUE);</span>
+
+<span class="nc" id="L436">                buf[4] = (byte) ((secret &amp; 0xff000000) &gt;&gt;&gt; 24);</span>
+<span class="nc" id="L437">                buf[5] = (byte) ((secret &amp; 0x00ff0000) &gt;&gt;&gt; 16);</span>
+<span class="nc" id="L438">                buf[6] = (byte) ((secret &amp; 0x0000ff00) &gt;&gt;&gt; 8);</span>
+<span class="nc" id="L439">                buf[7] = (byte) ((secret &amp; 0x000000ff));</span>
+
+<span class="nc" id="L441">                return (((long)(buf[0] &amp; 0xFF)) &lt;&lt; 56)  </span>
+                        + (((long)(buf[1] &amp; 0xFF)) &lt;&lt; 48)
+                        + (((long)(buf[2] &amp; 0xFF)) &lt;&lt; 40) 
+                        + (((long)(buf[3] &amp; 0xFF)) &lt;&lt; 32)
+                        + (((long)(buf[4] &amp; 0xFF)) &lt;&lt; 24) 
+                        + (((long)(buf[5] &amp; 0xFF)) &lt;&lt; 16)
+                        + (((long)(buf[6] &amp; 0xFF)) &lt;&lt; 8) 
+                        + ((long)(buf[7] &amp; 0xFF));
+            }
+
+            public void run() {
+                while (true) {
+                    try {
+<span class="nc" id="L454">                        ToSend m = sendqueue.take();</span>
+<span class="nc" id="L455">                        process(m);</span>
+<span class="nc" id="L456">                    } catch (InterruptedException e) {</span>
+<span class="nc" id="L457">                        break;</span>
+<span class="nc" id="L458">                    }</span>
+
+                }
+<span class="nc" id="L461">            }</span>
+
+            @SuppressFBWarnings(value = &quot;RV_RETURN_VALUE_IGNORED&quot;,
+                    justification = &quot;tryAcquire result not chacked, but it is not an issue&quot;)
+            private void process(ToSend m) {
+<span class="nc" id="L466">                int attempts = 0;</span>
+                byte zeroes[];
+<span class="nc" id="L468">                byte requestBytes[] = new byte[48];</span>
+<span class="nc" id="L469">                DatagramPacket requestPacket = new DatagramPacket(requestBytes,</span>
+                        requestBytes.length);
+<span class="nc" id="L471">                ByteBuffer requestBuffer = ByteBuffer.wrap(requestBytes);</span>
+
+<span class="nc bnc" id="L473" title="All 5 branches missed.">                switch (m.type) {</span>
+                case 0:
+                    /*
+                     * Building challenge request packet to send
+                     */
+<span class="nc" id="L478">                    requestBuffer.clear();</span>
+<span class="nc" id="L479">                    requestBuffer.putInt(ToSend.mType.crequest.ordinal());</span>
+<span class="nc" id="L480">                    requestBuffer.putLong(m.tag);</span>
+<span class="nc" id="L481">                    requestBuffer.putInt(m.state.ordinal());</span>
+<span class="nc" id="L482">                    zeroes = new byte[32];</span>
+<span class="nc" id="L483">                    requestBuffer.put(zeroes);</span>
+
+<span class="nc" id="L485">                    requestPacket.setLength(48);</span>
+                    try {
+<span class="nc" id="L487">                        requestPacket.setSocketAddress(m.addr);</span>
+<span class="nc" id="L488">                    } catch (IllegalArgumentException e) {</span>
+                        // Sun doesn't include the address that causes this
+                        // exception to be thrown, so we wrap the exception
+                        // in order to capture this critical detail.
+<span class="nc" id="L492">                        throw new IllegalArgumentException(</span>
+                                &quot;Unable to set socket address on packet, msg:&quot;
+<span class="nc" id="L494">                                + e.getMessage() + &quot; with addr:&quot; + m.addr,</span>
+                                e);
+<span class="nc" id="L496">                    }</span>
+
+                    try {
+<span class="nc bnc" id="L499" title="All 2 branches missed.">                        if (challengeMap.get(m.tag) == null) {</span>
+<span class="nc" id="L500">                            mySocket.send(requestPacket);</span>
+                        }
+<span class="nc" id="L502">                    } catch (IOException e) {</span>
+<span class="nc" id="L503">                        LOG.warn(&quot;Exception while sending challenge: &quot;, e);</span>
+<span class="nc" id="L504">                    }</span>
+
+<span class="nc" id="L506">                    break;</span>
+                case 1:
+                    /*
+                     * Building challenge packet to send
+                     */
+
+                    long newChallenge;
+<span class="nc" id="L513">                    ConcurrentHashMap&lt;Long, Long&gt; tmpMap = addrChallengeMap.get(m.addr); </span>
+<span class="nc bnc" id="L514" title="All 2 branches missed.">                    if(tmpMap != null){</span>
+<span class="nc" id="L515">                        Long tmpLong = tmpMap.get(m.tag);</span>
+<span class="nc bnc" id="L516" title="All 2 branches missed.">                        if (tmpLong != null) {</span>
+<span class="nc" id="L517">                            newChallenge = tmpLong;</span>
+                        } else {
+<span class="nc" id="L519">                            newChallenge = genChallenge();</span>
+                        }
+
+<span class="nc" id="L522">                        tmpMap.put(m.tag, newChallenge);</span>
+
+<span class="nc" id="L524">                        requestBuffer.clear();</span>
+<span class="nc" id="L525">                        requestBuffer.putInt(ToSend.mType.challenge.ordinal());</span>
+<span class="nc" id="L526">                        requestBuffer.putLong(m.tag);</span>
+<span class="nc" id="L527">                        requestBuffer.putInt(m.state.ordinal());</span>
+<span class="nc" id="L528">                        requestBuffer.putLong(newChallenge);</span>
+<span class="nc" id="L529">                        zeroes = new byte[24];</span>
+<span class="nc" id="L530">                        requestBuffer.put(zeroes);</span>
+
+<span class="nc" id="L532">                        requestPacket.setLength(48);</span>
+                        try {
+<span class="nc" id="L534">                            requestPacket.setSocketAddress(m.addr);</span>
+<span class="nc" id="L535">                        } catch (IllegalArgumentException e) {</span>
+                            // Sun doesn't include the address that causes this
+                            // exception to be thrown, so we wrap the exception
+                            // in order to capture this critical detail.
+<span class="nc" id="L539">                            throw new IllegalArgumentException(</span>
+                                    &quot;Unable to set socket address on packet, msg:&quot;
+<span class="nc" id="L541">                                    + e.getMessage() + &quot; with addr:&quot; + m.addr,</span>
+                                    e);
+<span class="nc" id="L543">                        }</span>
+
+
+                        try {
+<span class="nc" id="L547">                            mySocket.send(requestPacket);</span>
+<span class="nc" id="L548">                        } catch (IOException e) {</span>
+<span class="nc" id="L549">                            LOG.warn(&quot;Exception while sending challenge: &quot;, e);</span>
+<span class="nc" id="L550">                        }</span>
+<span class="nc" id="L551">                    } else {</span>
+<span class="nc" id="L552">                        LOG.error(&quot;Address is not in the configuration: &quot; + m.addr);</span>
+                    }
+
+<span class="nc" id="L555">                    break;</span>
+                case 2:
+
+                    /*
+                     * Building notification packet to send
+                     */
+
+<span class="nc" id="L562">                    requestBuffer.clear();</span>
+<span class="nc" id="L563">                    requestBuffer.putInt(m.type);</span>
+<span class="nc" id="L564">                    requestBuffer.putLong(m.tag);</span>
+<span class="nc" id="L565">                    requestBuffer.putInt(m.state.ordinal());</span>
+<span class="nc" id="L566">                    requestBuffer.putLong(m.leader);</span>
+<span class="nc" id="L567">                    requestBuffer.putLong(m.zxid);</span>
+<span class="nc" id="L568">                    requestBuffer.putLong(m.epoch);</span>
+<span class="nc" id="L569">                    zeroes = new byte[8];</span>
+<span class="nc" id="L570">                    requestBuffer.put(zeroes);</span>
+
+<span class="nc" id="L572">                    requestPacket.setLength(48);</span>
+                    try {
+<span class="nc" id="L574">                        requestPacket.setSocketAddress(m.addr);</span>
+<span class="nc" id="L575">                    } catch (IllegalArgumentException e) {</span>
+                        // Sun doesn't include the address that causes this
+                        // exception to be thrown, so we wrap the exception
+                        // in order to capture this critical detail.
+<span class="nc" id="L579">                        throw new IllegalArgumentException(</span>
+                                &quot;Unable to set socket address on packet, msg:&quot;
+<span class="nc" id="L581">                                + e.getMessage() + &quot; with addr:&quot; + m.addr,</span>
+                                e);
+<span class="nc" id="L583">                    }</span>
+
+
+<span class="nc" id="L586">                    boolean myChallenge = false;</span>
+<span class="nc" id="L587">                    boolean myAck = false;</span>
+
+<span class="nc bnc" id="L589" title="All 2 branches missed.">                    while (attempts &lt; maxAttempts) {</span>
+                        try {
+                            /*
+                             * Try to obtain a challenge only if does not have
+                             * one yet
+                             */
+
+<span class="nc bnc" id="L596" title="All 4 branches missed.">                            if (!myChallenge &amp;&amp; authEnabled) {</span>
+<span class="nc" id="L597">                                ToSend crequest = new ToSend(</span>
+                                        ToSend.mType.crequest, m.tag, m.leader,
+                                        m.zxid, m.epoch,
+                                        QuorumPeer.ServerState.LOOKING, m.addr);
+<span class="nc" id="L601">                                sendqueue.offer(crequest);</span>
+
+                                try {
+<span class="nc" id="L604">                                    double timeout = ackWait</span>
+<span class="nc" id="L605">                                            * java.lang.Math.pow(2, attempts);</span>
+
+<span class="nc" id="L607">                                    Semaphore s = new Semaphore(0);</span>
+<span class="nc" id="L608">                                    synchronized(Messenger.this) {</span>
+<span class="nc" id="L609">                                        challengeMutex.put(m.tag, s);</span>
+<span class="nc" id="L610">                                        s.tryAcquire((long) timeout, TimeUnit.MILLISECONDS);</span>
+<span class="nc" id="L611">                                        myChallenge = challengeMap</span>
+<span class="nc" id="L612">                                                .containsKey(m.tag);</span>
+<span class="nc" id="L613">                                    }</span>
+<span class="nc" id="L614">                                } catch (InterruptedException e) {</span>
+<span class="nc" id="L615">                                    LOG.warn(&quot;Challenge request exception: &quot;, e);</span>
+<span class="nc" id="L616">                                } </span>
+                            }
+
+                            /*
+                             * If don't have challenge yet, skip sending
+                             * notification
+                             */
+
+<span class="nc bnc" id="L624" title="All 4 branches missed.">                            if (authEnabled &amp;&amp; !myChallenge) {</span>
+<span class="nc" id="L625">                                attempts++;</span>
+<span class="nc" id="L626">                                continue;</span>
+                            }
+
+<span class="nc bnc" id="L629" title="All 2 branches missed.">                            if (authEnabled) {</span>
+<span class="nc" id="L630">                                requestBuffer.position(40);</span>
+<span class="nc" id="L631">                                Long tmpLong = challengeMap.get(m.tag);</span>
+<span class="nc bnc" id="L632" title="All 2 branches missed.">                                if(tmpLong != null){</span>
+<span class="nc" id="L633">                                    requestBuffer.putLong(tmpLong);</span>
+                                } else {
+<span class="nc" id="L635">                                    LOG.warn(&quot;No challenge with tag: &quot; + m.tag);</span>
+                                }
+                            }
+<span class="nc" id="L638">                            mySocket.send(requestPacket);</span>
+                            try {
+<span class="nc" id="L640">                                Semaphore s = new Semaphore(0);</span>
+<span class="nc" id="L641">                                double timeout = ackWait</span>
+<span class="nc" id="L642">                                        * java.lang.Math.pow(10, attempts);</span>
+<span class="nc" id="L643">                                ackMutex.put(m.tag, s);</span>
+<span class="nc" id="L644">                                s.tryAcquire((int) timeout, TimeUnit.MILLISECONDS);</span>
+<span class="nc" id="L645">                            } catch (InterruptedException e) {</span>
+<span class="nc" id="L646">                                LOG.warn(&quot;Ack exception: &quot;, e);</span>
+<span class="nc" id="L647">                            }</span>
+                            
+<span class="nc bnc" id="L649" title="All 2 branches missed.">                            if(ackset.remove(m.tag)){</span>
+<span class="nc" id="L650">                                myAck = true;</span>
+                            } 
+                        
+<span class="nc" id="L653">                        } catch (IOException e) {</span>
+<span class="nc" id="L654">                            LOG.warn(&quot;Sending exception: &quot;, e);</span>
+                            /*
+                             * Do nothing, just try again
+                             */
+<span class="nc" id="L658">                        }</span>
+<span class="nc bnc" id="L659" title="All 2 branches missed.">                        if (myAck) {</span>
+                            /*
+                             * Received ack successfully, so return
+                             */
+<span class="nc" id="L663">                            challengeMap.remove(m.tag);</span>
+                            
+<span class="nc" id="L665">                            return;</span>
+                        } else
+<span class="nc" id="L667">                            attempts++;</span>
+                    }
+                    /*
+                     * Return message to queue for another attempt later if
+                     * epoch hasn't changed.
+                     */
+<span class="nc bnc" id="L673" title="All 2 branches missed.">                    if (m.epoch == logicalclock.get()) {</span>
+<span class="nc" id="L674">                        challengeMap.remove(m.tag);</span>
+<span class="nc" id="L675">                        sendqueue.offer(m);</span>
+                    }
+                    break;
+                case 3:
+
+<span class="nc" id="L680">                    requestBuffer.clear();</span>
+<span class="nc" id="L681">                    requestBuffer.putInt(m.type);</span>
+<span class="nc" id="L682">                    requestBuffer.putLong(m.tag);</span>
+<span class="nc" id="L683">                    requestBuffer.putInt(m.state.ordinal());</span>
+<span class="nc" id="L684">                    requestBuffer.putLong(m.leader);</span>
+<span class="nc" id="L685">                    requestBuffer.putLong(m.zxid);</span>
+<span class="nc" id="L686">                    requestBuffer.putLong(m.epoch);</span>
+
+<span class="nc" id="L688">                    requestPacket.setLength(48);</span>
+                    try {
+<span class="nc" id="L690">                        requestPacket.setSocketAddress(m.addr);</span>
+<span class="nc" id="L691">                    } catch (IllegalArgumentException e) {</span>
+                        // Sun doesn't include the address that causes this
+                        // exception to be thrown, so we wrap the exception
+                        // in order to capture this critical detail.
+<span class="nc" id="L695">                        throw new IllegalArgumentException(</span>
+                                &quot;Unable to set socket address on packet, msg:&quot;
+<span class="nc" id="L697">                                + e.getMessage() + &quot; with addr:&quot; + m.addr,</span>
+                                e);
+<span class="nc" id="L699">                    }</span>
+
+
+                    try {
+<span class="nc" id="L703">                        mySocket.send(requestPacket);</span>
+<span class="nc" id="L704">                    } catch (IOException e) {</span>
+<span class="nc" id="L705">                        LOG.warn(&quot;Exception while sending ack: &quot;, e);</span>
+<span class="nc" id="L706">                    }</span>
+<span class="nc" id="L707">                    break;</span>
+                default:
+<span class="nc" id="L709">                    LOG.warn(&quot;unknown type &quot; + m.type);</span>
+                    break;
+                }
+<span class="nc" id="L712">            }</span>
+        }
+
+<span class="nc" id="L715">        Messenger(int threads, DatagramSocket s) {</span>
+<span class="nc" id="L716">            mySocket = s;</span>
+<span class="nc" id="L717">            ackset =  Collections.&lt;Long&gt;newSetFromMap(new ConcurrentHashMap&lt;Long, Boolean&gt;());</span>
+<span class="nc" id="L718">            challengeMap = new ConcurrentHashMap&lt;Long, Long&gt;();</span>
+<span class="nc" id="L719">            challengeMutex = new ConcurrentHashMap&lt;Long, Semaphore&gt;();</span>
+<span class="nc" id="L720">            ackMutex = new ConcurrentHashMap&lt;Long, Semaphore&gt;();</span>
+<span class="nc" id="L721">            addrChallengeMap = new ConcurrentHashMap&lt;InetSocketAddress, ConcurrentHashMap&lt;Long, Long&gt;&gt;();</span>
+<span class="nc" id="L722">            lastProposedLeader = 0;</span>
+<span class="nc" id="L723">            lastProposedZxid = 0;</span>
+<span class="nc" id="L724">            lastEpoch = 0;</span>
+
+<span class="nc bnc" id="L726" title="All 2 branches missed.">            for (int i = 0; i &lt; threads; ++i) {</span>
+<span class="nc" id="L727">                Thread t = new Thread(new WorkerSender(3),</span>
+                        &quot;WorkerSender Thread: &quot; + (i + 1));
+<span class="nc" id="L729">                t.setDaemon(true);</span>
+<span class="nc" id="L730">                t.start();</span>
+            }
+
+<span class="nc bnc" id="L733" title="All 2 branches missed.">            for (QuorumServer server : self.getVotingView().values()) {</span>
+<span class="nc" id="L734">                InetSocketAddress saddr = new InetSocketAddress(server.addr</span>
+<span class="nc" id="L735">                        .getAddress(), port);</span>
+<span class="nc" id="L736">                addrChallengeMap.put(saddr, new ConcurrentHashMap&lt;Long, Long&gt;());</span>
+<span class="nc" id="L737">            }</span>
+
+<span class="nc" id="L739">            Thread t = new Thread(new WorkerReceiver(s, this),</span>
+                    &quot;WorkerReceiver Thread&quot;);
+<span class="nc" id="L741">            t.start();</span>
+<span class="nc" id="L742">        }</span>
+
+    }
+
+    QuorumPeer self;
+    int port;
+<span class="nc" id="L748">    AtomicLong logicalclock = new AtomicLong(); /* Election instance */</span>
+    DatagramSocket mySocket;
+    long proposedLeader;
+    long proposedZxid;
+
+    public AuthFastLeaderElection(QuorumPeer self,
+<span class="nc" id="L754">            boolean auth) {</span>
+<span class="nc" id="L755">        this.authEnabled = auth;</span>
+<span class="nc" id="L756">        starter(self);</span>
+<span class="nc" id="L757">    }</span>
+
+<span class="nc" id="L759">    public AuthFastLeaderElection(QuorumPeer self) {</span>
+<span class="nc" id="L760">        starter(self);</span>
+<span class="nc" id="L761">    }</span>
+
+    private void starter(QuorumPeer self) {
+<span class="nc" id="L764">        this.self = self;</span>
+<span class="nc" id="L765">        port = self.getVotingView().get(self.getId()).electionAddr.getPort();</span>
+<span class="nc" id="L766">        proposedLeader = -1;</span>
+<span class="nc" id="L767">        proposedZxid = -1;</span>
+
+        try {
+<span class="nc" id="L770">            mySocket = new DatagramSocket(port);</span>
+            // mySocket.setSoTimeout(20000);
+<span class="nc" id="L772">        } catch (SocketException e1) {</span>
+<span class="nc" id="L773">            e1.printStackTrace();</span>
+<span class="nc" id="L774">            throw new RuntimeException();</span>
+<span class="nc" id="L775">        }</span>
+<span class="nc" id="L776">        sendqueue = new LinkedBlockingQueue&lt;ToSend&gt;(2 * self.getVotingView().size());</span>
+<span class="nc" id="L777">        recvqueue = new LinkedBlockingQueue&lt;Notification&gt;(2 * self.getVotingView()</span>
+<span class="nc" id="L778">                .size());</span>
+<span class="nc" id="L779">        new Messenger(self.getVotingView().size() * 2, mySocket);</span>
+<span class="nc" id="L780">    }</span>
+
+    private void leaveInstance() {
+<span class="nc" id="L783">        logicalclock.incrementAndGet();</span>
+<span class="nc" id="L784">    }</span>
+
+    private void sendNotifications() {
+<span class="nc bnc" id="L787" title="All 2 branches missed.">        for (QuorumServer server : self.getView().values()) {</span>
+
+<span class="nc" id="L789">            ToSend notmsg = new ToSend(ToSend.mType.notification,</span>
+                    AuthFastLeaderElection.sequencer++, proposedLeader,
+<span class="nc" id="L791">                    proposedZxid, logicalclock.get(), QuorumPeer.ServerState.LOOKING,</span>
+<span class="nc" id="L792">                    self.getView().get(server.id).electionAddr);</span>
+
+<span class="nc" id="L794">            sendqueue.offer(notmsg);</span>
+<span class="nc" id="L795">        }</span>
+<span class="nc" id="L796">    }</span>
+
+    private boolean totalOrderPredicate(long id, long zxid) {
+<span class="nc bnc" id="L799" title="All 6 branches missed.">        if ((zxid &gt; proposedZxid)</span>
+                || ((zxid == proposedZxid) &amp;&amp; (id &gt; proposedLeader)))
+<span class="nc" id="L801">            return true;</span>
+        else
+<span class="nc" id="L803">            return false;</span>
+
+    }
+
+    private boolean termPredicate(HashMap&lt;InetSocketAddress, Vote&gt; votes,
+            long l, long zxid) {
+
+
+<span class="nc" id="L811">        Collection&lt;Vote&gt; votesCast = votes.values();</span>
+<span class="nc" id="L812">        int count = 0;</span>
+        /*
+         * First make the views consistent. Sometimes peers will have different
+         * zxids for a server depending on timing.
+         */
+<span class="nc bnc" id="L817" title="All 2 branches missed.">        for (Vote v : votesCast) {</span>
+<span class="nc bnc" id="L818" title="All 4 branches missed.">            if ((v.getId() == l) &amp;&amp; (v.getZxid() == zxid))</span>
+<span class="nc" id="L819">                count++;</span>
+<span class="nc" id="L820">        }</span>
+
+<span class="nc bnc" id="L822" title="All 2 branches missed.">        if (count &gt; (self.getVotingView().size() / 2))</span>
+<span class="nc" id="L823">            return true;</span>
+        else
+<span class="nc" id="L825">            return false;</span>
+
+    }
+
+    /**
+     * There is nothing to shutdown in this implementation of
+     * leader election, so we simply have an empty method.
+     */
+<span class="nc" id="L833">    public void shutdown(){}</span>
+    
+    /**
+     * Invoked in QuorumPeer to find or elect a new leader.
+     * 
+     * @throws InterruptedException
+     */
+    public Vote lookForLeader() throws InterruptedException {
+        try {
+<span class="nc" id="L842">            self.jmxLeaderElectionBean = new LeaderElectionBean();</span>
+<span class="nc" id="L843">            MBeanRegistry.getInstance().register(</span>
+                    self.jmxLeaderElectionBean, self.jmxLocalPeerBean);        
+<span class="nc" id="L845">        } catch (Exception e) {</span>
+<span class="nc" id="L846">            LOG.warn(&quot;Failed to register with JMX&quot;, e);</span>
+<span class="nc" id="L847">            self.jmxLeaderElectionBean = null;</span>
+<span class="nc" id="L848">        }</span>
+
+        try {
+<span class="nc" id="L851">            HashMap&lt;InetSocketAddress, Vote&gt; recvset = </span>
+                new HashMap&lt;InetSocketAddress, Vote&gt;();
+    
+<span class="nc" id="L854">            HashMap&lt;InetSocketAddress, Vote&gt; outofelection = </span>
+                new HashMap&lt;InetSocketAddress, Vote&gt;();
+    
+<span class="nc" id="L857">            logicalclock.incrementAndGet();</span>
+    
+<span class="nc" id="L859">            proposedLeader = self.getId();</span>
+<span class="nc" id="L860">            proposedZxid = self.getLastLoggedZxid();</span>
+    
+<span class="nc" id="L862">            LOG.info(&quot;Election tally&quot;);</span>
+<span class="nc" id="L863">            sendNotifications();</span>
+    
+            /*
+             * Loop in which we exchange notifications until we find a leader
+             */
+    
+<span class="nc bnc" id="L869" title="All 2 branches missed.">            while (self.getPeerState() == ServerState.LOOKING) {</span>
+                /*
+                 * Remove next notification from queue, times out after 2 times
+                 * the termination time
+                 */
+<span class="nc" id="L874">                Notification n = recvqueue.poll(2 * finalizeWait,</span>
+                        TimeUnit.MILLISECONDS);
+    
+                /*
+                 * Sends more notifications if haven't received enough.
+                 * Otherwise processes new notification.
+                 */
+<span class="nc bnc" id="L881" title="All 2 branches missed.">                if (n == null) {</span>
+<span class="nc bnc" id="L882" title="All 4 branches missed.">                    if (((!outofelection.isEmpty()) || (recvset.size() &gt; 1)))</span>
+<span class="nc" id="L883">                        sendNotifications();</span>
+                } else
+<span class="nc bnc" id="L885" title="All 4 branches missed.">                    switch (n.state) {</span>
+                    case LOOKING:
+<span class="nc bnc" id="L887" title="All 2 branches missed.">                        if (n.epoch &gt; logicalclock.get()) {</span>
+<span class="nc" id="L888">                            logicalclock.set( n.epoch );</span>
+<span class="nc" id="L889">                            recvset.clear();</span>
+<span class="nc bnc" id="L890" title="All 2 branches missed.">                            if (totalOrderPredicate(n.leader, n.zxid)) {</span>
+<span class="nc" id="L891">                                proposedLeader = n.leader;</span>
+<span class="nc" id="L892">                                proposedZxid = n.zxid;</span>
+                            }
+<span class="nc" id="L894">                            sendNotifications();</span>
+<span class="nc bnc" id="L895" title="All 2 branches missed.">                        } else if (n.epoch &lt; logicalclock.get()) {</span>
+<span class="nc" id="L896">                            break;</span>
+<span class="nc bnc" id="L897" title="All 2 branches missed.">                        } else if (totalOrderPredicate(n.leader, n.zxid)) {</span>
+<span class="nc" id="L898">                            proposedLeader = n.leader;</span>
+<span class="nc" id="L899">                            proposedZxid = n.zxid;</span>
+    
+<span class="nc" id="L901">                            sendNotifications();</span>
+                        }
+    
+<span class="nc" id="L904">                        recvset.put(n.addr, new Vote(n.leader, n.zxid));</span>
+    
+                        // If have received from all nodes, then terminate
+<span class="nc bnc" id="L907" title="All 2 branches missed.">                        if (self.getVotingView().size() == recvset.size()) {</span>
+<span class="nc bnc" id="L908" title="All 2 branches missed.">                            self.setPeerState((proposedLeader == self.getId()) ? </span>
+<span class="nc" id="L909">                                    ServerState.LEADING: ServerState.FOLLOWING);</span>
+                            // if (self.state == ServerState.FOLLOWING) {
+                            // Thread.sleep(100);
+                            // }
+<span class="nc" id="L913">                            leaveInstance();</span>
+<span class="nc" id="L914">                            return new Vote(proposedLeader, proposedZxid);</span>
+    
+<span class="nc bnc" id="L916" title="All 2 branches missed.">                        } else if (termPredicate(recvset, proposedLeader,</span>
+                                proposedZxid)) {
+                            // Otherwise, wait for a fixed amount of time
+<span class="nc" id="L919">                            LOG.info(&quot;Passed predicate&quot;);</span>
+<span class="nc" id="L920">                            Thread.sleep(finalizeWait);</span>
+    
+                            // Notification probe = recvqueue.peek();
+    
+                            // Verify if there is any change in the proposed leader
+<span class="nc bnc" id="L925" title="All 2 branches missed.">                            while ((!recvqueue.isEmpty())</span>
+<span class="nc bnc" id="L926" title="All 2 branches missed.">                                    &amp;&amp; !totalOrderPredicate(</span>
+<span class="nc" id="L927">                                            recvqueue.peek().leader, recvqueue</span>
+<span class="nc" id="L928">                                                    .peek().zxid)) {</span>
+<span class="nc" id="L929">                                recvqueue.poll();</span>
+                            }
+<span class="nc bnc" id="L931" title="All 2 branches missed.">                            if (recvqueue.isEmpty()) {</span>
+                                // LOG.warn(&quot;Proposed leader: &quot; +
+                                // proposedLeader);
+<span class="nc" id="L934">                                self.setPeerState(</span>
+<span class="nc bnc" id="L935" title="All 2 branches missed.">                                        (proposedLeader == self.getId()) ? </span>
+<span class="nc" id="L936">                                         ServerState.LEADING :</span>
+<span class="nc" id="L937">                                         ServerState.FOLLOWING);</span>
+    
+<span class="nc" id="L939">                                leaveInstance();</span>
+<span class="nc" id="L940">                                return new Vote(proposedLeader, proposedZxid);</span>
+                            }
+                        }
+                        break;
+                    case LEADING:
+<span class="nc" id="L945">                        outofelection.put(n.addr, new Vote(n.leader, n.zxid));</span>
+    
+<span class="nc bnc" id="L947" title="All 2 branches missed.">                        if (termPredicate(outofelection, n.leader, n.zxid)) {</span>
+    
+<span class="nc bnc" id="L949" title="All 2 branches missed.">                            self.setPeerState((n.leader == self.getId()) ? </span>
+<span class="nc" id="L950">                                    ServerState.LEADING: ServerState.FOLLOWING);</span>
+    
+<span class="nc" id="L952">                            leaveInstance();</span>
+<span class="nc" id="L953">                            return new Vote(n.leader, n.zxid);</span>
+                        }
+                        break;
+                    case FOLLOWING:
+<span class="nc" id="L957">                        outofelection.put(n.addr, new Vote(n.leader, n.zxid));</span>
+    
+<span class="nc bnc" id="L959" title="All 2 branches missed.">                        if (termPredicate(outofelection, n.leader, n.zxid)) {</span>
+    
+<span class="nc bnc" id="L961" title="All 2 branches missed.">                            self.setPeerState((n.leader == self.getId()) ? </span>
+<span class="nc" id="L962">                                    ServerState.LEADING: ServerState.FOLLOWING);</span>
+    
+<span class="nc" id="L964">                            leaveInstance();</span>
+<span class="nc" id="L965">                            return new Vote(n.leader, n.zxid);</span>
+                        }
+                        break;
+                    default:
+                        break;
+                    }
+<span class="nc" id="L971">            }</span>
+    
+<span class="nc" id="L973">            return null;</span>
+        } finally {
+            try {
+<span class="nc bnc" id="L976" title="All 2 branches missed.">                if(self.jmxLeaderElectionBean != null){</span>
+<span class="nc" id="L977">                    MBeanRegistry.getInstance().unregister(</span>
+                            self.jmxLeaderElectionBean);
+                }
+<span class="nc" id="L980">            } catch (Exception e) {</span>
+<span class="nc" id="L981">                LOG.warn(&quot;Failed to unregister with JMX&quot;, e);</span>
+<span class="nc" id="L982">            }</span>
+<span class="nc" id="L983">            self.jmxLeaderElectionBean = null;</span>
+        }
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

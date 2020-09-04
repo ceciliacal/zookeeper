@@ -1,0 +1,1487 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>DataTree.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper.server</a> &gt; <span class="el_source">DataTree.java</span></div><h1>DataTree.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper.server;
+
+import org.apache.jute.InputArchive;
+import org.apache.jute.OutputArchive;
+import org.apache.jute.Record;
+import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.KeeperException.Code;
+import org.apache.zookeeper.KeeperException.NoNodeException;
+import org.apache.zookeeper.KeeperException.NodeExistsException;
+import org.apache.zookeeper.Quotas;
+import org.apache.zookeeper.StatsTrack;
+import org.apache.zookeeper.WatchedEvent;
+import org.apache.zookeeper.Watcher;
+import org.apache.zookeeper.Watcher.Event;
+import org.apache.zookeeper.Watcher.Event.EventType;
+import org.apache.zookeeper.Watcher.Event.KeeperState;
+import org.apache.zookeeper.Watcher.WatcherType;
+import org.apache.zookeeper.ZooDefs;
+import org.apache.zookeeper.ZooDefs.OpCode;
+import org.apache.zookeeper.common.PathTrie;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
+import org.apache.zookeeper.data.StatPersisted;
+import org.apache.zookeeper.txn.CheckVersionTxn;
+import org.apache.zookeeper.txn.CreateContainerTxn;
+import org.apache.zookeeper.txn.CreateTTLTxn;
+import org.apache.zookeeper.txn.CreateTxn;
+import org.apache.zookeeper.txn.DeleteTxn;
+import org.apache.zookeeper.txn.ErrorTxn;
+import org.apache.zookeeper.txn.MultiTxn;
+import org.apache.zookeeper.txn.SetACLTxn;
+import org.apache.zookeeper.txn.SetDataTxn;
+import org.apache.zookeeper.txn.Txn;
+import org.apache.zookeeper.txn.TxnHeader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * This class maintains the tree data structure. It doesn't have any networking
+ * or client connection code in it so that it can be tested in a stand alone
+ * way.
+ * &lt;p&gt;
+ * The tree maintains two parallel data structures: a hashtable that maps from
+ * full paths to DataNodes and a tree of DataNodes. All accesses to a path is
+ * through the hashtable. The tree is traversed only when serializing to disk.
+ */
+<span class="pc bpc" id="L79" title="1 of 2 branches missed.">public class DataTree {</span>
+<span class="fc" id="L80">    private static final Logger LOG = LoggerFactory.getLogger(DataTree.class);</span>
+
+    /**
+     * This hashtable provides a fast lookup to the datanodes. The tree is the
+     * source of truth and is where all the locking occurs
+     */
+<span class="fc" id="L86">    private final ConcurrentHashMap&lt;String, DataNode&gt; nodes =</span>
+        new ConcurrentHashMap&lt;String, DataNode&gt;();
+
+<span class="fc" id="L89">    private final WatchManager dataWatches = new WatchManager();</span>
+
+<span class="fc" id="L91">    private final WatchManager childWatches = new WatchManager();</span>
+
+    /** the root of zookeeper tree */
+    private static final String rootZookeeper = &quot;/&quot;;
+
+    /** the zookeeper nodes that acts as the management and status node **/
+    private static final String procZookeeper = Quotas.procZookeeper;
+
+    /** this will be the string thats stored as a child of root */
+<span class="fc" id="L100">    private static final String procChildZookeeper = procZookeeper.substring(1);</span>
+
+    /**
+     * the zookeeper quota node that acts as the quota management node for
+     * zookeeper
+     */
+    private static final String quotaZookeeper = Quotas.quotaZookeeper;
+
+    /** this will be the string thats stored as a child of /zookeeper */
+<span class="fc" id="L109">    private static final String quotaChildZookeeper = quotaZookeeper</span>
+<span class="fc" id="L110">            .substring(procZookeeper.length() + 1);</span>
+
+    /**
+     * the zookeeper config node that acts as the config management node for
+     * zookeeper
+     */
+    private static final String configZookeeper = ZooDefs.CONFIG_NODE;
+
+    /** this will be the string thats stored as a child of /zookeeper */
+<span class="fc" id="L119">    private static final String configChildZookeeper = configZookeeper</span>
+<span class="fc" id="L120">            .substring(procZookeeper.length() + 1);</span>
+
+    /**
+     * the path trie that keeps track fo the quota nodes in this datatree
+     */
+<span class="fc" id="L125">    private final PathTrie pTrie = new PathTrie();</span>
+
+    /**
+     * This hashtable lists the paths of the ephemeral nodes of a session.
+     */
+<span class="fc" id="L130">    private final Map&lt;Long, HashSet&lt;String&gt;&gt; ephemerals =</span>
+        new ConcurrentHashMap&lt;Long, HashSet&lt;String&gt;&gt;();
+
+    /**
+     * This set contains the paths of all container nodes
+     */
+<span class="fc" id="L136">    private final Set&lt;String&gt; containers =</span>
+<span class="fc" id="L137">            Collections.newSetFromMap(new ConcurrentHashMap&lt;String, Boolean&gt;());</span>
+
+    /**
+     * This set contains the paths of all ttl nodes
+     */
+<span class="fc" id="L142">    private final Set&lt;String&gt; ttls =</span>
+<span class="fc" id="L143">            Collections.newSetFromMap(new ConcurrentHashMap&lt;String, Boolean&gt;());</span>
+
+<span class="fc" id="L145">    private final ReferenceCountedACLCache aclCache = new ReferenceCountedACLCache();</span>
+
+    @SuppressWarnings(&quot;unchecked&quot;)
+    public Set&lt;String&gt; getEphemerals(long sessionId) {
+<span class="fc" id="L149">        HashSet&lt;String&gt; retv = ephemerals.get(sessionId);</span>
+<span class="pc bpc" id="L150" title="1 of 2 branches missed.">        if (retv == null) {</span>
+<span class="fc" id="L151">            return new HashSet&lt;String&gt;();</span>
+        }
+<span class="nc" id="L153">        HashSet&lt;String&gt; cloned = null;</span>
+<span class="nc" id="L154">        synchronized (retv) {</span>
+<span class="nc" id="L155">            cloned = (HashSet&lt;String&gt;) retv.clone();</span>
+<span class="nc" id="L156">        }</span>
+<span class="nc" id="L157">        return cloned;</span>
+    }
+
+    public Set&lt;String&gt; getContainers() {
+<span class="nc" id="L161">        return new HashSet&lt;String&gt;(containers);</span>
+    }
+
+    public Set&lt;String&gt; getTtls() {
+<span class="nc" id="L165">        return new HashSet&lt;String&gt;(ttls);</span>
+    }
+
+    public Collection&lt;Long&gt; getSessions() {
+<span class="fc" id="L169">        return ephemerals.keySet();</span>
+    }
+
+    public DataNode getNode(String path) {
+<span class="fc" id="L173">        return nodes.get(path);</span>
+    }
+
+    public int getNodeCount() {
+<span class="fc" id="L177">        return nodes.size();</span>
+    }
+
+    public int getWatchCount() {
+<span class="nc" id="L181">        return dataWatches.size() + childWatches.size();</span>
+    }
+
+    public int getEphemeralsCount() {
+<span class="nc" id="L185">        int result = 0;</span>
+<span class="nc bnc" id="L186" title="All 2 branches missed.">        for (HashSet&lt;String&gt; set : ephemerals.values()) {</span>
+<span class="nc" id="L187">            result += set.size();</span>
+<span class="nc" id="L188">        }</span>
+<span class="nc" id="L189">        return result;</span>
+    }
+
+    /**
+     * Get the size of the nodes based on path and data length.
+     *
+     * @return size of the data
+     */
+    public long approximateDataSize() {
+<span class="nc" id="L198">        long result = 0;</span>
+<span class="nc bnc" id="L199" title="All 2 branches missed.">        for (Map.Entry&lt;String, DataNode&gt; entry : nodes.entrySet()) {</span>
+<span class="nc" id="L200">            DataNode value = entry.getValue();</span>
+<span class="nc" id="L201">            synchronized (value) {</span>
+<span class="nc" id="L202">                result += entry.getKey().length();</span>
+<span class="nc" id="L203">                result += value.getApproximateDataSize();</span>
+<span class="nc" id="L204">            }</span>
+<span class="nc" id="L205">        }</span>
+<span class="nc" id="L206">        return result;</span>
+    }
+
+    /**
+     * This is a pointer to the root of the DataTree. It is the source of truth,
+     * but we usually use the nodes hashmap to find nodes in the tree.
+     */
+<span class="fc" id="L213">    private DataNode root = new DataNode(new byte[0], -1L, new StatPersisted());</span>
+
+    /**
+     * create a /zookeeper filesystem that is the proc filesystem of zookeeper
+     */
+<span class="fc" id="L218">    private final DataNode procDataNode = new DataNode(new byte[0], -1L, new StatPersisted());</span>
+
+    /**
+     * create a /zookeeper/quota node for maintaining quota properties for
+     * zookeeper
+     */
+<span class="fc" id="L224">    private final DataNode quotaDataNode = new DataNode(new byte[0], -1L, new StatPersisted());</span>
+
+<span class="fc" id="L226">    public DataTree() {</span>
+        /* Rather than fight it, let root have an alias */
+<span class="fc" id="L228">        nodes.put(&quot;&quot;, root);</span>
+<span class="fc" id="L229">        nodes.put(rootZookeeper, root);</span>
+
+        /** add the proc node and quota node */
+<span class="fc" id="L232">        root.addChild(procChildZookeeper);</span>
+<span class="fc" id="L233">        nodes.put(procZookeeper, procDataNode);</span>
+
+<span class="fc" id="L235">        procDataNode.addChild(quotaChildZookeeper);</span>
+<span class="fc" id="L236">        nodes.put(quotaZookeeper, quotaDataNode);</span>
+
+<span class="fc" id="L238">        addConfigNode();</span>
+<span class="fc" id="L239">    }</span>
+
+    /**
+     * create a /zookeeper/config node for maintaining the configuration (membership and quorum system) info for
+     * zookeeper
+     */
+    public void addConfigNode() {
+<span class="fc" id="L246">        DataNode zookeeperZnode = nodes.get(procZookeeper);</span>
+<span class="pc bpc" id="L247" title="1 of 2 branches missed.">        if (zookeeperZnode != null) { // should always be the case</span>
+<span class="fc" id="L248">            zookeeperZnode.addChild(configChildZookeeper);</span>
+        } else {
+<span class="nc bnc" id="L250" title="All 2 branches missed.">            assert false : &quot;There's no /zookeeper znode - this should never happen.&quot;;</span>
+        }
+
+<span class="fc" id="L253">        nodes.put(configZookeeper, new DataNode(new byte[0], -1L, new StatPersisted()));</span>
+        try {
+            // Reconfig node is access controlled by default (ZOOKEEPER-2014).
+<span class="fc" id="L256">            setACL(configZookeeper, ZooDefs.Ids.READ_ACL_UNSAFE, -1);</span>
+<span class="nc" id="L257">        } catch (KeeperException.NoNodeException e) {</span>
+<span class="nc bnc" id="L258" title="All 2 branches missed.">            assert false : &quot;There's no &quot; + configZookeeper +</span>
+                    &quot; znode - this should never happen.&quot;;
+<span class="fc" id="L260">        }</span>
+<span class="fc" id="L261">    }</span>
+
+    /**
+     * is the path one of the special paths owned by zookeeper.
+     *
+     * @param path
+     *            the path to be checked
+     * @return true if a special path. false if not.
+     */
+    boolean isSpecialPath(String path) {
+<span class="nc bnc" id="L271" title="All 4 branches missed.">        if (rootZookeeper.equals(path) || procZookeeper.equals(path)</span>
+<span class="nc bnc" id="L272" title="All 4 branches missed.">                || quotaZookeeper.equals(path) || configZookeeper.equals(path)) {</span>
+<span class="nc" id="L273">            return true;</span>
+        }
+<span class="nc" id="L275">        return false;</span>
+    }
+
+    static public void copyStatPersisted(StatPersisted from, StatPersisted to) {
+<span class="fc" id="L279">        to.setAversion(from.getAversion());</span>
+<span class="fc" id="L280">        to.setCtime(from.getCtime());</span>
+<span class="fc" id="L281">        to.setCversion(from.getCversion());</span>
+<span class="fc" id="L282">        to.setCzxid(from.getCzxid());</span>
+<span class="fc" id="L283">        to.setMtime(from.getMtime());</span>
+<span class="fc" id="L284">        to.setMzxid(from.getMzxid());</span>
+<span class="fc" id="L285">        to.setPzxid(from.getPzxid());</span>
+<span class="fc" id="L286">        to.setVersion(from.getVersion());</span>
+<span class="fc" id="L287">        to.setEphemeralOwner(from.getEphemeralOwner());</span>
+<span class="fc" id="L288">    }</span>
+
+    static public void copyStat(Stat from, Stat to) {
+<span class="nc" id="L291">        to.setAversion(from.getAversion());</span>
+<span class="nc" id="L292">        to.setCtime(from.getCtime());</span>
+<span class="nc" id="L293">        to.setCversion(from.getCversion());</span>
+<span class="nc" id="L294">        to.setCzxid(from.getCzxid());</span>
+<span class="nc" id="L295">        to.setMtime(from.getMtime());</span>
+<span class="nc" id="L296">        to.setMzxid(from.getMzxid());</span>
+<span class="nc" id="L297">        to.setPzxid(from.getPzxid());</span>
+<span class="nc" id="L298">        to.setVersion(from.getVersion());</span>
+<span class="nc" id="L299">        to.setEphemeralOwner(from.getEphemeralOwner());</span>
+<span class="nc" id="L300">        to.setDataLength(from.getDataLength());</span>
+<span class="nc" id="L301">        to.setNumChildren(from.getNumChildren());</span>
+<span class="nc" id="L302">    }</span>
+
+    /**
+     * update the count of this stat datanode
+     *
+     * @param lastPrefix
+     *            the path of the node that is quotaed.
+     * @param diff
+     *            the diff to be added to the count
+     */
+    public void updateCount(String lastPrefix, int diff) {
+<span class="nc" id="L313">        String statNode = Quotas.statPath(lastPrefix);</span>
+<span class="nc" id="L314">        DataNode node = nodes.get(statNode);</span>
+<span class="nc" id="L315">        StatsTrack updatedStat = null;</span>
+<span class="nc bnc" id="L316" title="All 2 branches missed.">        if (node == null) {</span>
+            // should not happen
+<span class="nc" id="L318">            LOG.error(&quot;Missing count node for stat &quot; + statNode);</span>
+<span class="nc" id="L319">            return;</span>
+        }
+<span class="nc" id="L321">        synchronized (node) {</span>
+<span class="nc" id="L322">            updatedStat = new StatsTrack(new String(node.data));</span>
+<span class="nc" id="L323">            updatedStat.setCount(updatedStat.getCount() + diff);</span>
+<span class="nc" id="L324">            node.data = updatedStat.toString().getBytes();</span>
+<span class="nc" id="L325">        }</span>
+        // now check if the counts match the quota
+<span class="nc" id="L327">        String quotaNode = Quotas.quotaPath(lastPrefix);</span>
+<span class="nc" id="L328">        node = nodes.get(quotaNode);</span>
+<span class="nc" id="L329">        StatsTrack thisStats = null;</span>
+<span class="nc bnc" id="L330" title="All 2 branches missed.">        if (node == null) {</span>
+            // should not happen
+<span class="nc" id="L332">            LOG.error(&quot;Missing count node for quota &quot; + quotaNode);</span>
+<span class="nc" id="L333">            return;</span>
+        }
+<span class="nc" id="L335">        synchronized (node) {</span>
+<span class="nc" id="L336">            thisStats = new StatsTrack(new String(node.data));</span>
+<span class="nc" id="L337">        }</span>
+<span class="nc bnc" id="L338" title="All 4 branches missed.">        if (thisStats.getCount() &gt; -1 &amp;&amp; (thisStats.getCount() &lt; updatedStat.getCount())) {</span>
+<span class="nc" id="L339">            LOG</span>
+<span class="nc" id="L340">            .warn(&quot;Quota exceeded: &quot; + lastPrefix + &quot; count=&quot;</span>
+<span class="nc" id="L341">                    + updatedStat.getCount() + &quot; limit=&quot;</span>
+<span class="nc" id="L342">                    + thisStats.getCount());</span>
+        }
+<span class="nc" id="L344">    }</span>
+
+    /**
+     * update the count of bytes of this stat datanode
+     *
+     * @param lastPrefix
+     *            the path of the node that is quotaed
+     * @param diff
+     *            the diff to added to number of bytes
+     * @throws IOException
+     *             if path is not found
+     */
+    public void updateBytes(String lastPrefix, long diff) {
+<span class="nc" id="L357">        String statNode = Quotas.statPath(lastPrefix);</span>
+<span class="nc" id="L358">        DataNode node = nodes.get(statNode);</span>
+<span class="nc bnc" id="L359" title="All 2 branches missed.">        if (node == null) {</span>
+            // should never be null but just to make
+            // findbugs happy
+<span class="nc" id="L362">            LOG.error(&quot;Missing stat node for bytes &quot; + statNode);</span>
+<span class="nc" id="L363">            return;</span>
+        }
+<span class="nc" id="L365">        StatsTrack updatedStat = null;</span>
+<span class="nc" id="L366">        synchronized (node) {</span>
+<span class="nc" id="L367">            updatedStat = new StatsTrack(new String(node.data));</span>
+<span class="nc" id="L368">            updatedStat.setBytes(updatedStat.getBytes() + diff);</span>
+<span class="nc" id="L369">            node.data = updatedStat.toString().getBytes();</span>
+<span class="nc" id="L370">        }</span>
+        // now check if the bytes match the quota
+<span class="nc" id="L372">        String quotaNode = Quotas.quotaPath(lastPrefix);</span>
+<span class="nc" id="L373">        node = nodes.get(quotaNode);</span>
+<span class="nc bnc" id="L374" title="All 2 branches missed.">        if (node == null) {</span>
+            // should never be null but just to make
+            // findbugs happy
+<span class="nc" id="L377">            LOG.error(&quot;Missing quota node for bytes &quot; + quotaNode);</span>
+<span class="nc" id="L378">            return;</span>
+        }
+<span class="nc" id="L380">        StatsTrack thisStats = null;</span>
+<span class="nc" id="L381">        synchronized (node) {</span>
+<span class="nc" id="L382">            thisStats = new StatsTrack(new String(node.data));</span>
+<span class="nc" id="L383">        }</span>
+<span class="nc bnc" id="L384" title="All 4 branches missed.">        if (thisStats.getBytes() &gt; -1 &amp;&amp; (thisStats.getBytes() &lt; updatedStat.getBytes())) {</span>
+<span class="nc" id="L385">            LOG</span>
+<span class="nc" id="L386">            .warn(&quot;Quota exceeded: &quot; + lastPrefix + &quot; bytes=&quot;</span>
+<span class="nc" id="L387">                    + updatedStat.getBytes() + &quot; limit=&quot;</span>
+<span class="nc" id="L388">                    + thisStats.getBytes());</span>
+        }
+<span class="nc" id="L390">    }</span>
+
+    /**
+     * Add a new node to the DataTree.
+     * @param path
+     * 			  Path for the new node.
+     * @param data
+     *            Data to store in the node.
+     * @param acl
+     *            Node acls
+     * @param ephemeralOwner
+     *            the session id that owns this node. -1 indicates this is not
+     *            an ephemeral node.
+     * @param zxid
+     *            Transaction ID
+     * @param time
+     * @throws NodeExistsException
+     * @throws NoNodeException
+     * @throws KeeperException
+     */
+    public void createNode(final String path, byte data[], List&lt;ACL&gt; acl,
+            long ephemeralOwner, int parentCVersion, long zxid, long time)
+    		throws NoNodeException, NodeExistsException {
+<span class="nc" id="L413">    	createNode(path, data, acl, ephemeralOwner, parentCVersion, zxid, time, null);</span>
+<span class="nc" id="L414">    }</span>
+
+    /**
+     * Add a new node to the DataTree.
+     * @param path
+     * 			  Path for the new node.
+     * @param data
+     *            Data to store in the node.
+     * @param acl
+     *            Node acls
+     * @param ephemeralOwner
+     *            the session id that owns this node. -1 indicates this is not
+     *            an ephemeral node.
+     * @param zxid
+     *            Transaction ID
+     * @param time
+     * @param outputStat
+     * 			  A Stat object to store Stat output results into.
+     * @throws NodeExistsException
+     * @throws NoNodeException
+     * @throws KeeperException
+     */
+    public void createNode(final String path, byte data[], List&lt;ACL&gt; acl,
+            long ephemeralOwner, int parentCVersion, long zxid, long time, Stat outputStat)
+            throws KeeperException.NoNodeException,
+            KeeperException.NodeExistsException {
+<span class="nc" id="L440">        int lastSlash = path.lastIndexOf('/');</span>
+<span class="nc" id="L441">        String parentName = path.substring(0, lastSlash);</span>
+<span class="nc" id="L442">        String childName = path.substring(lastSlash + 1);</span>
+<span class="nc" id="L443">        StatPersisted stat = new StatPersisted();</span>
+<span class="nc" id="L444">        stat.setCtime(time);</span>
+<span class="nc" id="L445">        stat.setMtime(time);</span>
+<span class="nc" id="L446">        stat.setCzxid(zxid);</span>
+<span class="nc" id="L447">        stat.setMzxid(zxid);</span>
+<span class="nc" id="L448">        stat.setPzxid(zxid);</span>
+<span class="nc" id="L449">        stat.setVersion(0);</span>
+<span class="nc" id="L450">        stat.setAversion(0);</span>
+<span class="nc" id="L451">        stat.setEphemeralOwner(ephemeralOwner);</span>
+<span class="nc" id="L452">        DataNode parent = nodes.get(parentName);</span>
+<span class="nc bnc" id="L453" title="All 2 branches missed.">        if (parent == null) {</span>
+<span class="nc" id="L454">            throw new KeeperException.NoNodeException();</span>
+        }
+<span class="nc" id="L456">        synchronized (parent) {</span>
+<span class="nc" id="L457">            Set&lt;String&gt; children = parent.getChildren();</span>
+<span class="nc bnc" id="L458" title="All 2 branches missed.">            if (children.contains(childName)) {</span>
+<span class="nc" id="L459">                throw new KeeperException.NodeExistsException();</span>
+            }
+
+<span class="nc bnc" id="L462" title="All 2 branches missed.">            if (parentCVersion == -1) {</span>
+<span class="nc" id="L463">                parentCVersion = parent.stat.getCversion();</span>
+<span class="nc" id="L464">                parentCVersion++;</span>
+            }
+<span class="nc" id="L466">            parent.stat.setCversion(parentCVersion);</span>
+<span class="nc" id="L467">            parent.stat.setPzxid(zxid);</span>
+<span class="nc" id="L468">            Long longval = aclCache.convertAcls(acl);</span>
+<span class="nc" id="L469">            DataNode child = new DataNode(data, longval, stat);</span>
+<span class="nc" id="L470">            parent.addChild(childName);</span>
+<span class="nc" id="L471">            nodes.put(path, child);</span>
+<span class="nc" id="L472">            EphemeralType ephemeralType = EphemeralType.get(ephemeralOwner);</span>
+<span class="nc bnc" id="L473" title="All 2 branches missed.">            if (ephemeralType == EphemeralType.CONTAINER) {</span>
+<span class="nc" id="L474">                containers.add(path);</span>
+<span class="nc bnc" id="L475" title="All 2 branches missed.">            } else if (ephemeralType == EphemeralType.TTL) {</span>
+<span class="nc" id="L476">                ttls.add(path);</span>
+<span class="nc bnc" id="L477" title="All 2 branches missed.">            } else if (ephemeralOwner != 0) {</span>
+<span class="nc" id="L478">                HashSet&lt;String&gt; list = ephemerals.get(ephemeralOwner);</span>
+<span class="nc bnc" id="L479" title="All 2 branches missed.">                if (list == null) {</span>
+<span class="nc" id="L480">                    list = new HashSet&lt;String&gt;();</span>
+<span class="nc" id="L481">                    ephemerals.put(ephemeralOwner, list);</span>
+                }
+<span class="nc" id="L483">                synchronized (list) {</span>
+<span class="nc" id="L484">                    list.add(path);</span>
+<span class="nc" id="L485">                }</span>
+            }
+<span class="nc bnc" id="L487" title="All 2 branches missed.">            if (outputStat != null) {</span>
+<span class="nc" id="L488">            	child.copyStat(outputStat);</span>
+            }
+<span class="nc" id="L490">        }</span>
+        // now check if its one of the zookeeper node child
+<span class="nc bnc" id="L492" title="All 2 branches missed.">        if (parentName.startsWith(quotaZookeeper)) {</span>
+            // now check if its the limit node
+<span class="nc bnc" id="L494" title="All 2 branches missed.">            if (Quotas.limitNode.equals(childName)) {</span>
+                // this is the limit node
+                // get the parent and add it to the trie
+<span class="nc" id="L497">                pTrie.addPath(parentName.substring(quotaZookeeper.length()));</span>
+            }
+<span class="nc bnc" id="L499" title="All 2 branches missed.">            if (Quotas.statNode.equals(childName)) {</span>
+<span class="nc" id="L500">                updateQuotaForPath(parentName</span>
+<span class="nc" id="L501">                        .substring(quotaZookeeper.length()));</span>
+            }
+        }
+        // also check to update the quotas for this node
+<span class="nc" id="L505">        String lastPrefix = getMaxPrefixWithQuota(path);</span>
+<span class="nc bnc" id="L506" title="All 2 branches missed.">        if(lastPrefix != null) {</span>
+            // ok we have some match and need to update
+<span class="nc" id="L508">            updateCount(lastPrefix, 1);</span>
+<span class="nc bnc" id="L509" title="All 2 branches missed.">            updateBytes(lastPrefix, data == null ? 0 : data.length);</span>
+        }
+<span class="nc" id="L511">        dataWatches.triggerWatch(path, Event.EventType.NodeCreated);</span>
+<span class="nc bnc" id="L512" title="All 2 branches missed.">        childWatches.triggerWatch(parentName.equals(&quot;&quot;) ? &quot;/&quot; : parentName,</span>
+                Event.EventType.NodeChildrenChanged);
+<span class="nc" id="L514">    }</span>
+
+    /**
+     * remove the path from the datatree
+     *
+     * @param path
+     *            the path to of the node to be deleted
+     * @param zxid
+     *            the current zxid
+     * @throws KeeperException.NoNodeException
+     */
+    public void deleteNode(String path, long zxid)
+            throws KeeperException.NoNodeException {
+<span class="nc" id="L527">        int lastSlash = path.lastIndexOf('/');</span>
+<span class="nc" id="L528">        String parentName = path.substring(0, lastSlash);</span>
+<span class="nc" id="L529">        String childName = path.substring(lastSlash + 1);</span>
+
+        // The child might already be deleted during taking fuzzy snapshot,
+        // but we still need to update the pzxid here before throw exception
+        // for no such child
+<span class="nc" id="L534">        DataNode parent = nodes.get(parentName);</span>
+<span class="nc bnc" id="L535" title="All 2 branches missed.">        if (parent == null) {</span>
+<span class="nc" id="L536">            throw new KeeperException.NoNodeException();</span>
+        }
+<span class="nc" id="L538">        synchronized (parent) {</span>
+<span class="nc" id="L539">            parent.removeChild(childName);</span>
+            // Only update pzxid when the zxid is larger than the current pzxid,
+            // otherwise we might override higher pzxid set by a following create 
+            // Txn, which could cause the cversion and pzxid inconsistent
+<span class="nc bnc" id="L543" title="All 2 branches missed.">            if (zxid &gt; parent.stat.getPzxid()) {</span>
+<span class="nc" id="L544">                parent.stat.setPzxid(zxid);</span>
+            }
+<span class="nc" id="L546">        }</span>
+
+<span class="nc" id="L548">        DataNode node = nodes.get(path);</span>
+<span class="nc bnc" id="L549" title="All 2 branches missed.">        if (node == null) {</span>
+<span class="nc" id="L550">            throw new KeeperException.NoNodeException();</span>
+        }
+<span class="nc" id="L552">        nodes.remove(path);</span>
+<span class="nc" id="L553">        synchronized (node) {</span>
+<span class="nc" id="L554">            aclCache.removeUsage(node.acl);</span>
+<span class="nc" id="L555">        }</span>
+
+        // Synchronized to sync the containers and ttls change, probably
+        // only need to sync on containers and ttls, will update it in a
+        // separate patch.
+<span class="nc" id="L560">        synchronized (parent) {</span>
+<span class="nc" id="L561">            long eowner = node.stat.getEphemeralOwner();</span>
+<span class="nc" id="L562">            EphemeralType ephemeralType = EphemeralType.get(eowner);</span>
+<span class="nc bnc" id="L563" title="All 2 branches missed.">            if (ephemeralType == EphemeralType.CONTAINER) {</span>
+<span class="nc" id="L564">                containers.remove(path);</span>
+<span class="nc bnc" id="L565" title="All 2 branches missed.">            } else if (ephemeralType == EphemeralType.TTL) {</span>
+<span class="nc" id="L566">                ttls.remove(path);</span>
+<span class="nc bnc" id="L567" title="All 2 branches missed.">            } else if (eowner != 0) {</span>
+<span class="nc" id="L568">                HashSet&lt;String&gt; nodes = ephemerals.get(eowner);</span>
+<span class="nc bnc" id="L569" title="All 2 branches missed.">                if (nodes != null) {</span>
+<span class="nc" id="L570">                    synchronized (nodes) {</span>
+<span class="nc" id="L571">                        nodes.remove(path);</span>
+<span class="nc" id="L572">                    }</span>
+                }
+            }
+<span class="nc" id="L575">        }</span>
+
+<span class="nc bnc" id="L577" title="All 4 branches missed.">        if (parentName.startsWith(procZookeeper) &amp;&amp; Quotas.limitNode.equals(childName)) {</span>
+            // delete the node in the trie.
+            // we need to update the trie as well
+<span class="nc" id="L580">            pTrie.deletePath(parentName.substring(quotaZookeeper.length()));</span>
+        }
+
+        // also check to update the quotas for this node
+<span class="nc" id="L584">        String lastPrefix = getMaxPrefixWithQuota(path);</span>
+<span class="nc bnc" id="L585" title="All 2 branches missed.">        if(lastPrefix != null) {</span>
+            // ok we have some match and need to update
+<span class="nc" id="L587">            updateCount(lastPrefix, -1);</span>
+<span class="nc" id="L588">            int bytes = 0;</span>
+<span class="nc" id="L589">            synchronized (node) {</span>
+<span class="nc bnc" id="L590" title="All 2 branches missed.">                bytes = (node.data == null ? 0 : -(node.data.length));</span>
+<span class="nc" id="L591">            }</span>
+<span class="nc" id="L592">            updateBytes(lastPrefix, bytes);</span>
+        }
+<span class="nc bnc" id="L594" title="All 2 branches missed.">        if (LOG.isTraceEnabled()) {</span>
+<span class="nc" id="L595">            ZooTrace.logTraceMessage(LOG, ZooTrace.EVENT_DELIVERY_TRACE_MASK,</span>
+                    &quot;dataWatches.triggerWatch &quot; + path);
+<span class="nc" id="L597">            ZooTrace.logTraceMessage(LOG, ZooTrace.EVENT_DELIVERY_TRACE_MASK,</span>
+                    &quot;childWatches.triggerWatch &quot; + parentName);
+        }
+<span class="nc" id="L600">        Set&lt;Watcher&gt; processed = dataWatches.triggerWatch(path,</span>
+                EventType.NodeDeleted);
+<span class="nc" id="L602">        childWatches.triggerWatch(path, EventType.NodeDeleted, processed);</span>
+<span class="nc bnc" id="L603" title="All 2 branches missed.">        childWatches.triggerWatch(&quot;&quot;.equals(parentName) ? &quot;/&quot; : parentName,</span>
+                EventType.NodeChildrenChanged);
+<span class="nc" id="L605">    }</span>
+
+    public Stat setData(String path, byte data[], int version, long zxid,
+            long time) throws KeeperException.NoNodeException {
+<span class="nc" id="L609">        Stat s = new Stat();</span>
+<span class="nc" id="L610">        DataNode n = nodes.get(path);</span>
+<span class="nc bnc" id="L611" title="All 2 branches missed.">        if (n == null) {</span>
+<span class="nc" id="L612">            throw new KeeperException.NoNodeException();</span>
+        }
+<span class="nc" id="L614">        byte lastdata[] = null;</span>
+<span class="nc" id="L615">        synchronized (n) {</span>
+<span class="nc" id="L616">            lastdata = n.data;</span>
+<span class="nc" id="L617">            n.data = data;</span>
+<span class="nc" id="L618">            n.stat.setMtime(time);</span>
+<span class="nc" id="L619">            n.stat.setMzxid(zxid);</span>
+<span class="nc" id="L620">            n.stat.setVersion(version);</span>
+<span class="nc" id="L621">            n.copyStat(s);</span>
+<span class="nc" id="L622">        }</span>
+        // now update if the path is in a quota subtree.
+<span class="nc" id="L624">        String lastPrefix = getMaxPrefixWithQuota(path);</span>
+<span class="nc bnc" id="L625" title="All 2 branches missed.">        if(lastPrefix != null) {</span>
+<span class="nc bnc" id="L626" title="All 2 branches missed.">          this.updateBytes(lastPrefix, (data == null ? 0 : data.length)</span>
+<span class="nc bnc" id="L627" title="All 2 branches missed.">              - (lastdata == null ? 0 : lastdata.length));</span>
+        }
+<span class="nc" id="L629">        dataWatches.triggerWatch(path, EventType.NodeDataChanged);</span>
+<span class="nc" id="L630">        return s;</span>
+    }
+
+    /**
+     * If there is a quota set, return the appropriate prefix for that quota
+     * Else return null
+     * @param path The ZK path to check for quota
+     * @return Max quota prefix, or null if none
+     */
+    public String getMaxPrefixWithQuota(String path) {
+        // do nothing for the root.
+        // we are not keeping a quota on the zookeeper
+        // root node for now.
+<span class="nc" id="L643">        String lastPrefix = pTrie.findMaxPrefix(path);</span>
+
+<span class="nc bnc" id="L645" title="All 4 branches missed.">        if (rootZookeeper.equals(lastPrefix) || &quot;&quot;.equals(lastPrefix)) {</span>
+<span class="nc" id="L646">            return null;</span>
+        }
+        else {
+<span class="nc" id="L649">            return lastPrefix;</span>
+        }
+    }
+
+    public byte[] getData(String path, Stat stat, Watcher watcher)
+            throws KeeperException.NoNodeException {
+<span class="nc" id="L655">        DataNode n = nodes.get(path);</span>
+<span class="nc bnc" id="L656" title="All 2 branches missed.">        if (n == null) {</span>
+<span class="nc" id="L657">            throw new KeeperException.NoNodeException();</span>
+        }
+<span class="nc" id="L659">        synchronized (n) {</span>
+<span class="nc" id="L660">            n.copyStat(stat);</span>
+<span class="nc bnc" id="L661" title="All 2 branches missed.">            if (watcher != null) {</span>
+<span class="nc" id="L662">                dataWatches.addWatch(path, watcher);</span>
+            }
+<span class="nc" id="L664">            return n.data;</span>
+        }
+    }
+
+    public Stat statNode(String path, Watcher watcher)
+            throws KeeperException.NoNodeException {
+<span class="nc" id="L670">        Stat stat = new Stat();</span>
+<span class="nc" id="L671">        DataNode n = nodes.get(path);</span>
+<span class="nc bnc" id="L672" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L673">            dataWatches.addWatch(path, watcher);</span>
+        }
+<span class="nc bnc" id="L675" title="All 2 branches missed.">        if (n == null) {</span>
+<span class="nc" id="L676">            throw new KeeperException.NoNodeException();</span>
+        }
+<span class="nc" id="L678">        synchronized (n) {</span>
+<span class="nc" id="L679">            n.copyStat(stat);</span>
+<span class="nc" id="L680">            return stat;</span>
+        }
+    }
+
+    public List&lt;String&gt; getChildren(String path, Stat stat, Watcher watcher)
+            throws KeeperException.NoNodeException {
+<span class="nc" id="L686">        DataNode n = nodes.get(path);</span>
+<span class="nc bnc" id="L687" title="All 2 branches missed.">        if (n == null) {</span>
+<span class="nc" id="L688">            throw new KeeperException.NoNodeException();</span>
+        }
+<span class="nc" id="L690">        synchronized (n) {</span>
+<span class="nc bnc" id="L691" title="All 2 branches missed.">            if (stat != null) {</span>
+<span class="nc" id="L692">                n.copyStat(stat);</span>
+            }
+<span class="nc" id="L694">            List&lt;String&gt; children=new ArrayList&lt;String&gt;(n.getChildren());</span>
+
+<span class="nc bnc" id="L696" title="All 2 branches missed.">            if (watcher != null) {</span>
+<span class="nc" id="L697">                childWatches.addWatch(path, watcher);</span>
+            }
+<span class="nc" id="L699">            return children;</span>
+        }
+    }
+
+    public Stat setACL(String path, List&lt;ACL&gt; acl, int version)
+            throws KeeperException.NoNodeException {
+<span class="fc" id="L705">        Stat stat = new Stat();</span>
+<span class="fc" id="L706">        DataNode n = nodes.get(path);</span>
+<span class="pc bpc" id="L707" title="1 of 2 branches missed.">        if (n == null) {</span>
+<span class="nc" id="L708">            throw new KeeperException.NoNodeException();</span>
+        }
+<span class="fc" id="L710">        synchronized (n) {</span>
+<span class="fc" id="L711">            aclCache.removeUsage(n.acl);</span>
+<span class="fc" id="L712">            n.stat.setAversion(version);</span>
+<span class="fc" id="L713">            n.acl = aclCache.convertAcls(acl);</span>
+<span class="fc" id="L714">            n.copyStat(stat);</span>
+<span class="fc" id="L715">            return stat;</span>
+        }
+    }
+
+    public List&lt;ACL&gt; getACL(String path, Stat stat)
+            throws KeeperException.NoNodeException {
+<span class="nc" id="L721">        DataNode n = nodes.get(path);</span>
+<span class="nc bnc" id="L722" title="All 2 branches missed.">        if (n == null) {</span>
+<span class="nc" id="L723">            throw new KeeperException.NoNodeException();</span>
+        }
+<span class="nc" id="L725">        synchronized (n) {</span>
+<span class="nc" id="L726">            n.copyStat(stat);</span>
+<span class="nc" id="L727">            return new ArrayList&lt;ACL&gt;(aclCache.convertLong(n.acl));</span>
+        }
+    }
+
+    public List&lt;ACL&gt; getACL(DataNode node) {
+<span class="nc" id="L732">        synchronized (node) {</span>
+<span class="nc" id="L733">            return aclCache.convertLong(node.acl);</span>
+        }
+    }
+
+    public int aclCacheSize() {
+<span class="nc" id="L738">        return aclCache.size();</span>
+    }
+
+<span class="fc" id="L741">    static public class ProcessTxnResult {</span>
+        public long clientId;
+
+        public int cxid;
+
+        public long zxid;
+
+        public int err;
+
+        public int type;
+
+        public String path;
+
+        public Stat stat;
+
+        public List&lt;ProcessTxnResult&gt; multiResult;
+
+        /**
+         * Equality is defined as the clientId and the cxid being the same. This
+         * allows us to use hash tables to track completion of transactions.
+         *
+         * @see java.lang.Object#equals(java.lang.Object)
+         */
+        @Override
+        public boolean equals(Object o) {
+<span class="nc bnc" id="L766" title="All 2 branches missed.">            if (o instanceof ProcessTxnResult) {</span>
+<span class="nc" id="L767">                ProcessTxnResult other = (ProcessTxnResult) o;</span>
+<span class="nc bnc" id="L768" title="All 4 branches missed.">                return other.clientId == clientId &amp;&amp; other.cxid == cxid;</span>
+            }
+<span class="nc" id="L770">            return false;</span>
+        }
+
+        /**
+         * See equals() to find the rational for how this hashcode is generated.
+         *
+         * @see ProcessTxnResult#equals(Object)
+         * @see java.lang.Object#hashCode()
+         */
+        @Override
+        public int hashCode() {
+<span class="nc" id="L781">            return (int) ((clientId ^ cxid) % Integer.MAX_VALUE);</span>
+        }
+
+    }
+
+<span class="fc" id="L786">    public volatile long lastProcessedZxid = 0;</span>
+
+    public ProcessTxnResult processTxn(TxnHeader header, Record txn) {
+<span class="fc" id="L789">        return this.processTxn(header, txn, false);</span>
+    }
+
+    public ProcessTxnResult processTxn(TxnHeader header, Record txn, boolean isSubTxn)
+    {
+<span class="fc" id="L794">        ProcessTxnResult rc = new ProcessTxnResult();</span>
+
+        try {
+<span class="fc" id="L797">            rc.clientId = header.getClientId();</span>
+<span class="fc" id="L798">            rc.cxid = header.getCxid();</span>
+<span class="fc" id="L799">            rc.zxid = header.getZxid();</span>
+<span class="fc" id="L800">            rc.type = header.getType();</span>
+<span class="fc" id="L801">            rc.err = 0;</span>
+<span class="fc" id="L802">            rc.multiResult = null;</span>
+<span class="pc bpc" id="L803" title="10 of 12 branches missed.">            switch (header.getType()) {</span>
+                case OpCode.create:
+<span class="nc" id="L805">                    CreateTxn createTxn = (CreateTxn) txn;</span>
+<span class="nc" id="L806">                    rc.path = createTxn.getPath();</span>
+<span class="nc" id="L807">                    createNode(</span>
+<span class="nc" id="L808">                            createTxn.getPath(),</span>
+<span class="nc" id="L809">                            createTxn.getData(),</span>
+<span class="nc" id="L810">                            createTxn.getAcl(),</span>
+<span class="nc bnc" id="L811" title="All 2 branches missed.">                            createTxn.getEphemeral() ? header.getClientId() : 0,</span>
+<span class="nc" id="L812">                            createTxn.getParentCVersion(),</span>
+<span class="nc" id="L813">                            header.getZxid(), header.getTime(), null);</span>
+<span class="nc" id="L814">                    break;</span>
+                case OpCode.create2:
+<span class="nc" id="L816">                    CreateTxn create2Txn = (CreateTxn) txn;</span>
+<span class="nc" id="L817">                    rc.path = create2Txn.getPath();</span>
+<span class="nc" id="L818">                    Stat stat = new Stat();</span>
+<span class="nc" id="L819">                    createNode(</span>
+<span class="nc" id="L820">                            create2Txn.getPath(),</span>
+<span class="nc" id="L821">                            create2Txn.getData(),</span>
+<span class="nc" id="L822">                            create2Txn.getAcl(),</span>
+<span class="nc bnc" id="L823" title="All 2 branches missed.">                            create2Txn.getEphemeral() ? header.getClientId() : 0,</span>
+<span class="nc" id="L824">                            create2Txn.getParentCVersion(),</span>
+<span class="nc" id="L825">                            header.getZxid(), header.getTime(), stat);</span>
+<span class="nc" id="L826">                    rc.stat = stat;</span>
+<span class="nc" id="L827">                    break;</span>
+                case OpCode.createTTL:
+<span class="nc" id="L829">                    CreateTTLTxn createTtlTxn = (CreateTTLTxn) txn;</span>
+<span class="nc" id="L830">                    rc.path = createTtlTxn.getPath();</span>
+<span class="nc" id="L831">                    stat = new Stat();</span>
+<span class="nc" id="L832">                    createNode(</span>
+<span class="nc" id="L833">                            createTtlTxn.getPath(),</span>
+<span class="nc" id="L834">                            createTtlTxn.getData(),</span>
+<span class="nc" id="L835">                            createTtlTxn.getAcl(),</span>
+<span class="nc" id="L836">                            EphemeralType.TTL.toEphemeralOwner(createTtlTxn.getTtl()),</span>
+<span class="nc" id="L837">                            createTtlTxn.getParentCVersion(),</span>
+<span class="nc" id="L838">                            header.getZxid(), header.getTime(), stat);</span>
+<span class="nc" id="L839">                    rc.stat = stat;</span>
+<span class="nc" id="L840">                    break;</span>
+                case OpCode.createContainer:
+<span class="nc" id="L842">                    CreateContainerTxn createContainerTxn = (CreateContainerTxn) txn;</span>
+<span class="nc" id="L843">                    rc.path = createContainerTxn.getPath();</span>
+<span class="nc" id="L844">                    stat = new Stat();</span>
+<span class="nc" id="L845">                    createNode(</span>
+<span class="nc" id="L846">                            createContainerTxn.getPath(),</span>
+<span class="nc" id="L847">                            createContainerTxn.getData(),</span>
+<span class="nc" id="L848">                            createContainerTxn.getAcl(),</span>
+                            EphemeralType.CONTAINER_EPHEMERAL_OWNER,
+<span class="nc" id="L850">                            createContainerTxn.getParentCVersion(),</span>
+<span class="nc" id="L851">                            header.getZxid(), header.getTime(), stat);</span>
+<span class="nc" id="L852">                    rc.stat = stat;</span>
+<span class="nc" id="L853">                    break;</span>
+                case OpCode.delete:
+                case OpCode.deleteContainer:
+<span class="nc" id="L856">                    DeleteTxn deleteTxn = (DeleteTxn) txn;</span>
+<span class="nc" id="L857">                    rc.path = deleteTxn.getPath();</span>
+<span class="nc" id="L858">                    deleteNode(deleteTxn.getPath(), header.getZxid());</span>
+<span class="nc" id="L859">                    break;</span>
+                case OpCode.reconfig:
+                case OpCode.setData:
+<span class="nc" id="L862">                    SetDataTxn setDataTxn = (SetDataTxn) txn;</span>
+<span class="nc" id="L863">                    rc.path = setDataTxn.getPath();</span>
+<span class="nc" id="L864">                    rc.stat = setData(setDataTxn.getPath(), setDataTxn</span>
+<span class="nc" id="L865">                            .getData(), setDataTxn.getVersion(), header</span>
+<span class="nc" id="L866">                            .getZxid(), header.getTime());</span>
+<span class="nc" id="L867">                    break;</span>
+                case OpCode.setACL:
+<span class="nc" id="L869">                    SetACLTxn setACLTxn = (SetACLTxn) txn;</span>
+<span class="nc" id="L870">                    rc.path = setACLTxn.getPath();</span>
+<span class="nc" id="L871">                    rc.stat = setACL(setACLTxn.getPath(), setACLTxn.getAcl(),</span>
+<span class="nc" id="L872">                            setACLTxn.getVersion());</span>
+<span class="nc" id="L873">                    break;</span>
+                case OpCode.closeSession:
+<span class="fc" id="L875">                    killSession(header.getClientId(), header.getZxid());</span>
+<span class="fc" id="L876">                    break;</span>
+                case OpCode.error:
+<span class="nc" id="L878">                    ErrorTxn errTxn = (ErrorTxn) txn;</span>
+<span class="nc" id="L879">                    rc.err = errTxn.getErr();</span>
+<span class="nc" id="L880">                    break;</span>
+                case OpCode.check:
+<span class="nc" id="L882">                    CheckVersionTxn checkTxn = (CheckVersionTxn) txn;</span>
+<span class="nc" id="L883">                    rc.path = checkTxn.getPath();</span>
+<span class="nc" id="L884">                    break;</span>
+                case OpCode.multi:
+<span class="nc" id="L886">                    MultiTxn multiTxn = (MultiTxn) txn ;</span>
+<span class="nc" id="L887">                    List&lt;Txn&gt; txns = multiTxn.getTxns();</span>
+<span class="nc" id="L888">                    rc.multiResult = new ArrayList&lt;ProcessTxnResult&gt;();</span>
+<span class="nc" id="L889">                    boolean failed = false;</span>
+<span class="nc bnc" id="L890" title="All 2 branches missed.">                    for (Txn subtxn : txns) {</span>
+<span class="nc bnc" id="L891" title="All 2 branches missed.">                        if (subtxn.getType() == OpCode.error) {</span>
+<span class="nc" id="L892">                            failed = true;</span>
+<span class="nc" id="L893">                            break;</span>
+                        }
+<span class="nc" id="L895">                    }</span>
+
+<span class="nc" id="L897">                    boolean post_failed = false;</span>
+<span class="nc bnc" id="L898" title="All 2 branches missed.">                    for (Txn subtxn : txns) {</span>
+<span class="nc" id="L899">                        ByteBuffer bb = ByteBuffer.wrap(subtxn.getData());</span>
+<span class="nc" id="L900">                        Record record = null;</span>
+<span class="nc bnc" id="L901" title="All 8 branches missed.">                        switch (subtxn.getType()) {</span>
+                            case OpCode.create:
+<span class="nc" id="L903">                                record = new CreateTxn();</span>
+<span class="nc" id="L904">                                break;</span>
+                            case OpCode.createTTL:
+<span class="nc" id="L906">                                record = new CreateTTLTxn();</span>
+<span class="nc" id="L907">                                break;</span>
+                            case OpCode.createContainer:
+<span class="nc" id="L909">                                record = new CreateContainerTxn();</span>
+<span class="nc" id="L910">                                break;</span>
+                            case OpCode.delete:
+                            case OpCode.deleteContainer:
+<span class="nc" id="L913">                                record = new DeleteTxn();</span>
+<span class="nc" id="L914">                                break;</span>
+                            case OpCode.setData:
+<span class="nc" id="L916">                                record = new SetDataTxn();</span>
+<span class="nc" id="L917">                                break;</span>
+                            case OpCode.error:
+<span class="nc" id="L919">                                record = new ErrorTxn();</span>
+<span class="nc" id="L920">                                post_failed = true;</span>
+<span class="nc" id="L921">                                break;</span>
+                            case OpCode.check:
+<span class="nc" id="L923">                                record = new CheckVersionTxn();</span>
+<span class="nc" id="L924">                                break;</span>
+                            default:
+<span class="nc" id="L926">                                throw new IOException(&quot;Invalid type of op: &quot; + subtxn.getType());</span>
+                        }
+<span class="nc bnc" id="L928" title="All 4 branches missed.">                        assert(record != null);</span>
+
+<span class="nc" id="L930">                        ByteBufferInputStream.byteBuffer2Record(bb, record);</span>
+
+<span class="nc bnc" id="L932" title="All 4 branches missed.">                        if (failed &amp;&amp; subtxn.getType() != OpCode.error){</span>
+<span class="nc bnc" id="L933" title="All 2 branches missed.">                            int ec = post_failed ? Code.RUNTIMEINCONSISTENCY.intValue()</span>
+<span class="nc" id="L934">                                                 : Code.OK.intValue();</span>
+
+<span class="nc" id="L936">                            subtxn.setType(OpCode.error);</span>
+<span class="nc" id="L937">                            record = new ErrorTxn(ec);</span>
+                        }
+
+<span class="nc bnc" id="L940" title="All 2 branches missed.">                        if (failed) {</span>
+<span class="nc bnc" id="L941" title="All 4 branches missed.">                            assert(subtxn.getType() == OpCode.error) ;</span>
+                        }
+
+<span class="nc" id="L944">                        TxnHeader subHdr = new TxnHeader(header.getClientId(), header.getCxid(),</span>
+<span class="nc" id="L945">                                                         header.getZxid(), header.getTime(),</span>
+<span class="nc" id="L946">                                                         subtxn.getType());</span>
+<span class="nc" id="L947">                        ProcessTxnResult subRc = processTxn(subHdr, record, true);</span>
+<span class="nc" id="L948">                        rc.multiResult.add(subRc);</span>
+<span class="nc bnc" id="L949" title="All 4 branches missed.">                        if (subRc.err != 0 &amp;&amp; rc.err == 0) {</span>
+<span class="nc" id="L950">                            rc.err = subRc.err ;</span>
+                        }
+<span class="nc" id="L952">                    }</span>
+                    break;
+            }
+<span class="nc" id="L955">        } catch (KeeperException e) {</span>
+<span class="nc bnc" id="L956" title="All 2 branches missed.">            if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L957">                LOG.debug(&quot;Failed: &quot; + header + &quot;:&quot; + txn, e);</span>
+            }
+<span class="nc" id="L959">            rc.err = e.code().intValue();</span>
+<span class="nc" id="L960">        } catch (IOException e) {</span>
+<span class="nc bnc" id="L961" title="All 2 branches missed.">            if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L962">                LOG.debug(&quot;Failed: &quot; + header + &quot;:&quot; + txn, e);</span>
+            }
+<span class="pc" id="L964">        }</span>
+
+
+        /*
+         * Things we can only update after the whole txn is applied to data
+         * tree.
+         *
+         * If we update the lastProcessedZxid with the first sub txn in multi
+         * and there is a snapshot in progress, it's possible that the zxid
+         * associated with the snapshot only include partial of the multi op.
+         *
+         * When loading snapshot, it will only load the txns after the zxid
+         * associated with snapshot file, which could cause data inconsistency
+         * due to missing sub txns.
+         *
+         * To avoid this, we only update the lastProcessedZxid when the whole
+         * multi-op txn is applied to DataTree.
+         */
+<span class="pc bpc" id="L982" title="1 of 2 branches missed.">        if (!isSubTxn) {</span>
+            /*
+             * A snapshot might be in progress while we are modifying the data
+             * tree. If we set lastProcessedZxid prior to making corresponding
+             * change to the tree, then the zxid associated with the snapshot
+             * file will be ahead of its contents. Thus, while restoring from
+             * the snapshot, the restore method will not apply the transaction
+             * for zxid associated with the snapshot file, since the restore
+             * method assumes that transaction to be present in the snapshot.
+             *
+             * To avoid this, we first apply the transaction and then modify
+             * lastProcessedZxid.  During restore, we correctly handle the
+             * case where the snapshot contains data ahead of the zxid associated
+             * with the file.
+             */
+<span class="pc bpc" id="L997" title="1 of 2 branches missed.">            if (rc.zxid &gt; lastProcessedZxid) {</span>
+<span class="fc" id="L998">                lastProcessedZxid = rc.zxid;</span>
+            }
+        }
+
+        /*
+         * Snapshots are taken lazily. It can happen that the child
+         * znodes of a parent are created after the parent
+         * is serialized. Therefore, while replaying logs during restore, a
+         * create might fail because the node was already
+         * created.
+         *
+         * After seeing this failure, we should increment
+         * the cversion of the parent znode since the parent was serialized
+         * before its children.
+         *
+         * Note, such failures on DT should be seen only during
+         * restore.
+         */
+<span class="pc bpc" id="L1016" title="1 of 2 branches missed.">        if (header.getType() == OpCode.create &amp;&amp;</span>
+<span class="nc bnc" id="L1017" title="All 2 branches missed.">                rc.err == Code.NODEEXISTS.intValue()) {</span>
+<span class="nc" id="L1018">            LOG.debug(&quot;Adjusting parent cversion for Txn: &quot; + header.getType() +</span>
+                    &quot; path:&quot; + rc.path + &quot; err: &quot; + rc.err);
+<span class="nc" id="L1020">            int lastSlash = rc.path.lastIndexOf('/');</span>
+<span class="nc" id="L1021">            String parentName = rc.path.substring(0, lastSlash);</span>
+<span class="nc" id="L1022">            CreateTxn cTxn = (CreateTxn)txn;</span>
+            try {
+<span class="nc" id="L1024">                setCversionPzxid(parentName, cTxn.getParentCVersion(),</span>
+<span class="nc" id="L1025">                        header.getZxid());</span>
+<span class="nc" id="L1026">            } catch (KeeperException.NoNodeException e) {</span>
+<span class="nc" id="L1027">                LOG.error(&quot;Failed to set parent cversion for: &quot; +</span>
+                      parentName, e);
+<span class="nc" id="L1029">                rc.err = e.code().intValue();</span>
+<span class="nc" id="L1030">            }</span>
+<span class="pc bpc" id="L1031" title="1 of 2 branches missed.">        } else if (rc.err != Code.OK.intValue()) {</span>
+<span class="nc" id="L1032">            LOG.debug(&quot;Ignoring processTxn failure hdr: &quot; + header.getType() +</span>
+                  &quot; : error: &quot; + rc.err);
+        }
+<span class="fc" id="L1035">        return rc;</span>
+    }
+
+    void killSession(long session, long zxid) {
+        // the list is already removed from the ephemerals
+        // so we do not have to worry about synchronizing on
+        // the list. This is only called from FinalRequestProcessor
+        // so there is no need for synchronization. The list is not
+        // changed here. Only create and delete change the list which
+        // are again called from FinalRequestProcessor in sequence.
+<span class="fc" id="L1045">        HashSet&lt;String&gt; list = ephemerals.remove(session);</span>
+<span class="pc bpc" id="L1046" title="1 of 2 branches missed.">        if (list != null) {</span>
+<span class="nc bnc" id="L1047" title="All 2 branches missed.">            for (String path : list) {</span>
+                try {
+<span class="nc" id="L1049">                    deleteNode(path, zxid);</span>
+<span class="nc bnc" id="L1050" title="All 2 branches missed.">                    if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L1051">                        LOG</span>
+<span class="nc" id="L1052">                                .debug(&quot;Deleting ephemeral node &quot; + path</span>
+                                        + &quot; for session 0x&quot;
+<span class="nc" id="L1054">                                        + Long.toHexString(session));</span>
+                    }
+<span class="nc" id="L1056">                } catch (NoNodeException e) {</span>
+<span class="nc" id="L1057">                    LOG.warn(&quot;Ignoring NoNodeException for path &quot; + path</span>
+                            + &quot; while removing ephemeral for dead session 0x&quot;
+<span class="nc" id="L1059">                            + Long.toHexString(session));</span>
+<span class="nc" id="L1060">                }</span>
+<span class="nc" id="L1061">            }</span>
+        }
+<span class="fc" id="L1063">    }</span>
+
+    /**
+     * a encapsultaing class for return value
+     */
+    private static class Counts {
+        long bytes;
+        int count;
+    }
+
+    /**
+     * this method gets the count of nodes and the bytes under a subtree
+     *
+     * @param path
+     *            the path to be used
+     * @param counts
+     *            the int count
+     */
+    private void getCounts(String path, Counts counts) {
+<span class="nc" id="L1082">        DataNode node = getNode(path);</span>
+<span class="nc bnc" id="L1083" title="All 2 branches missed.">        if (node == null) {</span>
+<span class="nc" id="L1084">            return;</span>
+        }
+<span class="nc" id="L1086">        String[] children = null;</span>
+<span class="nc" id="L1087">        int len = 0;</span>
+<span class="nc" id="L1088">        synchronized (node) {</span>
+<span class="nc" id="L1089">            Set&lt;String&gt; childs = node.getChildren();</span>
+<span class="nc" id="L1090">            children = childs.toArray(new String[childs.size()]);</span>
+<span class="nc bnc" id="L1091" title="All 2 branches missed.">            len = (node.data == null ? 0 : node.data.length);</span>
+<span class="nc" id="L1092">        }</span>
+        // add itself
+<span class="nc" id="L1094">        counts.count += 1;</span>
+<span class="nc" id="L1095">        counts.bytes += len;</span>
+<span class="nc bnc" id="L1096" title="All 2 branches missed.">        for (String child : children) {</span>
+<span class="nc" id="L1097">            getCounts(path + &quot;/&quot; + child, counts);</span>
+        }
+<span class="nc" id="L1099">    }</span>
+
+    /**
+     * update the quota for the given path
+     *
+     * @param path
+     *            the path to be used
+     */
+    private void updateQuotaForPath(String path) {
+<span class="nc" id="L1108">        Counts c = new Counts();</span>
+<span class="nc" id="L1109">        getCounts(path, c);</span>
+<span class="nc" id="L1110">        StatsTrack strack = new StatsTrack();</span>
+<span class="nc" id="L1111">        strack.setBytes(c.bytes);</span>
+<span class="nc" id="L1112">        strack.setCount(c.count);</span>
+<span class="nc" id="L1113">        String statPath = Quotas.quotaZookeeper + path + &quot;/&quot; + Quotas.statNode;</span>
+<span class="nc" id="L1114">        DataNode node = getNode(statPath);</span>
+        // it should exist
+<span class="nc bnc" id="L1116" title="All 2 branches missed.">        if (node == null) {</span>
+<span class="nc" id="L1117">            LOG.warn(&quot;Missing quota stat node &quot; + statPath);</span>
+<span class="nc" id="L1118">            return;</span>
+        }
+<span class="nc" id="L1120">        synchronized (node) {</span>
+<span class="nc" id="L1121">            node.data = strack.toString().getBytes();</span>
+<span class="nc" id="L1122">        }</span>
+<span class="nc" id="L1123">    }</span>
+
+    /**
+     * this method traverses the quota path and update the path trie and sets
+     *
+     * @param path
+     */
+    private void traverseNode(String path) {
+<span class="nc" id="L1131">        DataNode node = getNode(path);</span>
+<span class="nc" id="L1132">        String children[] = null;</span>
+<span class="nc" id="L1133">        synchronized (node) {</span>
+<span class="nc" id="L1134">            Set&lt;String&gt; childs = node.getChildren();</span>
+<span class="nc" id="L1135">            children = childs.toArray(new String[childs.size()]);</span>
+<span class="nc" id="L1136">        }</span>
+<span class="nc bnc" id="L1137" title="All 2 branches missed.">        if (children.length == 0) {</span>
+            // this node does not have a child
+            // is the leaf node
+            // check if its the leaf node
+<span class="nc" id="L1141">            String endString = &quot;/&quot; + Quotas.limitNode;</span>
+<span class="nc bnc" id="L1142" title="All 2 branches missed.">            if (path.endsWith(endString)) {</span>
+                // ok this is the limit node
+                // get the real node and update
+                // the count and the bytes
+<span class="nc" id="L1146">                String realPath = path.substring(Quotas.quotaZookeeper</span>
+<span class="nc" id="L1147">                        .length(), path.indexOf(endString));</span>
+<span class="nc" id="L1148">                updateQuotaForPath(realPath);</span>
+<span class="nc" id="L1149">                this.pTrie.addPath(realPath);</span>
+            }
+<span class="nc" id="L1151">            return;</span>
+        }
+<span class="nc bnc" id="L1153" title="All 2 branches missed.">        for (String child : children) {</span>
+<span class="nc" id="L1154">            traverseNode(path + &quot;/&quot; + child);</span>
+        }
+<span class="nc" id="L1156">    }</span>
+
+    /**
+     * this method sets up the path trie and sets up stats for quota nodes
+     */
+    private void setupQuota() {
+<span class="nc" id="L1162">        String quotaPath = Quotas.quotaZookeeper;</span>
+<span class="nc" id="L1163">        DataNode node = getNode(quotaPath);</span>
+<span class="nc bnc" id="L1164" title="All 2 branches missed.">        if (node == null) {</span>
+<span class="nc" id="L1165">            return;</span>
+        }
+<span class="nc" id="L1167">        traverseNode(quotaPath);</span>
+<span class="nc" id="L1168">    }</span>
+
+    /**
+     * this method uses a stringbuilder to create a new path for children. This
+     * is faster than string appends ( str1 + str2).
+     *
+     * @param oa
+     *            OutputArchive to write to.
+     * @param path
+     *            a string builder.
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    void serializeNode(OutputArchive oa, StringBuilder path) throws IOException {
+<span class="fc" id="L1182">        String pathString = path.toString();</span>
+<span class="fc" id="L1183">        DataNode node = getNode(pathString);</span>
+<span class="pc bpc" id="L1184" title="1 of 2 branches missed.">        if (node == null) {</span>
+<span class="nc" id="L1185">            return;</span>
+        }
+<span class="fc" id="L1187">        String children[] = null;</span>
+        DataNode nodeCopy;
+<span class="fc" id="L1189">        synchronized (node) {</span>
+<span class="fc" id="L1190">            StatPersisted statCopy = new StatPersisted();</span>
+<span class="fc" id="L1191">            copyStatPersisted(node.stat, statCopy);</span>
+            //we do not need to make a copy of node.data because the contents
+            //are never changed
+<span class="fc" id="L1194">            nodeCopy = new DataNode(node.data, node.acl, statCopy);</span>
+<span class="fc" id="L1195">            Set&lt;String&gt; childs = node.getChildren();</span>
+<span class="fc" id="L1196">            children = childs.toArray(new String[childs.size()]);</span>
+<span class="fc" id="L1197">        }</span>
+<span class="fc" id="L1198">        serializeNodeData(oa, pathString, nodeCopy);</span>
+<span class="fc" id="L1199">        path.append('/');</span>
+<span class="fc" id="L1200">        int off = path.length();</span>
+<span class="fc bfc" id="L1201" title="All 2 branches covered.">        for (String child : children) {</span>
+            // since this is single buffer being resused
+            // we need
+            // to truncate the previous bytes of string.
+<span class="fc" id="L1205">            path.delete(off, Integer.MAX_VALUE);</span>
+<span class="fc" id="L1206">            path.append(child);</span>
+<span class="fc" id="L1207">            serializeNode(oa, path);</span>
+        }
+<span class="fc" id="L1209">    }</span>
+
+    // visiable for test
+    public void serializeNodeData(OutputArchive oa, String path, DataNode node) throws IOException {
+<span class="fc" id="L1213">        oa.writeString(path, &quot;path&quot;);</span>
+<span class="fc" id="L1214">        oa.writeRecord(node, &quot;node&quot;);</span>
+<span class="fc" id="L1215">    }</span>
+
+    public void serialize(OutputArchive oa, String tag) throws IOException {
+<span class="fc" id="L1218">        aclCache.serialize(oa);</span>
+<span class="fc" id="L1219">        serializeNode(oa, new StringBuilder(&quot;&quot;));</span>
+        // / marks end of stream
+        // we need to check if clear had been called in between the snapshot.
+<span class="pc bpc" id="L1222" title="1 of 2 branches missed.">        if (root != null) {</span>
+<span class="fc" id="L1223">            oa.writeString(&quot;/&quot;, &quot;path&quot;);</span>
+        }
+<span class="fc" id="L1225">    }</span>
+
+    public void deserialize(InputArchive ia, String tag) throws IOException {
+<span class="nc" id="L1228">        aclCache.deserialize(ia);</span>
+<span class="nc" id="L1229">        nodes.clear();</span>
+<span class="nc" id="L1230">        pTrie.clear();</span>
+<span class="nc" id="L1231">        String path = ia.readString(&quot;path&quot;);</span>
+<span class="nc bnc" id="L1232" title="All 2 branches missed.">        while (!&quot;/&quot;.equals(path)) {</span>
+<span class="nc" id="L1233">            DataNode node = new DataNode();</span>
+<span class="nc" id="L1234">            ia.readRecord(node, &quot;node&quot;);</span>
+<span class="nc" id="L1235">            nodes.put(path, node);</span>
+<span class="nc" id="L1236">            synchronized (node) {</span>
+<span class="nc" id="L1237">                aclCache.addUsage(node.acl);</span>
+<span class="nc" id="L1238">            }</span>
+<span class="nc" id="L1239">            int lastSlash = path.lastIndexOf('/');</span>
+<span class="nc bnc" id="L1240" title="All 2 branches missed.">            if (lastSlash == -1) {</span>
+<span class="nc" id="L1241">                root = node;</span>
+            } else {
+<span class="nc" id="L1243">                String parentPath = path.substring(0, lastSlash);</span>
+<span class="nc" id="L1244">                DataNode parent = nodes.get(parentPath);</span>
+<span class="nc bnc" id="L1245" title="All 2 branches missed.">                if (parent == null) {</span>
+<span class="nc" id="L1246">                    throw new IOException(&quot;Invalid Datatree, unable to find &quot; +</span>
+                            &quot;parent &quot; + parentPath + &quot; of path &quot; + path);
+                }
+<span class="nc" id="L1249">                parent.addChild(path.substring(lastSlash + 1));</span>
+<span class="nc" id="L1250">                long eowner = node.stat.getEphemeralOwner();</span>
+<span class="nc" id="L1251">                EphemeralType ephemeralType = EphemeralType.get(eowner);</span>
+<span class="nc bnc" id="L1252" title="All 2 branches missed.">                if (ephemeralType == EphemeralType.CONTAINER) {</span>
+<span class="nc" id="L1253">                    containers.add(path);</span>
+<span class="nc bnc" id="L1254" title="All 2 branches missed.">                } else if (ephemeralType == EphemeralType.TTL) {</span>
+<span class="nc" id="L1255">                    ttls.add(path);</span>
+<span class="nc bnc" id="L1256" title="All 2 branches missed.">                } else if (eowner != 0) {</span>
+<span class="nc" id="L1257">                    HashSet&lt;String&gt; list = ephemerals.get(eowner);</span>
+<span class="nc bnc" id="L1258" title="All 2 branches missed.">                    if (list == null) {</span>
+<span class="nc" id="L1259">                        list = new HashSet&lt;String&gt;();</span>
+<span class="nc" id="L1260">                        ephemerals.put(eowner, list);</span>
+                    }
+<span class="nc" id="L1262">                    list.add(path);</span>
+                }
+            }
+<span class="nc" id="L1265">            path = ia.readString(&quot;path&quot;);</span>
+<span class="nc" id="L1266">        }</span>
+<span class="nc" id="L1267">        nodes.put(&quot;/&quot;, root);</span>
+        // we are done with deserializing the
+        // the datatree
+        // update the quotas - create path trie
+        // and also update the stat nodes
+<span class="nc" id="L1272">        setupQuota();</span>
+
+<span class="nc" id="L1274">        aclCache.purgeUnused();</span>
+<span class="nc" id="L1275">    }</span>
+
+    /**
+     * Summary of the watches on the datatree.
+     * @param pwriter the output to write to
+     */
+    public synchronized void dumpWatchesSummary(PrintWriter pwriter) {
+<span class="nc" id="L1282">        pwriter.print(dataWatches.toString());</span>
+<span class="nc" id="L1283">    }</span>
+
+    /**
+     * Write a text dump of all the watches on the datatree.
+     * Warning, this is expensive, use sparingly!
+     * @param pwriter the output to write to
+     */
+    public synchronized void dumpWatches(PrintWriter pwriter, boolean byPath) {
+<span class="nc" id="L1291">        dataWatches.dumpWatches(pwriter, byPath);</span>
+<span class="nc" id="L1292">    }</span>
+
+    /**
+     * Returns a watch report.
+     *
+     * @return watch report
+     * @see WatchesReport
+     */
+    public synchronized WatchesReport getWatches() {
+<span class="nc" id="L1301">        return dataWatches.getWatches();</span>
+    }
+
+    /**
+     * Returns a watch report by path.
+     *
+     * @return watch report
+     * @see WatchesPathReport
+     */
+    public synchronized WatchesPathReport getWatchesByPath() {
+<span class="nc" id="L1311">        return dataWatches.getWatchesByPath();</span>
+    }
+
+    /**
+     * Returns a watch summary.
+     *
+     * @return watch summary
+     * @see WatchesSummary
+     */
+    public synchronized WatchesSummary getWatchesSummary() {
+<span class="nc" id="L1321">        return dataWatches.getWatchesSummary();</span>
+    }
+
+    /**
+     * Write a text dump of all the ephemerals in the datatree.
+     * @param pwriter the output to write to
+     */
+    public void dumpEphemerals(PrintWriter pwriter) {
+<span class="nc" id="L1329">        pwriter.println(&quot;Sessions with Ephemerals (&quot;</span>
+<span class="nc" id="L1330">                + ephemerals.keySet().size() + &quot;):&quot;);</span>
+<span class="nc bnc" id="L1331" title="All 2 branches missed.">        for (Entry&lt;Long, HashSet&lt;String&gt;&gt; entry : ephemerals.entrySet()) {</span>
+<span class="nc" id="L1332">            pwriter.print(&quot;0x&quot; + Long.toHexString(entry.getKey()));</span>
+<span class="nc" id="L1333">            pwriter.println(&quot;:&quot;);</span>
+<span class="nc" id="L1334">            HashSet&lt;String&gt; tmp = entry.getValue();</span>
+<span class="nc bnc" id="L1335" title="All 2 branches missed.">            if (tmp != null) {</span>
+<span class="nc" id="L1336">                synchronized (tmp) {</span>
+<span class="nc bnc" id="L1337" title="All 2 branches missed.">                    for (String path : tmp) {</span>
+<span class="nc" id="L1338">                        pwriter.println(&quot;\t&quot; + path);</span>
+<span class="nc" id="L1339">                    }</span>
+<span class="nc" id="L1340">                }</span>
+            }
+<span class="nc" id="L1342">        }</span>
+<span class="nc" id="L1343">    }</span>
+
+    /**
+     * Returns a mapping of session ID to ephemeral znodes.
+     *
+     * @return map of session ID to sets of ephemeral znodes
+     */
+    public Map&lt;Long, Set&lt;String&gt;&gt; getEphemerals() {
+<span class="nc" id="L1351">        HashMap&lt;Long, Set&lt;String&gt;&gt; ephemeralsCopy = new HashMap&lt;Long, Set&lt;String&gt;&gt;();</span>
+<span class="nc bnc" id="L1352" title="All 2 branches missed.">        for (Entry&lt;Long, HashSet&lt;String&gt;&gt; e : ephemerals.entrySet()) {</span>
+<span class="nc" id="L1353">            synchronized (e.getValue()) {</span>
+<span class="nc" id="L1354">                ephemeralsCopy.put(e.getKey(), new HashSet&lt;String&gt;(e.getValue()));</span>
+<span class="nc" id="L1355">            }</span>
+<span class="nc" id="L1356">        }</span>
+<span class="nc" id="L1357">        return ephemeralsCopy;</span>
+    }
+
+    public void removeCnxn(Watcher watcher) {
+<span class="fc" id="L1361">        dataWatches.removeWatcher(watcher);</span>
+<span class="fc" id="L1362">        childWatches.removeWatcher(watcher);</span>
+<span class="fc" id="L1363">    }</span>
+
+    public void setWatches(long relativeZxid, List&lt;String&gt; dataWatches,
+            List&lt;String&gt; existWatches, List&lt;String&gt; childWatches,
+            Watcher watcher) {
+<span class="nc bnc" id="L1368" title="All 2 branches missed.">        for (String path : dataWatches) {</span>
+<span class="nc" id="L1369">            DataNode node = getNode(path);</span>
+<span class="nc" id="L1370">            WatchedEvent e = null;</span>
+<span class="nc bnc" id="L1371" title="All 2 branches missed.">            if (node == null) {</span>
+<span class="nc" id="L1372">                watcher.process(new WatchedEvent(EventType.NodeDeleted,</span>
+                            KeeperState.SyncConnected, path));
+<span class="nc bnc" id="L1374" title="All 2 branches missed.">            } else if (node.stat.getMzxid() &gt; relativeZxid) {</span>
+<span class="nc" id="L1375">                watcher.process(new WatchedEvent(EventType.NodeDataChanged,</span>
+                            KeeperState.SyncConnected, path));
+            } else {
+<span class="nc" id="L1378">                this.dataWatches.addWatch(path, watcher);</span>
+            }
+<span class="nc" id="L1380">        }</span>
+<span class="nc bnc" id="L1381" title="All 2 branches missed.">        for (String path : existWatches) {</span>
+<span class="nc" id="L1382">            DataNode node = getNode(path);</span>
+<span class="nc bnc" id="L1383" title="All 2 branches missed.">            if (node != null) {</span>
+<span class="nc" id="L1384">                watcher.process(new WatchedEvent(EventType.NodeCreated,</span>
+                            KeeperState.SyncConnected, path));
+            } else {
+<span class="nc" id="L1387">                this.dataWatches.addWatch(path, watcher);</span>
+            }
+<span class="nc" id="L1389">        }</span>
+<span class="nc bnc" id="L1390" title="All 2 branches missed.">        for (String path : childWatches) {</span>
+<span class="nc" id="L1391">            DataNode node = getNode(path);</span>
+<span class="nc bnc" id="L1392" title="All 2 branches missed.">            if (node == null) {</span>
+<span class="nc" id="L1393">                watcher.process(new WatchedEvent(EventType.NodeDeleted,</span>
+                            KeeperState.SyncConnected, path));
+<span class="nc bnc" id="L1395" title="All 2 branches missed.">            } else if (node.stat.getPzxid() &gt; relativeZxid) {</span>
+<span class="nc" id="L1396">                watcher.process(new WatchedEvent(EventType.NodeChildrenChanged,</span>
+                            KeeperState.SyncConnected, path));
+            } else {
+<span class="nc" id="L1399">                this.childWatches.addWatch(path, watcher);</span>
+            }
+<span class="nc" id="L1401">        }</span>
+<span class="nc" id="L1402">    }</span>
+
+     /**
+      * This method sets the Cversion and Pzxid for the specified node to the
+      * values passed as arguments. The values are modified only if newCversion
+      * is greater than the current Cversion. A NoNodeException is thrown if
+      * a znode for the specified path is not found.
+      *
+      * @param path
+      *     Full path to the znode whose Cversion needs to be modified.
+      *     A &quot;/&quot; at the end of the path is ignored.
+      * @param newCversion
+      *     Value to be assigned to Cversion
+      * @param zxid
+      *     Value to be assigned to Pzxid
+      * @throws KeeperException.NoNodeException
+      *     If znode not found.
+      **/
+    public void setCversionPzxid(String path, int newCversion, long zxid)
+        throws KeeperException.NoNodeException {
+<span class="nc bnc" id="L1422" title="All 2 branches missed.">        if (path.endsWith(&quot;/&quot;)) {</span>
+<span class="nc" id="L1423">           path = path.substring(0, path.length() - 1);</span>
+        }
+<span class="nc" id="L1425">        DataNode node = nodes.get(path);</span>
+<span class="nc bnc" id="L1426" title="All 2 branches missed.">        if (node == null) {</span>
+<span class="nc" id="L1427">            throw new KeeperException.NoNodeException(path);</span>
+        }
+<span class="nc" id="L1429">        synchronized (node) {</span>
+<span class="nc bnc" id="L1430" title="All 2 branches missed.">            if(newCversion == -1) {</span>
+<span class="nc" id="L1431">                newCversion = node.stat.getCversion() + 1;</span>
+            }
+<span class="nc bnc" id="L1433" title="All 2 branches missed.">            if (newCversion &gt; node.stat.getCversion()) {</span>
+<span class="nc" id="L1434">                node.stat.setCversion(newCversion);</span>
+<span class="nc" id="L1435">                node.stat.setPzxid(zxid);</span>
+            }
+<span class="nc" id="L1437">        }</span>
+<span class="nc" id="L1438">    }</span>
+
+    public boolean containsWatcher(String path, WatcherType type, Watcher watcher) {
+<span class="fc" id="L1441">        boolean containsWatcher = false;</span>
+<span class="pc bpc" id="L1442" title="2 of 4 branches missed.">        switch (type) {</span>
+        case Children:
+<span class="fc" id="L1444">            containsWatcher = this.childWatches.containsWatcher(path, watcher);</span>
+<span class="fc" id="L1445">            break;</span>
+        case Data:
+<span class="fc" id="L1447">            containsWatcher = this.dataWatches.containsWatcher(path, watcher);</span>
+<span class="fc" id="L1448">            break;</span>
+        case Any:
+<span class="nc bnc" id="L1450" title="All 2 branches missed.">            if (this.childWatches.containsWatcher(path, watcher)) {</span>
+<span class="nc" id="L1451">                containsWatcher = true;</span>
+            }
+<span class="nc bnc" id="L1453" title="All 2 branches missed.">            if (this.dataWatches.containsWatcher(path, watcher)) {</span>
+<span class="nc" id="L1454">                containsWatcher = true;</span>
+            }
+            break;
+        }
+<span class="fc" id="L1458">        return containsWatcher;</span>
+    }
+
+    public boolean removeWatch(String path, WatcherType type, Watcher watcher) {
+<span class="nc" id="L1462">        boolean removed = false;</span>
+<span class="nc bnc" id="L1463" title="All 4 branches missed.">        switch (type) {</span>
+        case Children:
+<span class="nc" id="L1465">            removed = this.childWatches.removeWatcher(path, watcher);</span>
+<span class="nc" id="L1466">            break;</span>
+        case Data:
+<span class="nc" id="L1468">            removed = this.dataWatches.removeWatcher(path, watcher);</span>
+<span class="nc" id="L1469">            break;</span>
+        case Any:
+<span class="nc bnc" id="L1471" title="All 2 branches missed.">            if (this.childWatches.removeWatcher(path, watcher)) {</span>
+<span class="nc" id="L1472">                removed = true;</span>
+            }
+<span class="nc bnc" id="L1474" title="All 2 branches missed.">            if (this.dataWatches.removeWatcher(path, watcher)) {</span>
+<span class="nc" id="L1475">                removed = true;</span>
+            }
+            break;
+        }
+<span class="nc" id="L1479">        return removed;</span>
+    }
+
+    // visible for testing
+    public ReferenceCountedACLCache getReferenceCountedAclCache() {
+<span class="nc" id="L1484">        return aclCache;</span>
+    }
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>

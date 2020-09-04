@@ -1,0 +1,3115 @@
+<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><html xmlns="http://www.w3.org/1999/xhtml" lang="it"><head><meta http-equiv="Content-Type" content="text/html;charset=UTF-8"/><link rel="stylesheet" href="../jacoco-resources/report.css" type="text/css"/><link rel="shortcut icon" href="../jacoco-resources/report.gif" type="image/gif"/><title>ZooKeeper.java</title><link rel="stylesheet" href="../jacoco-resources/prettify.css" type="text/css"/><script type="text/javascript" src="../jacoco-resources/prettify.js"></script></head><body onload="window['PR_TAB_WIDTH']=4;prettyPrint()"><div class="breadcrumb" id="breadcrumb"><span class="info"><a href="../jacoco-sessions.html" class="el_session">Sessions</a></span><a href="../index.html" class="el_report">parent$MyZookeeperRemoveWatchesTest.exec</a> &gt; <a href="index.source.html" class="el_package">org.apache.zookeeper</a> &gt; <span class="el_source">ZooKeeper.java</span></div><h1>ZooKeeper.java</h1><pre class="source lang-java linenums">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * &quot;License&quot;); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an &quot;AS IS&quot; BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.zookeeper;
+
+import org.apache.jute.Record;
+import org.apache.yetus.audience.InterfaceAudience;
+import org.apache.zookeeper.AsyncCallback.ACLCallback;
+import org.apache.zookeeper.AsyncCallback.Children2Callback;
+import org.apache.zookeeper.AsyncCallback.ChildrenCallback;
+import org.apache.zookeeper.AsyncCallback.Create2Callback;
+import org.apache.zookeeper.AsyncCallback.DataCallback;
+import org.apache.zookeeper.AsyncCallback.MultiCallback;
+import org.apache.zookeeper.AsyncCallback.StatCallback;
+import org.apache.zookeeper.AsyncCallback.StringCallback;
+import org.apache.zookeeper.AsyncCallback.VoidCallback;
+import org.apache.zookeeper.KeeperException.Code;
+import org.apache.zookeeper.KeeperException.NoWatcherException;
+import org.apache.zookeeper.OpResult.ErrorResult;
+import org.apache.zookeeper.Watcher.Event.EventType;
+import org.apache.zookeeper.Watcher.WatcherType;
+import org.apache.zookeeper.client.ConnectStringParser;
+import org.apache.zookeeper.client.HostProvider;
+import org.apache.zookeeper.client.StaticHostProvider;
+import org.apache.zookeeper.client.ZKClientConfig;
+import org.apache.zookeeper.client.ZooKeeperSaslClient;
+import org.apache.zookeeper.common.PathUtils;
+import org.apache.zookeeper.common.StringUtils;
+import org.apache.zookeeper.data.ACL;
+import org.apache.zookeeper.data.Stat;
+import org.apache.zookeeper.proto.CheckWatchesRequest;
+import org.apache.zookeeper.proto.Create2Response;
+import org.apache.zookeeper.proto.CreateRequest;
+import org.apache.zookeeper.proto.CreateResponse;
+import org.apache.zookeeper.proto.CreateTTLRequest;
+import org.apache.zookeeper.proto.DeleteRequest;
+import org.apache.zookeeper.proto.ExistsRequest;
+import org.apache.zookeeper.proto.GetACLRequest;
+import org.apache.zookeeper.proto.GetACLResponse;
+import org.apache.zookeeper.proto.GetChildren2Request;
+import org.apache.zookeeper.proto.GetChildren2Response;
+import org.apache.zookeeper.proto.GetChildrenRequest;
+import org.apache.zookeeper.proto.GetChildrenResponse;
+import org.apache.zookeeper.proto.GetDataRequest;
+import org.apache.zookeeper.proto.GetDataResponse;
+import org.apache.zookeeper.proto.ReconfigRequest;
+import org.apache.zookeeper.proto.RemoveWatchesRequest;
+import org.apache.zookeeper.proto.ReplyHeader;
+import org.apache.zookeeper.proto.RequestHeader;
+import org.apache.zookeeper.proto.SetACLRequest;
+import org.apache.zookeeper.proto.SetACLResponse;
+import org.apache.zookeeper.proto.SetDataRequest;
+import org.apache.zookeeper.proto.SetDataResponse;
+import org.apache.zookeeper.proto.SyncRequest;
+import org.apache.zookeeper.proto.SyncResponse;
+import org.apache.zookeeper.server.DataTree;
+import org.apache.zookeeper.server.EphemeralType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * This is the main class of ZooKeeper client library. To use a ZooKeeper
+ * service, an application must first instantiate an object of ZooKeeper class.
+ * All the iterations will be done by calling the methods of ZooKeeper class.
+ * The methods of this class are thread-safe unless otherwise noted.
+ * &lt;p&gt;
+ * Once a connection to a server is established, a session ID is assigned to the
+ * client. The client will send heart beats to the server periodically to keep
+ * the session valid.
+ * &lt;p&gt;
+ * The application can call ZooKeeper APIs through a client as long as the
+ * session ID of the client remains valid.
+ * &lt;p&gt;
+ * If for some reason, the client fails to send heart beats to the server for a
+ * prolonged period of time (exceeding the sessionTimeout value, for instance),
+ * the server will expire the session, and the session ID will become invalid.
+ * The client object will no longer be usable. To make ZooKeeper API calls, the
+ * application must create a new client object.
+ * &lt;p&gt;
+ * If the ZooKeeper server the client currently connects to fails or otherwise
+ * does not respond, the client will automatically try to connect to another
+ * server before its session ID expires. If successful, the application can
+ * continue to use the client.
+ * &lt;p&gt;
+ * The ZooKeeper API methods are either synchronous or asynchronous. Synchronous
+ * methods blocks until the server has responded. Asynchronous methods just queue
+ * the request for sending and return immediately. They take a callback object that
+ * will be executed either on successful execution of the request or on error with
+ * an appropriate return code (rc) indicating the error.
+ * &lt;p&gt;
+ * Some successful ZooKeeper API calls can leave watches on the &quot;data nodes&quot; in
+ * the ZooKeeper server. Other successful ZooKeeper API calls can trigger those
+ * watches. Once a watch is triggered, an event will be delivered to the client
+ * which left the watch at the first place. Each watch can be triggered only
+ * once. Thus, up to one event will be delivered to a client for every watch it
+ * leaves.
+ * &lt;p&gt;
+ * A client needs an object of a class implementing Watcher interface for
+ * processing the events delivered to the client.
+ *
+ * When a client drops the current connection and re-connects to a server, all the
+ * existing watches are considered as being triggered but the undelivered events
+ * are lost. To emulate this, the client will generate a special event to tell
+ * the event handler a connection has been dropped. This special event has
+ * EventType None and KeeperState Disconnected.
+ *
+ */
+/*
+ * We suppress the &quot;try&quot; warning here because the close() method's signature
+ * allows it to throw InterruptedException which is strongly advised against
+ * by AutoCloseable (see: http://docs.oracle.com/javase/7/docs/api/java/lang/AutoCloseable.html#close()).
+ * close() will never throw an InterruptedException but the exception remains in the
+ * signature for backwards compatibility purposes.
+*/
+@SuppressWarnings(&quot;try&quot;)
+@InterfaceAudience.Public
+public class ZooKeeper implements AutoCloseable {
+
+    /**
+     * @deprecated Use {@link ZKClientConfig#ZOOKEEPER_CLIENT_CNXN_SOCKET}
+     *             instead.
+     */
+    @Deprecated
+    public static final String ZOOKEEPER_CLIENT_CNXN_SOCKET = &quot;zookeeper.clientCnxnSocket&quot;;
+    // Setting this to &quot;true&quot; will enable encrypted client-server communication.
+
+    /**
+     * @deprecated Use {@link ZKClientConfig#SECURE_CLIENT}
+     *             instead.
+     */
+    @Deprecated
+    public static final String SECURE_CLIENT = &quot;zookeeper.client.secure&quot;;
+
+    protected final ClientCnxn cnxn;
+    private static final Logger LOG;
+    static {
+        //Keep these two lines together to keep the initialization order explicit
+<span class="fc" id="L165">        LOG = LoggerFactory.getLogger(ZooKeeper.class);</span>
+<span class="fc" id="L166">        Environment.logEnv(&quot;Client environment:&quot;, LOG);</span>
+<span class="fc" id="L167">    }</span>
+
+    protected final HostProvider hostProvider;
+
+    /**
+     * This function allows a client to update the connection string by providing 
+     * a new comma separated list of host:port pairs, each corresponding to a 
+     * ZooKeeper server. 
+     * &lt;p&gt;
+     * The function invokes a &lt;a href=&quot;https://issues.apache.org/jira/browse/ZOOKEEPER-1355&quot;&gt;
+     * probabilistic load-balancing algorithm&lt;/a&gt; which may cause the client to disconnect from 
+     * its current host with the goal to achieve expected uniform number of connections per server 
+     * in the new list. In case the current host to which the client is connected is not in the new
+     * list this call will always cause the connection to be dropped. Otherwise, the decision
+     * is based on whether the number of servers has increased or decreased and by how much.
+     * For example, if the previous connection string contained 3 hosts and now the list contains
+     * these 3 hosts and 2 more hosts, 40% of clients connected to each of the 3 hosts will
+     * move to one of the new hosts in order to balance the load. The algorithm will disconnect 
+     * from the current host with probability 0.4 and in this case cause the client to connect 
+     * to one of the 2 new hosts, chosen at random.
+     * &lt;p&gt;
+     * If the connection is dropped, the client moves to a special mode &quot;reconfigMode&quot; where he chooses
+     * a new server to connect to using the probabilistic algorithm. After finding a server,
+     * or exhausting all servers in the new list after trying all of them and failing to connect,
+     * the client moves back to the normal mode of operation where it will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed (or the session is expired by the server).
+
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot;
+     *            If the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).     
+     *
+     * @throws IOException in cases of network failure     
+     */
+    public void updateServerList(String connectString) throws IOException {
+<span class="nc" id="L211">        ConnectStringParser connectStringParser = new ConnectStringParser(connectString);</span>
+<span class="nc" id="L212">        Collection&lt;InetSocketAddress&gt; serverAddresses = connectStringParser.getServerAddresses();</span>
+
+<span class="nc" id="L214">        ClientCnxnSocket clientCnxnSocket = cnxn.sendThread.getClientCnxnSocket();</span>
+<span class="nc" id="L215">        InetSocketAddress currentHost = (InetSocketAddress) clientCnxnSocket.getRemoteSocketAddress();</span>
+
+<span class="nc" id="L217">        boolean reconfigMode = hostProvider.updateServerList(serverAddresses, currentHost);</span>
+
+        // cause disconnection - this will cause next to be called
+        // which will in turn call nextReconfigMode
+<span class="nc bnc" id="L221" title="All 2 branches missed.">        if (reconfigMode) clientCnxnSocket.testableCloseSocket();</span>
+<span class="nc" id="L222">    }</span>
+
+    public ZooKeeperSaslClient getSaslClient() {
+<span class="nc" id="L225">        return cnxn.zooKeeperSaslClient;</span>
+    }
+
+    protected final ZKWatchManager watchManager;
+
+    private final ZKClientConfig clientConfig;
+
+    public ZKClientConfig getClientConfig() {
+<span class="fc" id="L233">        return clientConfig;</span>
+    }
+
+    protected List&lt;String&gt; getDataWatches() {
+<span class="fc" id="L237">        synchronized(watchManager.dataWatches) {</span>
+<span class="fc" id="L238">            List&lt;String&gt; rc = new ArrayList&lt;String&gt;(watchManager.dataWatches.keySet());</span>
+<span class="fc" id="L239">            return rc;</span>
+        }
+    }
+    protected List&lt;String&gt; getExistWatches() {
+<span class="fc" id="L243">        synchronized(watchManager.existWatches) {</span>
+<span class="fc" id="L244">            List&lt;String&gt; rc =  new ArrayList&lt;String&gt;(watchManager.existWatches.keySet());</span>
+<span class="fc" id="L245">            return rc;</span>
+        }
+    }
+    protected List&lt;String&gt; getChildWatches() {
+<span class="fc" id="L249">        synchronized(watchManager.childWatches) {</span>
+<span class="fc" id="L250">            List&lt;String&gt; rc = new ArrayList&lt;String&gt;(watchManager.childWatches.keySet());</span>
+<span class="fc" id="L251">            return rc;</span>
+        }
+    }
+
+    /**
+     * Manage watchers &amp; handle events generated by the ClientCnxn object.
+     *
+     * We are implementing this as a nested class of ZooKeeper so that
+     * the public methods will not be exposed as part of the ZooKeeper client
+     * API.
+     */
+    static class ZKWatchManager implements ClientWatchManager {
+<span class="fc" id="L263">        private final Map&lt;String, Set&lt;Watcher&gt;&gt; dataWatches =</span>
+            new HashMap&lt;String, Set&lt;Watcher&gt;&gt;();
+<span class="fc" id="L265">        private final Map&lt;String, Set&lt;Watcher&gt;&gt; existWatches =</span>
+            new HashMap&lt;String, Set&lt;Watcher&gt;&gt;();
+<span class="fc" id="L267">        private final Map&lt;String, Set&lt;Watcher&gt;&gt; childWatches =</span>
+            new HashMap&lt;String, Set&lt;Watcher&gt;&gt;();
+        private boolean disableAutoWatchReset;
+
+<span class="fc" id="L271">        ZKWatchManager(boolean disableAutoWatchReset) {</span>
+<span class="fc" id="L272">            this.disableAutoWatchReset = disableAutoWatchReset;</span>
+<span class="fc" id="L273">        }</span>
+
+        protected volatile Watcher defaultWatcher;
+
+        final private void addTo(Set&lt;Watcher&gt; from, Set&lt;Watcher&gt; to) {
+<span class="nc bnc" id="L278" title="All 2 branches missed.">            if (from != null) {</span>
+<span class="nc" id="L279">                to.addAll(from);</span>
+            }
+<span class="nc" id="L281">        }</span>
+
+        public Map&lt;EventType, Set&lt;Watcher&gt;&gt; removeWatcher(String clientPath,
+                Watcher watcher, WatcherType watcherType, boolean local, int rc)
+                throws KeeperException {
+            // Validate the provided znode path contains the given watcher of
+            // watcherType
+<span class="nc" id="L288">            containsWatcher(clientPath, watcher, watcherType);</span>
+
+<span class="nc" id="L290">            Map&lt;EventType, Set&lt;Watcher&gt;&gt; removedWatchers = new HashMap&lt;EventType, Set&lt;Watcher&gt;&gt;();</span>
+<span class="nc" id="L291">            HashSet&lt;Watcher&gt; childWatchersToRem = new HashSet&lt;Watcher&gt;();</span>
+<span class="nc" id="L292">            removedWatchers</span>
+<span class="nc" id="L293">                    .put(EventType.ChildWatchRemoved, childWatchersToRem);</span>
+<span class="nc" id="L294">            HashSet&lt;Watcher&gt; dataWatchersToRem = new HashSet&lt;Watcher&gt;();</span>
+<span class="nc" id="L295">            removedWatchers.put(EventType.DataWatchRemoved, dataWatchersToRem);</span>
+<span class="nc" id="L296">            boolean removedWatcher = false;</span>
+<span class="nc bnc" id="L297" title="All 4 branches missed.">            switch (watcherType) {</span>
+            case Children: {
+<span class="nc" id="L299">                synchronized (childWatches) {</span>
+<span class="nc" id="L300">                    removedWatcher = removeWatches(childWatches, watcher,</span>
+                            clientPath, local, rc, childWatchersToRem);
+<span class="nc" id="L302">                }</span>
+<span class="nc" id="L303">                break;</span>
+            }
+            case Data: {
+<span class="nc" id="L306">                synchronized (dataWatches) {</span>
+<span class="nc" id="L307">                    removedWatcher = removeWatches(dataWatches, watcher,</span>
+                            clientPath, local, rc, dataWatchersToRem);
+<span class="nc" id="L309">                }</span>
+
+<span class="nc" id="L311">                synchronized (existWatches) {</span>
+<span class="nc" id="L312">                    boolean removedDataWatcher = removeWatches(existWatches,</span>
+                            watcher, clientPath, local, rc, dataWatchersToRem);
+<span class="nc" id="L314">                    removedWatcher |= removedDataWatcher;</span>
+<span class="nc" id="L315">                }</span>
+<span class="nc" id="L316">                break;</span>
+            }
+            case Any: {
+<span class="nc" id="L319">                synchronized (childWatches) {</span>
+<span class="nc" id="L320">                    removedWatcher = removeWatches(childWatches, watcher,</span>
+                            clientPath, local, rc, childWatchersToRem);
+<span class="nc" id="L322">                }</span>
+
+<span class="nc" id="L324">                synchronized (dataWatches) {</span>
+<span class="nc" id="L325">                    boolean removedDataWatcher = removeWatches(dataWatches,</span>
+                            watcher, clientPath, local, rc, dataWatchersToRem);
+<span class="nc" id="L327">                    removedWatcher |= removedDataWatcher;</span>
+<span class="nc" id="L328">                }</span>
+<span class="nc" id="L329">                synchronized (existWatches) {</span>
+<span class="nc" id="L330">                    boolean removedDataWatcher = removeWatches(existWatches,</span>
+                            watcher, clientPath, local, rc, dataWatchersToRem);
+<span class="nc" id="L332">                    removedWatcher |= removedDataWatcher;</span>
+<span class="nc" id="L333">                }</span>
+            }
+            }
+            // Watcher function doesn't exists for the specified params
+<span class="nc bnc" id="L337" title="All 2 branches missed.">            if (!removedWatcher) {</span>
+<span class="nc" id="L338">                throw new KeeperException.NoWatcherException(clientPath);</span>
+            }
+<span class="nc" id="L340">            return removedWatchers;</span>
+        }
+
+        private boolean contains(String path, Watcher watcherObj,
+                Map&lt;String, Set&lt;Watcher&gt;&gt; pathVsWatchers) {
+<span class="fc" id="L345">            boolean watcherExists = true;</span>
+<span class="pc bpc" id="L346" title="2 of 4 branches missed.">            if (pathVsWatchers == null || pathVsWatchers.size() == 0) {</span>
+<span class="fc" id="L347">                watcherExists = false;</span>
+            } else {
+<span class="nc" id="L349">                Set&lt;Watcher&gt; watchers = pathVsWatchers.get(path);</span>
+<span class="nc bnc" id="L350" title="All 2 branches missed.">                if (watchers == null) {</span>
+<span class="nc" id="L351">                    watcherExists = false;</span>
+<span class="nc bnc" id="L352" title="All 2 branches missed.">                } else if (watcherObj == null) {</span>
+<span class="nc bnc" id="L353" title="All 2 branches missed.">                    watcherExists = watchers.size() &gt; 0;</span>
+                } else {
+<span class="nc" id="L355">                    watcherExists = watchers.contains(watcherObj);</span>
+                }
+            }
+<span class="fc" id="L358">            return watcherExists;</span>
+        }
+
+        /**
+         * Validate the provided znode path contains the given watcher and
+         * watcherType
+         * 
+         * @param path
+         *            - client path
+         * @param watcher
+         *            - watcher object reference
+         * @param watcherType
+         *            - type of the watcher
+         * @throws NoWatcherException
+        */
+        void containsWatcher(String path, Watcher watcher,
+                WatcherType watcherType) throws NoWatcherException{
+<span class="fc" id="L375">            boolean containsWatcher = false;</span>
+<span class="pc bpc" id="L376" title="2 of 4 branches missed.">            switch (watcherType) {</span>
+            case Children: {
+<span class="fc" id="L378">                synchronized (childWatches) {</span>
+<span class="fc" id="L379">                    containsWatcher = contains(path, watcher, childWatches);</span>
+<span class="fc" id="L380">                }</span>
+<span class="fc" id="L381">                break;</span>
+            }
+            case Data: {
+<span class="fc" id="L384">                synchronized (dataWatches) {</span>
+<span class="fc" id="L385">                    containsWatcher = contains(path, watcher, dataWatches);</span>
+<span class="fc" id="L386">                }</span>
+
+<span class="fc" id="L388">                synchronized (existWatches) {</span>
+<span class="fc" id="L389">                    boolean contains_temp = contains(path, watcher,</span>
+                            existWatches);
+<span class="fc" id="L391">                    containsWatcher |= contains_temp;</span>
+<span class="fc" id="L392">                }</span>
+<span class="fc" id="L393">                break;</span>
+            }
+            case Any: {
+<span class="nc" id="L396">                synchronized (childWatches) {</span>
+<span class="nc" id="L397">                    containsWatcher = contains(path, watcher, childWatches);</span>
+<span class="nc" id="L398">                }</span>
+
+<span class="nc" id="L400">                synchronized (dataWatches) {</span>
+<span class="nc" id="L401">                    boolean contains_temp = contains(path, watcher, dataWatches);</span>
+<span class="nc" id="L402">                    containsWatcher |= contains_temp;</span>
+<span class="nc" id="L403">                }</span>
+<span class="nc" id="L404">                synchronized (existWatches) {</span>
+<span class="nc" id="L405">                    boolean contains_temp = contains(path, watcher,</span>
+                            existWatches);
+<span class="nc" id="L407">                    containsWatcher |= contains_temp;</span>
+<span class="nc" id="L408">                }</span>
+            }
+            }
+            // Watcher function doesn't exists for the specified params
+<span class="pc bpc" id="L412" title="1 of 2 branches missed.">            if (!containsWatcher) {</span>
+<span class="fc" id="L413">                throw new KeeperException.NoWatcherException(path);</span>
+            }
+<span class="nc" id="L415">        }</span>
+
+        protected boolean removeWatches(Map&lt;String, Set&lt;Watcher&gt;&gt; pathVsWatcher,
+                Watcher watcher, String path, boolean local, int rc,
+                Set&lt;Watcher&gt; removedWatchers) throws KeeperException {
+<span class="nc bnc" id="L420" title="All 4 branches missed.">            if (!local &amp;&amp; rc != Code.OK.intValue()) {</span>
+<span class="nc" id="L421">                throw KeeperException</span>
+<span class="nc" id="L422">                        .create(KeeperException.Code.get(rc), path);</span>
+            }
+<span class="nc" id="L424">            boolean success = false;</span>
+            // When local flag is true, remove watchers for the given path
+            // irrespective of rc. Otherwise shouldn't remove watchers locally
+            // when sees failure from server.
+<span class="nc bnc" id="L428" title="All 6 branches missed.">            if (rc == Code.OK.intValue() || (local &amp;&amp; rc != Code.OK.intValue())) {</span>
+                // Remove all the watchers for the given path
+<span class="nc bnc" id="L430" title="All 2 branches missed.">                if (watcher == null) {</span>
+<span class="nc" id="L431">                    Set&lt;Watcher&gt; pathWatchers = pathVsWatcher.remove(path);</span>
+<span class="nc bnc" id="L432" title="All 2 branches missed.">                    if (pathWatchers != null) {</span>
+                        // found path watchers
+<span class="nc" id="L434">                        removedWatchers.addAll(pathWatchers);</span>
+<span class="nc" id="L435">                        success = true;</span>
+                    }
+<span class="nc" id="L437">                } else {</span>
+<span class="nc" id="L438">                    Set&lt;Watcher&gt; watchers = pathVsWatcher.get(path);</span>
+<span class="nc bnc" id="L439" title="All 2 branches missed.">                    if (watchers != null) {</span>
+<span class="nc bnc" id="L440" title="All 2 branches missed.">                        if (watchers.remove(watcher)) {</span>
+                            // found path watcher
+<span class="nc" id="L442">                            removedWatchers.add(watcher);</span>
+                            // cleanup &lt;path vs watchlist&gt;
+<span class="nc bnc" id="L444" title="All 2 branches missed.">                            if (watchers.size() &lt;= 0) {</span>
+<span class="nc" id="L445">                                pathVsWatcher.remove(path);</span>
+                            }
+<span class="nc" id="L447">                            success = true;</span>
+                        }
+                    }
+                }
+            }
+<span class="nc" id="L452">            return success;</span>
+        }
+        
+        /* (non-Javadoc)
+         * @see org.apache.zookeeper.ClientWatchManager#materialize(Event.KeeperState, 
+         *                                                        Event.EventType, java.lang.String)
+         */
+        @Override
+        public Set&lt;Watcher&gt; materialize(Watcher.Event.KeeperState state,
+                                        Watcher.Event.EventType type,
+                                        String clientPath)
+        {
+<span class="fc" id="L464">            Set&lt;Watcher&gt; result = new HashSet&lt;Watcher&gt;();</span>
+
+<span class="pc bpc" id="L466" title="4 of 5 branches missed.">            switch (type) {</span>
+            case None:
+<span class="fc" id="L468">                result.add(defaultWatcher);</span>
+<span class="pc bpc" id="L469" title="3 of 4 branches missed.">                boolean clear = disableAutoWatchReset &amp;&amp; state != Watcher.Event.KeeperState.SyncConnected;</span>
+<span class="fc" id="L470">                synchronized(dataWatches) {</span>
+<span class="pc bpc" id="L471" title="1 of 2 branches missed.">                    for(Set&lt;Watcher&gt; ws: dataWatches.values()) {</span>
+<span class="nc" id="L472">                        result.addAll(ws);</span>
+<span class="nc" id="L473">                    }</span>
+<span class="pc bpc" id="L474" title="1 of 2 branches missed.">                    if (clear) {</span>
+<span class="nc" id="L475">                        dataWatches.clear();</span>
+                    }
+<span class="fc" id="L477">                }</span>
+
+<span class="fc" id="L479">                synchronized(existWatches) {</span>
+<span class="pc bpc" id="L480" title="1 of 2 branches missed.">                    for(Set&lt;Watcher&gt; ws: existWatches.values()) {</span>
+<span class="nc" id="L481">                        result.addAll(ws);</span>
+<span class="nc" id="L482">                    }</span>
+<span class="pc bpc" id="L483" title="1 of 2 branches missed.">                    if (clear) {</span>
+<span class="nc" id="L484">                        existWatches.clear();</span>
+                    }
+<span class="fc" id="L486">                }</span>
+
+<span class="fc" id="L488">                synchronized(childWatches) {</span>
+<span class="pc bpc" id="L489" title="1 of 2 branches missed.">                    for(Set&lt;Watcher&gt; ws: childWatches.values()) {</span>
+<span class="nc" id="L490">                        result.addAll(ws);</span>
+<span class="nc" id="L491">                    }</span>
+<span class="pc bpc" id="L492" title="1 of 2 branches missed.">                    if (clear) {</span>
+<span class="nc" id="L493">                        childWatches.clear();</span>
+                    }
+<span class="fc" id="L495">                }</span>
+
+<span class="fc" id="L497">                return result;</span>
+            case NodeDataChanged:
+            case NodeCreated:
+<span class="nc" id="L500">                synchronized (dataWatches) {</span>
+<span class="nc" id="L501">                    addTo(dataWatches.remove(clientPath), result);</span>
+<span class="nc" id="L502">                }</span>
+<span class="nc" id="L503">                synchronized (existWatches) {</span>
+<span class="nc" id="L504">                    addTo(existWatches.remove(clientPath), result);</span>
+<span class="nc" id="L505">                }</span>
+<span class="nc" id="L506">                break;</span>
+            case NodeChildrenChanged:
+<span class="nc" id="L508">                synchronized (childWatches) {</span>
+<span class="nc" id="L509">                    addTo(childWatches.remove(clientPath), result);</span>
+<span class="nc" id="L510">                }</span>
+<span class="nc" id="L511">                break;</span>
+            case NodeDeleted:
+<span class="nc" id="L513">                synchronized (dataWatches) {</span>
+<span class="nc" id="L514">                    addTo(dataWatches.remove(clientPath), result);</span>
+<span class="nc" id="L515">                }</span>
+                // XXX This shouldn't be needed, but just in case
+<span class="nc" id="L517">                synchronized (existWatches) {</span>
+<span class="nc" id="L518">                    Set&lt;Watcher&gt; list = existWatches.remove(clientPath);</span>
+<span class="nc bnc" id="L519" title="All 2 branches missed.">                    if (list != null) {</span>
+<span class="nc" id="L520">                        addTo(list, result);</span>
+<span class="nc" id="L521">                        LOG.warn(&quot;We are triggering an exists watch for delete! Shouldn't happen!&quot;);</span>
+                    }
+<span class="nc" id="L523">                }</span>
+<span class="nc" id="L524">                synchronized (childWatches) {</span>
+<span class="nc" id="L525">                    addTo(childWatches.remove(clientPath), result);</span>
+<span class="nc" id="L526">                }</span>
+<span class="nc" id="L527">                break;</span>
+            default:
+<span class="nc" id="L529">                String msg = &quot;Unhandled watch event type &quot; + type</span>
+                    + &quot; with state &quot; + state + &quot; on path &quot; + clientPath;
+<span class="nc" id="L531">                LOG.error(msg);</span>
+<span class="nc" id="L532">                throw new RuntimeException(msg);</span>
+            }
+
+<span class="nc" id="L535">            return result;</span>
+        }
+    }
+
+    /**
+     * Register a watcher for a particular path.
+     */
+    public abstract class WatchRegistration {
+        private Watcher watcher;
+        private String clientPath;
+        public WatchRegistration(Watcher watcher, String clientPath)
+<span class="nc" id="L546">        {</span>
+<span class="nc" id="L547">            this.watcher = watcher;</span>
+<span class="nc" id="L548">            this.clientPath = clientPath;</span>
+<span class="nc" id="L549">        }</span>
+
+        abstract protected Map&lt;String, Set&lt;Watcher&gt;&gt; getWatches(int rc);
+
+        /**
+         * Register the watcher with the set of watches on path.
+         * @param rc the result code of the operation that attempted to
+         * add the watch on the path.
+         */
+        public void register(int rc) {
+<span class="nc bnc" id="L559" title="All 2 branches missed.">            if (shouldAddWatch(rc)) {</span>
+<span class="nc" id="L560">                Map&lt;String, Set&lt;Watcher&gt;&gt; watches = getWatches(rc);</span>
+<span class="nc" id="L561">                synchronized(watches) {</span>
+<span class="nc" id="L562">                    Set&lt;Watcher&gt; watchers = watches.get(clientPath);</span>
+<span class="nc bnc" id="L563" title="All 2 branches missed.">                    if (watchers == null) {</span>
+<span class="nc" id="L564">                        watchers = new HashSet&lt;Watcher&gt;();</span>
+<span class="nc" id="L565">                        watches.put(clientPath, watchers);</span>
+                    }
+<span class="nc" id="L567">                    watchers.add(watcher);</span>
+<span class="nc" id="L568">                }</span>
+            }
+<span class="nc" id="L570">        }</span>
+        /**
+         * Determine whether the watch should be added based on return code.
+         * @param rc the result code of the operation that attempted to add the
+         * watch on the node
+         * @return true if the watch should be added, otw false
+         */
+        protected boolean shouldAddWatch(int rc) {
+<span class="nc bnc" id="L578" title="All 2 branches missed.">            return rc == 0;</span>
+        }
+    }
+
+    /** Handle the special case of exists watches - they add a watcher
+     * even in the case where NONODE result code is returned.
+     */
+    class ExistsWatchRegistration extends WatchRegistration {
+<span class="nc" id="L586">        public ExistsWatchRegistration(Watcher watcher, String clientPath) {</span>
+<span class="nc" id="L587">            super(watcher, clientPath);</span>
+<span class="nc" id="L588">        }</span>
+
+        @Override
+        protected Map&lt;String, Set&lt;Watcher&gt;&gt; getWatches(int rc) {
+<span class="nc bnc" id="L592" title="All 2 branches missed.">            return rc == 0 ?  watchManager.dataWatches : watchManager.existWatches;</span>
+        }
+
+        @Override
+        protected boolean shouldAddWatch(int rc) {
+<span class="nc bnc" id="L597" title="All 4 branches missed.">            return rc == 0 || rc == KeeperException.Code.NONODE.intValue();</span>
+        }
+    }
+
+    class DataWatchRegistration extends WatchRegistration {
+<span class="nc" id="L602">        public DataWatchRegistration(Watcher watcher, String clientPath) {</span>
+<span class="nc" id="L603">            super(watcher, clientPath);</span>
+<span class="nc" id="L604">        }</span>
+
+        @Override
+        protected Map&lt;String, Set&lt;Watcher&gt;&gt; getWatches(int rc) {
+<span class="nc" id="L608">            return watchManager.dataWatches;</span>
+        }
+    }
+
+    class ChildWatchRegistration extends WatchRegistration {
+<span class="nc" id="L613">        public ChildWatchRegistration(Watcher watcher, String clientPath) {</span>
+<span class="nc" id="L614">            super(watcher, clientPath);</span>
+<span class="nc" id="L615">        }</span>
+
+        @Override
+        protected Map&lt;String, Set&lt;Watcher&gt;&gt; getWatches(int rc) {
+<span class="nc" id="L619">            return watchManager.childWatches;</span>
+        }
+    }
+
+<span class="fc" id="L623">    @InterfaceAudience.Public</span>
+    public enum States {
+<span class="fc" id="L625">        CONNECTING, ASSOCIATING, CONNECTED, CONNECTEDREADONLY,</span>
+<span class="fc" id="L626">        CLOSED, AUTH_FAILED, NOT_CONNECTED;</span>
+
+        public boolean isAlive() {
+<span class="pc bpc" id="L629" title="1 of 4 branches missed.">            return this != CLOSED &amp;&amp; this != AUTH_FAILED;</span>
+        }
+
+        /**
+         * Returns whether we are connected to a server (which
+         * could possibly be read-only, if this client is allowed
+         * to go to read-only mode)
+         * */
+        public boolean isConnected() {
+<span class="pc bpc" id="L638" title="1 of 4 branches missed.">            return this == CONNECTED || this == CONNECTEDREADONLY;</span>
+        }
+    }
+
+    /**
+     * To create a ZooKeeper client object, the application needs to pass a
+     * connection string containing a comma separated list of host:port pairs,
+     * each corresponding to a ZooKeeper server.
+     * &lt;p&gt;
+     * Session establishment is asynchronous. This constructor will initiate
+     * connection to the server and return immediately - potentially (usually)
+     * before the session is fully established. The watcher argument specifies
+     * the watcher that will be notified of any changes in state. This
+     * notification can come at any point before or after the constructor call
+     * has returned.
+     * &lt;p&gt;
+     * The instantiated ZooKeeper client object will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed.
+     * &lt;p&gt;
+     * Added in 3.2.0: An optional &quot;chroot&quot; suffix may also be appended to the
+     * connection string. This will run the client commands while interpreting
+     * all paths relative to this root (similar to the unix chroot command).
+     *
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot; If
+     *            the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).
+     * @param sessionTimeout
+     *            session timeout in milliseconds
+     * @param watcher
+     *            a watcher object which will be notified of state changes, may
+     *            also be notified for node events
+     *
+     * @throws IOException
+     *             in cases of network failure
+     * @throws IllegalArgumentException
+     *             if an invalid chroot path is specified
+     */
+    public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher)
+        throws IOException
+    {
+<span class="fc" id="L688">        this(connectString, sessionTimeout, watcher, false);</span>
+<span class="fc" id="L689">    }</span>
+
+    /**
+     * To create a ZooKeeper client object, the application needs to pass a
+     * connection string containing a comma separated list of host:port pairs,
+     * each corresponding to a ZooKeeper server.
+     * &lt;p&gt;
+     * Session establishment is asynchronous. This constructor will initiate
+     * connection to the server and return immediately - potentially (usually)
+     * before the session is fully established. The watcher argument specifies
+     * the watcher that will be notified of any changes in state. This
+     * notification can come at any point before or after the constructor call
+     * has returned.
+     * &lt;p&gt;
+     * The instantiated ZooKeeper client object will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed.
+     * &lt;p&gt;
+     * Added in 3.2.0: An optional &quot;chroot&quot; suffix may also be appended to the
+     * connection string. This will run the client commands while interpreting
+     * all paths relative to this root (similar to the unix chroot command).
+     *
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot; If
+     *            the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).
+     * @param sessionTimeout
+     *            session timeout in milliseconds
+     * @param watcher
+     *            a watcher object which will be notified of state changes, may
+     *            also be notified for node events
+     * @param conf
+     *            (added in 3.5.2) passing this conf object gives each client the flexibility of
+     *            configuring properties differently compared to other instances
+     * @throws IOException
+     *             in cases of network failure
+     * @throws IllegalArgumentException
+     *             if an invalid chroot path is specified
+     */
+    public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+            ZKClientConfig conf) throws IOException {
+<span class="nc" id="L738">        this(connectString, sessionTimeout, watcher, false, conf);</span>
+<span class="nc" id="L739">    }</span>
+
+    /**
+     * To create a ZooKeeper client object, the application needs to pass a
+     * connection string containing a comma separated list of host:port pairs,
+     * each corresponding to a ZooKeeper server.
+     * &lt;p&gt;
+     * Session establishment is asynchronous. This constructor will initiate
+     * connection to the server and return immediately - potentially (usually)
+     * before the session is fully established. The watcher argument specifies
+     * the watcher that will be notified of any changes in state. This
+     * notification can come at any point before or after the constructor call
+     * has returned.
+     * &lt;p&gt;
+     * The instantiated ZooKeeper client object will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed.
+     * &lt;p&gt;
+     * Added in 3.2.0: An optional &quot;chroot&quot; suffix may also be appended to the
+     * connection string. This will run the client commands while interpreting
+     * all paths relative to this root (similar to the unix chroot command).
+     * &lt;p&gt;
+     * For backward compatibility, there is another version
+     * {@link #ZooKeeper(String, int, Watcher, boolean)} which uses
+     * default {@link StaticHostProvider}
+     *
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot; If
+     *            the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).
+     * @param sessionTimeout
+     *            session timeout in milliseconds
+     * @param watcher
+     *            a watcher object which will be notified of state changes, may
+     *            also be notified for node events
+     * @param canBeReadOnly
+     *            (added in 3.4) whether the created client is allowed to go to
+     *            read-only mode in case of partitioning. Read-only mode
+     *            basically means that if the client can't find any majority
+     *            servers but there's partitioned server it could reach, it
+     *            connects to one in read-only mode, i.e. read requests are
+     *            allowed while write requests are not. It continues seeking for
+     *            majority in the background.
+     * @param aHostProvider
+     *            use this as HostProvider to enable custom behaviour.
+     *
+     * @throws IOException
+     *             in cases of network failure
+     * @throws IllegalArgumentException
+     *             if an invalid chroot path is specified
+     */
+    public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+            boolean canBeReadOnly, HostProvider aHostProvider)
+            throws IOException {
+<span class="fc" id="L801">        this(connectString, sessionTimeout, watcher, canBeReadOnly,</span>
+                aHostProvider, null);
+<span class="fc" id="L803">    }</span>
+
+
+    /**
+     * To create a ZooKeeper client object, the application needs to pass a
+     * connection string containing a comma separated list of host:port pairs,
+     * each corresponding to a ZooKeeper server.
+     * &lt;p&gt;
+     * Session establishment is asynchronous. This constructor will initiate
+     * connection to the server and return immediately - potentially (usually)
+     * before the session is fully established. The watcher argument specifies
+     * the watcher that will be notified of any changes in state. This
+     * notification can come at any point before or after the constructor call
+     * has returned.
+     * &lt;p&gt;
+     * The instantiated ZooKeeper client object will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed.
+     * &lt;p&gt;
+     * Added in 3.2.0: An optional &quot;chroot&quot; suffix may also be appended to the
+     * connection string. This will run the client commands while interpreting
+     * all paths relative to this root (similar to the unix chroot command).
+     * &lt;p&gt;
+     * For backward compatibility, there is another version
+     * {@link #ZooKeeper(String, int, Watcher, boolean)} which uses default
+     * {@link StaticHostProvider}
+     *
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot; If
+     *            the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).
+     * @param sessionTimeout
+     *            session timeout in milliseconds
+     * @param watcher
+     *            a watcher object which will be notified of state changes, may
+     *            also be notified for node events
+     * @param canBeReadOnly
+     *            (added in 3.4) whether the created client is allowed to go to
+     *            read-only mode in case of partitioning. Read-only mode
+     *            basically means that if the client can't find any majority
+     *            servers but there's partitioned server it could reach, it
+     *            connects to one in read-only mode, i.e. read requests are
+     *            allowed while write requests are not. It continues seeking for
+     *            majority in the background.
+     * @param aHostProvider
+     *            use this as HostProvider to enable custom behaviour.
+     * @param clientConfig
+     *            (added in 3.5.2) passing this conf object gives each client the flexibility of
+     *            configuring properties differently compared to other instances
+     * @throws IOException
+     *             in cases of network failure
+     * @throws IllegalArgumentException
+     *             if an invalid chroot path is specified
+     */
+    public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+            boolean canBeReadOnly, HostProvider aHostProvider,
+<span class="fc" id="L867">            ZKClientConfig clientConfig) throws IOException {</span>
+<span class="fc" id="L868">        LOG.info(&quot;Initiating client connection, connectString=&quot; + connectString</span>
+                + &quot; sessionTimeout=&quot; + sessionTimeout + &quot; watcher=&quot; + watcher);
+
+<span class="pc bpc" id="L871" title="1 of 2 branches missed.">        if (clientConfig == null) {</span>
+<span class="fc" id="L872">            clientConfig = new ZKClientConfig();</span>
+        }
+<span class="fc" id="L874">        this.clientConfig = clientConfig;</span>
+<span class="fc" id="L875">        watchManager = defaultWatchManager();</span>
+<span class="fc" id="L876">        watchManager.defaultWatcher = watcher;</span>
+<span class="fc" id="L877">        ConnectStringParser connectStringParser = new ConnectStringParser(</span>
+                connectString);
+<span class="fc" id="L879">        hostProvider = aHostProvider;</span>
+
+<span class="fc" id="L881">        cnxn = createConnection(connectStringParser.getChrootPath(),</span>
+                hostProvider, sessionTimeout, this, watchManager,
+<span class="fc" id="L883">                getClientCnxnSocket(), canBeReadOnly);</span>
+<span class="fc" id="L884">        cnxn.start();</span>
+<span class="fc" id="L885">    }</span>
+
+    // @VisibleForTesting
+    protected ClientCnxn createConnection(String chrootPath,
+            HostProvider hostProvider, int sessionTimeout, ZooKeeper zooKeeper,
+            ClientWatchManager watcher, ClientCnxnSocket clientCnxnSocket,
+            boolean canBeReadOnly) throws IOException {
+<span class="nc" id="L892">        return new ClientCnxn(chrootPath, hostProvider, sessionTimeout, this,</span>
+                watchManager, clientCnxnSocket, canBeReadOnly);
+    }
+
+    /**
+     * To create a ZooKeeper client object, the application needs to pass a
+     * connection string containing a comma separated list of host:port pairs,
+     * each corresponding to a ZooKeeper server.
+     * &lt;p&gt;
+     * Session establishment is asynchronous. This constructor will initiate
+     * connection to the server and return immediately - potentially (usually)
+     * before the session is fully established. The watcher argument specifies
+     * the watcher that will be notified of any changes in state. This
+     * notification can come at any point before or after the constructor call
+     * has returned.
+     * &lt;p&gt;
+     * The instantiated ZooKeeper client object will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed.
+     * &lt;p&gt;
+     * Added in 3.2.0: An optional &quot;chroot&quot; suffix may also be appended to the
+     * connection string. This will run the client commands while interpreting
+     * all paths relative to this root (similar to the unix chroot command).
+     * &lt;p&gt;
+     *
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot; If
+     *            the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).
+     * @param sessionTimeout
+     *            session timeout in milliseconds
+     * @param watcher
+     *            a watcher object which will be notified of state changes, may
+     *            also be notified for node events
+     * @param canBeReadOnly
+     *            (added in 3.4) whether the created client is allowed to go to
+     *            read-only mode in case of partitioning. Read-only mode
+     *            basically means that if the client can't find any majority
+     *            servers but there's partitioned server it could reach, it
+     *            connects to one in read-only mode, i.e. read requests are
+     *            allowed while write requests are not. It continues seeking for
+     *            majority in the background.
+     *
+     * @throws IOException
+     *             in cases of network failure
+     * @throws IllegalArgumentException
+     *             if an invalid chroot path is specified
+     */
+    public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+            boolean canBeReadOnly) throws IOException {
+<span class="fc" id="L950">        this(connectString, sessionTimeout, watcher, canBeReadOnly,</span>
+<span class="fc" id="L951">                createDefaultHostProvider(connectString));</span>
+<span class="fc" id="L952">    }</span>
+
+    /**
+     * To create a ZooKeeper client object, the application needs to pass a
+     * connection string containing a comma separated list of host:port pairs,
+     * each corresponding to a ZooKeeper server.
+     * &lt;p&gt;
+     * Session establishment is asynchronous. This constructor will initiate
+     * connection to the server and return immediately - potentially (usually)
+     * before the session is fully established. The watcher argument specifies
+     * the watcher that will be notified of any changes in state. This
+     * notification can come at any point before or after the constructor call
+     * has returned.
+     * &lt;p&gt;
+     * The instantiated ZooKeeper client object will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed.
+     * &lt;p&gt;
+     * Added in 3.2.0: An optional &quot;chroot&quot; suffix may also be appended to the
+     * connection string. This will run the client commands while interpreting
+     * all paths relative to this root (similar to the unix chroot command).
+     * &lt;p&gt;
+     *
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot; If
+     *            the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).
+     * @param sessionTimeout
+     *            session timeout in milliseconds
+     * @param watcher
+     *            a watcher object which will be notified of state changes, may
+     *            also be notified for node events
+     * @param canBeReadOnly
+     *            (added in 3.4) whether the created client is allowed to go to
+     *            read-only mode in case of partitioning. Read-only mode
+     *            basically means that if the client can't find any majority
+     *            servers but there's partitioned server it could reach, it
+     *            connects to one in read-only mode, i.e. read requests are
+     *            allowed while write requests are not. It continues seeking for
+     *            majority in the background.
+     * @param conf
+     *            (added in 3.5.2) passing this conf object gives each client the flexibility of
+     *            configuring properties differently compared to other instances
+     * @throws IOException
+     *             in cases of network failure
+     * @throws IllegalArgumentException
+     *             if an invalid chroot path is specified
+     */
+    public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+            boolean canBeReadOnly, ZKClientConfig conf) throws IOException {
+<span class="nc" id="L1010">        this(connectString, sessionTimeout, watcher, canBeReadOnly,</span>
+<span class="nc" id="L1011">                createDefaultHostProvider(connectString), conf);</span>
+<span class="nc" id="L1012">    }</span>
+
+    /**
+     * To create a ZooKeeper client object, the application needs to pass a
+     * connection string containing a comma separated list of host:port pairs,
+     * each corresponding to a ZooKeeper server.
+     * &lt;p&gt;
+     * Session establishment is asynchronous. This constructor will initiate
+     * connection to the server and return immediately - potentially (usually)
+     * before the session is fully established. The watcher argument specifies
+     * the watcher that will be notified of any changes in state. This
+     * notification can come at any point before or after the constructor call
+     * has returned.
+     * &lt;p&gt;
+     * The instantiated ZooKeeper client object will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed (or the session is expired by the server).
+     * &lt;p&gt;
+     * Added in 3.2.0: An optional &quot;chroot&quot; suffix may also be appended to the
+     * connection string. This will run the client commands while interpreting
+     * all paths relative to this root (similar to the unix chroot command).
+     * &lt;p&gt;
+     * Use {@link #getSessionId} and {@link #getSessionPasswd} on an established
+     * client connection, these values must be passed as sessionId and
+     * sessionPasswd respectively if reconnecting. Otherwise, if not
+     * reconnecting, use the other constructor which does not require these
+     * parameters.
+     *
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot;
+     *            If the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).
+     * @param sessionTimeout
+     *            session timeout in milliseconds
+     * @param watcher
+     *            a watcher object which will be notified of state changes, may
+     *            also be notified for node events
+     * @param sessionId
+     *            specific session id to use if reconnecting
+     * @param sessionPasswd
+     *            password for this session
+     *
+     * @throws IOException in cases of network failure
+     * @throws IllegalArgumentException if an invalid chroot path is specified
+     * @throws IllegalArgumentException for an invalid list of ZooKeeper hosts
+     */
+    public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+            long sessionId, byte[] sessionPasswd)
+        throws IOException
+    {
+<span class="nc" id="L1070">        this(connectString, sessionTimeout, watcher, sessionId, sessionPasswd, false);</span>
+<span class="nc" id="L1071">    }</span>
+
+    /**
+     * To create a ZooKeeper client object, the application needs to pass a
+     * connection string containing a comma separated list of host:port pairs,
+     * each corresponding to a ZooKeeper server.
+     * &lt;p&gt;
+     * Session establishment is asynchronous. This constructor will initiate
+     * connection to the server and return immediately - potentially (usually)
+     * before the session is fully established. The watcher argument specifies
+     * the watcher that will be notified of any changes in state. This
+     * notification can come at any point before or after the constructor call
+     * has returned.
+     * &lt;p&gt;
+     * The instantiated ZooKeeper client object will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed (or the session is expired by the server).
+     * &lt;p&gt;
+     * Added in 3.2.0: An optional &quot;chroot&quot; suffix may also be appended to the
+     * connection string. This will run the client commands while interpreting
+     * all paths relative to this root (similar to the unix chroot command).
+     * &lt;p&gt;
+     * Use {@link #getSessionId} and {@link #getSessionPasswd} on an established
+     * client connection, these values must be passed as sessionId and
+     * sessionPasswd respectively if reconnecting. Otherwise, if not
+     * reconnecting, use the other constructor which does not require these
+     * parameters.
+     * &lt;p&gt;
+     * For backward compatibility, there is another version
+     * {@link #ZooKeeper(String, int, Watcher, long, byte[], boolean)} which uses
+     * default {@link StaticHostProvider}
+     *
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot;
+     *            If the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).
+     * @param sessionTimeout
+     *            session timeout in milliseconds
+     * @param watcher
+     *            a watcher object which will be notified of state changes, may
+     *            also be notified for node events
+     * @param sessionId
+     *            specific session id to use if reconnecting
+     * @param sessionPasswd
+     *            password for this session
+     * @param canBeReadOnly
+     *            (added in 3.4) whether the created client is allowed to go to
+     *            read-only mode in case of partitioning. Read-only mode
+     *            basically means that if the client can't find any majority
+     *            servers but there's partitioned server it could reach, it
+     *            connects to one in read-only mode, i.e. read requests are
+     *            allowed while write requests are not. It continues seeking for
+     *            majority in the background.
+     * @param aHostProvider
+     *            use this as HostProvider to enable custom behaviour.
+     * @throws IOException in cases of network failure
+     * @throws IllegalArgumentException if an invalid chroot path is specified
+     */
+    public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+            long sessionId, byte[] sessionPasswd, boolean canBeReadOnly,
+            HostProvider aHostProvider) throws IOException {
+<span class="nc" id="L1140">    	this(connectString, sessionTimeout, watcher, sessionId, sessionPasswd,</span>
+    			canBeReadOnly, aHostProvider, null);
+<span class="nc" id="L1142">    }</span>
+
+    /**
+     * To create a ZooKeeper client object, the application needs to pass a
+     * connection string containing a comma separated list of host:port pairs,
+     * each corresponding to a ZooKeeper server.
+     * &lt;p&gt;
+     * Session establishment is asynchronous. This constructor will initiate
+     * connection to the server and return immediately - potentially (usually)
+     * before the session is fully established. The watcher argument specifies
+     * the watcher that will be notified of any changes in state. This
+     * notification can come at any point before or after the constructor call
+     * has returned.
+     * &lt;p&gt;
+     * The instantiated ZooKeeper client object will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed (or the session is expired by the server).
+     * &lt;p&gt;
+     * Added in 3.2.0: An optional &quot;chroot&quot; suffix may also be appended to the
+     * connection string. This will run the client commands while interpreting
+     * all paths relative to this root (similar to the unix chroot command).
+     * &lt;p&gt;
+     * Use {@link #getSessionId} and {@link #getSessionPasswd} on an established
+     * client connection, these values must be passed as sessionId and
+     * sessionPasswd respectively if reconnecting. Otherwise, if not
+     * reconnecting, use the other constructor which does not require these
+     * parameters.
+     * &lt;p&gt;
+     * For backward compatibility, there is another version
+     * {@link #ZooKeeper(String, int, Watcher, long, byte[], boolean)} which uses
+     * default {@link StaticHostProvider}
+     *
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot;
+     *            If the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).
+     * @param sessionTimeout
+     *            session timeout in milliseconds
+     * @param watcher
+     *            a watcher object which will be notified of state changes, may
+     *            also be notified for node events
+     * @param sessionId
+     *            specific session id to use if reconnecting
+     * @param sessionPasswd
+     *            password for this session
+     * @param canBeReadOnly
+     *            (added in 3.4) whether the created client is allowed to go to
+     *            read-only mode in case of partitioning. Read-only mode
+     *            basically means that if the client can't find any majority
+     *            servers but there's partitioned server it could reach, it
+     *            connects to one in read-only mode, i.e. read requests are
+     *            allowed while write requests are not. It continues seeking for
+     *            majority in the background.
+     * @param aHostProvider
+     *            use this as HostProvider to enable custom behaviour.
+     * @param clientConfig
+     *            (added in 3.5.2) passing this conf object gives each client the flexibility of
+     *            configuring properties differently compared to other instances
+     * @throws IOException in cases of network failure
+     * @throws IllegalArgumentException if an invalid chroot path is specified
+     *
+     * @since 3.5.5
+     */
+    public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+    		long sessionId, byte[] sessionPasswd, boolean canBeReadOnly,
+<span class="nc" id="L1215">    		HostProvider aHostProvider, ZKClientConfig clientConfig) throws IOException {</span>
+<span class="nc" id="L1216">    	LOG.info(&quot;Initiating client connection, connectString=&quot; + connectString</span>
+    			+ &quot; sessionTimeout=&quot; + sessionTimeout
+    			+ &quot; watcher=&quot; + watcher
+<span class="nc" id="L1219">    			+ &quot; sessionId=&quot; + Long.toHexString(sessionId)</span>
+    			+ &quot; sessionPasswd=&quot;
+<span class="nc bnc" id="L1221" title="All 2 branches missed.">    			+ (sessionPasswd == null ? &quot;&lt;null&gt;&quot; : &quot;&lt;hidden&gt;&quot;));</span>
+
+<span class="nc bnc" id="L1223" title="All 2 branches missed.">        if (clientConfig == null) {</span>
+<span class="nc" id="L1224">            clientConfig = new ZKClientConfig();</span>
+        }
+<span class="nc" id="L1226">        this.clientConfig = clientConfig;</span>
+<span class="nc" id="L1227">        watchManager = defaultWatchManager();</span>
+<span class="nc" id="L1228">        watchManager.defaultWatcher = watcher;</span>
+
+<span class="nc" id="L1230">        ConnectStringParser connectStringParser = new ConnectStringParser(</span>
+                connectString);
+<span class="nc" id="L1232">        hostProvider = aHostProvider;</span>
+
+<span class="nc" id="L1234">        cnxn = new ClientCnxn(connectStringParser.getChrootPath(),</span>
+                hostProvider, sessionTimeout, this, watchManager,
+<span class="nc" id="L1236">                getClientCnxnSocket(), sessionId, sessionPasswd, canBeReadOnly);</span>
+<span class="nc" id="L1237">        cnxn.seenRwServerBefore = true; // since user has provided sessionId</span>
+<span class="nc" id="L1238">        cnxn.start();</span>
+<span class="nc" id="L1239">    }</span>
+
+    /**
+     * To create a ZooKeeper client object, the application needs to pass a
+     * connection string containing a comma separated list of host:port pairs,
+     * each corresponding to a ZooKeeper server.
+     * &lt;p&gt;
+     * Session establishment is asynchronous. This constructor will initiate
+     * connection to the server and return immediately - potentially (usually)
+     * before the session is fully established. The watcher argument specifies
+     * the watcher that will be notified of any changes in state. This
+     * notification can come at any point before or after the constructor call
+     * has returned.
+     * &lt;p&gt;
+     * The instantiated ZooKeeper client object will pick an arbitrary server
+     * from the connectString and attempt to connect to it. If establishment of
+     * the connection fails, another server in the connect string will be tried
+     * (the order is non-deterministic, as we random shuffle the list), until a
+     * connection is established. The client will continue attempts until the
+     * session is explicitly closed (or the session is expired by the server).
+     * &lt;p&gt;
+     * Added in 3.2.0: An optional &quot;chroot&quot; suffix may also be appended to the
+     * connection string. This will run the client commands while interpreting
+     * all paths relative to this root (similar to the unix chroot command).
+     * &lt;p&gt;
+     * Use {@link #getSessionId} and {@link #getSessionPasswd} on an established
+     * client connection, these values must be passed as sessionId and
+     * sessionPasswd respectively if reconnecting. Otherwise, if not
+     * reconnecting, use the other constructor which does not require these
+     * parameters.
+     * &lt;p&gt;
+     * This constructor uses a StaticHostProvider; there is another one
+     * to enable custom behaviour.
+     *
+     * @param connectString
+     *            comma separated host:port pairs, each corresponding to a zk
+     *            server. e.g. &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002&quot;
+     *            If the optional chroot suffix is used the example would look
+     *            like: &quot;127.0.0.1:3000,127.0.0.1:3001,127.0.0.1:3002/app/a&quot;
+     *            where the client would be rooted at &quot;/app/a&quot; and all paths
+     *            would be relative to this root - ie getting/setting/etc...
+     *            &quot;/foo/bar&quot; would result in operations being run on
+     *            &quot;/app/a/foo/bar&quot; (from the server perspective).
+     * @param sessionTimeout
+     *            session timeout in milliseconds
+     * @param watcher
+     *            a watcher object which will be notified of state changes, may
+     *            also be notified for node events
+     * @param sessionId
+     *            specific session id to use if reconnecting
+     * @param sessionPasswd
+     *            password for this session
+     * @param canBeReadOnly
+     *            (added in 3.4) whether the created client is allowed to go to
+     *            read-only mode in case of partitioning. Read-only mode
+     *            basically means that if the client can't find any majority
+     *            servers but there's partitioned server it could reach, it
+     *            connects to one in read-only mode, i.e. read requests are
+     *            allowed while write requests are not. It continues seeking for
+     *            majority in the background.
+     * @throws IOException in cases of network failure
+     * @throws IllegalArgumentException if an invalid chroot path is specified
+     */
+    public ZooKeeper(String connectString, int sessionTimeout, Watcher watcher,
+            long sessionId, byte[] sessionPasswd, boolean canBeReadOnly)
+            throws IOException {
+<span class="nc" id="L1305">        this(connectString, sessionTimeout, watcher, sessionId, sessionPasswd,</span>
+<span class="nc" id="L1306">                canBeReadOnly, createDefaultHostProvider(connectString));</span>
+<span class="nc" id="L1307">    }</span>
+
+    // default hostprovider
+    private static HostProvider createDefaultHostProvider(String connectString) {
+<span class="fc" id="L1311">        return new StaticHostProvider(</span>
+<span class="fc" id="L1312">                new ConnectStringParser(connectString).getServerAddresses());</span>
+    }
+
+    // VisibleForTesting
+    public Testable getTestable() {
+<span class="nc" id="L1317">        return new ZooKeeperTestable(this, cnxn);</span>
+    }
+
+    /* Useful for testing watch handling behavior */
+    protected ZKWatchManager defaultWatchManager() {
+<span class="fc" id="L1322">        return new ZKWatchManager(getClientConfig().getBoolean(ZKClientConfig.DISABLE_AUTO_WATCH_RESET));</span>
+    }
+
+    /**
+     * The session id for this ZooKeeper client instance. The value returned is
+     * not valid until the client connects to a server and may change after a
+     * re-connect.
+     *
+     * This method is NOT thread safe
+     *
+     * @return current session id
+     */
+    public long getSessionId() {
+<span class="fc" id="L1335">        return cnxn.getSessionId();</span>
+    }
+
+    /**
+     * The session password for this ZooKeeper client instance. The value
+     * returned is not valid until the client connects to a server and may
+     * change after a re-connect.
+     *
+     * This method is NOT thread safe
+     *
+     * @return current session password
+     */
+    public byte[] getSessionPasswd() {
+<span class="nc" id="L1348">        return cnxn.getSessionPasswd();</span>
+    }
+
+    /**
+     * The negotiated session timeout for this ZooKeeper client instance. The
+     * value returned is not valid until the client connects to a server and
+     * may change after a re-connect.
+     *
+     * This method is NOT thread safe
+     *
+     * @return current session timeout
+     */
+    public int getSessionTimeout() {
+<span class="nc" id="L1361">        return cnxn.getSessionTimeout();</span>
+    }
+
+    /**
+     * Add the specified scheme:auth information to this connection.
+     *
+     * This method is NOT thread safe
+     *
+     * @param scheme
+     * @param auth
+     */
+    public void addAuthInfo(String scheme, byte auth[]) {
+<span class="nc" id="L1373">        cnxn.addAuthInfo(scheme, auth);</span>
+<span class="nc" id="L1374">    }</span>
+
+    /**
+     * Specify the default watcher for the connection (overrides the one
+     * specified during construction).
+     *
+     * @param watcher
+     */
+    public synchronized void register(Watcher watcher) {
+<span class="nc" id="L1383">        watchManager.defaultWatcher = watcher;</span>
+<span class="nc" id="L1384">    }</span>
+
+    /**
+     * Close this client object. Once the client is closed, its session becomes
+     * invalid. All the ephemeral nodes in the ZooKeeper server associated with
+     * the session will be removed. The watches left on those nodes (and on
+     * their parents) will be triggered.
+     * &lt;p&gt;
+     * Added in 3.5.3: &lt;a href=&quot;https://docs.oracle.com/javase/tutorial/essential/exceptions/tryResourceClose.html&quot;&gt;try-with-resources&lt;/a&gt;
+     * may be used instead of calling close directly.
+     * &lt;/p&gt;
+     * &lt;p&gt;
+     * This method does not wait for all internal threads to exit.
+     * Use the {@link #close(int) } method to wait for all resources to be released
+     * &lt;/p&gt;
+     *
+     * @throws InterruptedException
+     */
+    public synchronized void close() throws InterruptedException {
+<span class="fc bfc" id="L1403" title="All 2 branches covered.">        if (!cnxn.getState().isAlive()) {</span>
+<span class="pc bpc" id="L1404" title="1 of 2 branches missed.">            if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L1405">                LOG.debug(&quot;Close called on already closed client&quot;);</span>
+            }
+<span class="fc" id="L1407">            return;</span>
+        }
+
+<span class="pc bpc" id="L1410" title="1 of 2 branches missed.">        if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L1411">            LOG.debug(&quot;Closing session: 0x&quot; + Long.toHexString(getSessionId()));</span>
+        }
+
+        try {
+<span class="fc" id="L1415">            cnxn.close();</span>
+<span class="nc" id="L1416">        } catch (IOException e) {</span>
+<span class="nc bnc" id="L1417" title="All 2 branches missed.">            if (LOG.isDebugEnabled()) {</span>
+<span class="nc" id="L1418">                LOG.debug(&quot;Ignoring unexpected exception during close&quot;, e);</span>
+            }
+<span class="fc" id="L1420">        }</span>
+
+<span class="fc" id="L1422">        LOG.info(&quot;Session: 0x&quot; + Long.toHexString(getSessionId()) + &quot; closed&quot;);</span>
+<span class="fc" id="L1423">    }</span>
+
+    /**
+     * Close this client object as the {@link #close() } method.
+     * This method will wait for internal resources to be released.
+     *
+     * @param waitForShutdownTimeoutMs timeout (in milliseconds) to wait for resources to be released.
+     * Use zero or a negative value to skip the wait
+     * @throws InterruptedException
+     * @return true if waitForShutdownTimeout is greater than zero and all of the resources have been released
+     *
+     * @since 3.5.4
+     */
+    public boolean close(int waitForShutdownTimeoutMs) throws InterruptedException {
+<span class="nc" id="L1437">        close();</span>
+<span class="nc" id="L1438">        return testableWaitForShutdown(waitForShutdownTimeoutMs);</span>
+    }
+
+    /**
+     * Prepend the chroot to the client path (if present). The expectation of
+     * this function is that the client path has been validated before this
+     * function is called
+     * @param clientPath path to the node
+     * @return server view of the path (chroot prepended to client path)
+     */
+    private String prependChroot(String clientPath) {
+<span class="pc bpc" id="L1449" title="1 of 2 branches missed.">        if (cnxn.chrootPath != null) {</span>
+            // handle clientPath = &quot;/&quot;
+<span class="nc bnc" id="L1451" title="All 2 branches missed.">            if (clientPath.length() == 1) {</span>
+<span class="nc" id="L1452">                return cnxn.chrootPath;</span>
+            }
+<span class="nc" id="L1454">            return cnxn.chrootPath + clientPath;</span>
+        } else {
+<span class="fc" id="L1456">            return clientPath;</span>
+        }
+    }
+
+    /**
+     * Create a node with the given path. The node data will be the given data,
+     * and node acl will be the given acl.
+     * &lt;p&gt;
+     * The flags argument specifies whether the created node will be ephemeral
+     * or not.
+     * &lt;p&gt;
+     * An ephemeral node will be removed by the ZooKeeper automatically when the
+     * session associated with the creation of the node expires.
+     * &lt;p&gt;
+     * The flags argument can also specify to create a sequential node. The
+     * actual path name of a sequential node will be the given path plus a
+     * suffix &quot;i&quot; where i is the current sequential number of the node. The sequence
+     * number is always fixed length of 10 digits, 0 padded. Once
+     * such a node is created, the sequential number will be incremented by one.
+     * &lt;p&gt;
+     * If a node with the same actual path already exists in the ZooKeeper, a
+     * KeeperException with error code KeeperException.NodeExists will be
+     * thrown. Note that since a different actual path is used for each
+     * invocation of creating sequential node with the same path argument, the
+     * call will never throw &quot;file exists&quot; KeeperException.
+     * &lt;p&gt;
+     * If the parent node does not exist in the ZooKeeper, a KeeperException
+     * with error code KeeperException.NoNode will be thrown.
+     * &lt;p&gt;
+     * An ephemeral node cannot have children. If the parent node of the given
+     * path is ephemeral, a KeeperException with error code
+     * KeeperException.NoChildrenForEphemerals will be thrown.
+     * &lt;p&gt;
+     * This operation, if successful, will trigger all the watches left on the
+     * node of the given path by exists and getData API calls, and the watches
+     * left on the parent node by getChildren API calls.
+     * &lt;p&gt;
+     * If a node is created successfully, the ZooKeeper server will trigger the
+     * watches on the path left by exists calls, and the watches on the parent
+     * of the node by getChildren calls.
+     * &lt;p&gt;
+     * The maximum allowable size of the data array is 1 MB (1,048,576 bytes).
+     * Arrays larger than this will cause a KeeperExecption to be thrown.
+     *
+     * @param path
+     *                the path for the node
+     * @param data
+     *                the initial data for the node
+     * @param acl
+     *                the acl for the node
+     * @param createMode
+     *                specifying whether the node to be created is ephemeral
+     *                and/or sequential
+     * @return the actual path of the created node
+     * @throws KeeperException if the server returns a non-zero error code
+     * @throws KeeperException.InvalidACLException if the ACL is invalid, null, or empty
+     * @throws InterruptedException if the transaction is interrupted
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public String create(final String path, byte data[], List&lt;ACL&gt; acl,
+            CreateMode createMode)
+        throws KeeperException, InterruptedException
+    {
+<span class="nc" id="L1519">        final String clientPath = path;</span>
+<span class="nc" id="L1520">        PathUtils.validatePath(clientPath, createMode.isSequential());</span>
+<span class="nc" id="L1521">        EphemeralType.validateTTL(createMode, -1);</span>
+
+<span class="nc" id="L1523">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L1525">        RequestHeader h = new RequestHeader();</span>
+<span class="nc bnc" id="L1526" title="All 2 branches missed.">        h.setType(createMode.isContainer() ? ZooDefs.OpCode.createContainer : ZooDefs.OpCode.create);</span>
+<span class="nc" id="L1527">        CreateRequest request = new CreateRequest();</span>
+<span class="nc" id="L1528">        CreateResponse response = new CreateResponse();</span>
+<span class="nc" id="L1529">        request.setData(data);</span>
+<span class="nc" id="L1530">        request.setFlags(createMode.toFlag());</span>
+<span class="nc" id="L1531">        request.setPath(serverPath);</span>
+<span class="nc bnc" id="L1532" title="All 4 branches missed.">        if (acl != null &amp;&amp; acl.size() == 0) {</span>
+<span class="nc" id="L1533">            throw new KeeperException.InvalidACLException();</span>
+        }
+<span class="nc" id="L1535">        request.setAcl(acl);</span>
+<span class="nc" id="L1536">        ReplyHeader r = cnxn.submitRequest(h, request, response, null);</span>
+<span class="nc bnc" id="L1537" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L1538">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+<span class="nc bnc" id="L1541" title="All 2 branches missed.">        if (cnxn.chrootPath == null) {</span>
+<span class="nc" id="L1542">            return response.getPath();</span>
+        } else {
+<span class="nc" id="L1544">            return response.getPath().substring(cnxn.chrootPath.length());</span>
+        }
+    }
+
+    /**
+     * Create a node with the given path and returns the Stat of that node. The
+     * node data will be the given data and node acl will be the given acl.
+     * &lt;p&gt;
+     * The flags argument specifies whether the created node will be ephemeral
+     * or not.
+     * &lt;p&gt;
+     * An ephemeral node will be removed by the ZooKeeper automatically when the
+     * session associated with the creation of the node expires.
+     * &lt;p&gt;
+     * The flags argument can also specify to create a sequential node. The
+     * actual path name of a sequential node will be the given path plus a
+     * suffix &quot;i&quot; where i is the current sequential number of the node. The sequence
+     * number is always fixed length of 10 digits, 0 padded. Once
+     * such a node is created, the sequential number will be incremented by one.
+     * &lt;p&gt;
+     * If a node with the same actual path already exists in the ZooKeeper, a
+     * KeeperException with error code KeeperException.NodeExists will be
+     * thrown. Note that since a different actual path is used for each
+     * invocation of creating sequential node with the same path argument, the
+     * call will never throw &quot;file exists&quot; KeeperException.
+     * &lt;p&gt;
+     * If the parent node does not exist in the ZooKeeper, a KeeperException
+     * with error code KeeperException.NoNode will be thrown.
+     * &lt;p&gt;
+     * An ephemeral node cannot have children. If the parent node of the given
+     * path is ephemeral, a KeeperException with error code
+     * KeeperException.NoChildrenForEphemerals will be thrown.
+     * &lt;p&gt;
+     * This operation, if successful, will trigger all the watches left on the
+     * node of the given path by exists and getData API calls, and the watches
+     * left on the parent node by getChildren API calls.
+     * &lt;p&gt;
+     * If a node is created successfully, the ZooKeeper server will trigger the
+     * watches on the path left by exists calls, and the watches on the parent
+     * of the node by getChildren calls.
+     * &lt;p&gt;
+     * The maximum allowable size of the data array is 1 MB (1,048,576 bytes).
+     * Arrays larger than this will cause a KeeperExecption to be thrown.
+     *
+     * @param path
+     *                the path for the node
+     * @param data
+     *                the initial data for the node
+     * @param acl
+     *                the acl for the node
+     * @param createMode
+     *                specifying whether the node to be created is ephemeral
+     *                and/or sequential
+     * @param stat
+     *                The output Stat object.
+     * @return the actual path of the created node
+     * @throws KeeperException if the server returns a non-zero error code
+     * @throws KeeperException.InvalidACLException if the ACL is invalid, null, or empty
+     * @throws InterruptedException if the transaction is interrupted
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public String create(final String path, byte data[], List&lt;ACL&gt; acl,
+            CreateMode createMode, Stat stat)
+            throws KeeperException, InterruptedException {
+<span class="nc" id="L1608">        return create(path, data, acl, createMode, stat, -1);</span>
+    }
+
+    /**
+     * same as {@link #create(String, byte[], List, CreateMode, Stat)} but
+     * allows for specifying a TTL when mode is {@link CreateMode#PERSISTENT_WITH_TTL}
+     * or {@link CreateMode#PERSISTENT_SEQUENTIAL_WITH_TTL}. If the znode has not been modified
+     * within the given TTL, it will be deleted once it has no children. The TTL unit is
+     * milliseconds and must be greater than 0 and less than or equal to
+     * {@link EphemeralType#maxValue()} for {@link EphemeralType#TTL}.
+     */
+    public String create(final String path, byte data[], List&lt;ACL&gt; acl,
+            CreateMode createMode, Stat stat, long ttl)
+            throws KeeperException, InterruptedException {
+<span class="nc" id="L1622">        final String clientPath = path;</span>
+<span class="nc" id="L1623">        PathUtils.validatePath(clientPath, createMode.isSequential());</span>
+<span class="nc" id="L1624">        EphemeralType.validateTTL(createMode, ttl);</span>
+
+<span class="nc" id="L1626">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L1628">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L1629">        setCreateHeader(createMode, h);</span>
+<span class="nc" id="L1630">        Create2Response response = new Create2Response();</span>
+<span class="nc bnc" id="L1631" title="All 4 branches missed.">        if (acl != null &amp;&amp; acl.size() == 0) {</span>
+<span class="nc" id="L1632">            throw new KeeperException.InvalidACLException();</span>
+        }
+<span class="nc" id="L1634">        Record record = makeCreateRecord(createMode, serverPath, data, acl, ttl);</span>
+<span class="nc" id="L1635">        ReplyHeader r = cnxn.submitRequest(h, record, response, null);</span>
+<span class="nc bnc" id="L1636" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L1637">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+<span class="nc bnc" id="L1640" title="All 2 branches missed.">        if (stat != null) {</span>
+<span class="nc" id="L1641">            DataTree.copyStat(response.getStat(), stat);</span>
+        }
+<span class="nc bnc" id="L1643" title="All 2 branches missed.">        if (cnxn.chrootPath == null) {</span>
+<span class="nc" id="L1644">            return response.getPath();</span>
+        } else {
+<span class="nc" id="L1646">            return response.getPath().substring(cnxn.chrootPath.length());</span>
+        }
+    }
+
+    private void setCreateHeader(CreateMode createMode, RequestHeader h) {
+<span class="nc bnc" id="L1651" title="All 2 branches missed.">        if (createMode.isTTL()) {</span>
+<span class="nc" id="L1652">            h.setType(ZooDefs.OpCode.createTTL);</span>
+        } else {
+<span class="nc bnc" id="L1654" title="All 2 branches missed.">            h.setType(createMode.isContainer() ? ZooDefs.OpCode.createContainer : ZooDefs.OpCode.create2);</span>
+        }
+<span class="nc" id="L1656">    }</span>
+
+    private Record makeCreateRecord(CreateMode createMode, String serverPath, byte[] data, List&lt;ACL&gt; acl, long ttl) {
+        Record record;
+<span class="nc bnc" id="L1660" title="All 2 branches missed.">        if (createMode.isTTL()) {</span>
+<span class="nc" id="L1661">            CreateTTLRequest request = new CreateTTLRequest();</span>
+<span class="nc" id="L1662">            request.setData(data);</span>
+<span class="nc" id="L1663">            request.setFlags(createMode.toFlag());</span>
+<span class="nc" id="L1664">            request.setPath(serverPath);</span>
+<span class="nc" id="L1665">            request.setAcl(acl);</span>
+<span class="nc" id="L1666">            request.setTtl(ttl);</span>
+<span class="nc" id="L1667">            record = request;</span>
+<span class="nc" id="L1668">        } else {</span>
+<span class="nc" id="L1669">            CreateRequest request = new CreateRequest();</span>
+<span class="nc" id="L1670">            request.setData(data);</span>
+<span class="nc" id="L1671">            request.setFlags(createMode.toFlag());</span>
+<span class="nc" id="L1672">            request.setPath(serverPath);</span>
+<span class="nc" id="L1673">            request.setAcl(acl);</span>
+<span class="nc" id="L1674">            record = request;</span>
+        }
+<span class="nc" id="L1676">        return record;</span>
+    }
+
+    /**
+     * The asynchronous version of create.
+     *
+     * @see #create(String, byte[], List, CreateMode)
+     */
+    public void create(final String path, byte data[], List&lt;ACL&gt; acl,
+            CreateMode createMode, StringCallback cb, Object ctx)
+    {
+<span class="nc" id="L1687">        final String clientPath = path;</span>
+<span class="nc" id="L1688">        PathUtils.validatePath(clientPath, createMode.isSequential());</span>
+<span class="nc" id="L1689">        EphemeralType.validateTTL(createMode, -1);</span>
+
+<span class="nc" id="L1691">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L1693">        RequestHeader h = new RequestHeader();</span>
+<span class="nc bnc" id="L1694" title="All 2 branches missed.">        h.setType(createMode.isContainer() ? ZooDefs.OpCode.createContainer : ZooDefs.OpCode.create);</span>
+<span class="nc" id="L1695">        CreateRequest request = new CreateRequest();</span>
+<span class="nc" id="L1696">        CreateResponse response = new CreateResponse();</span>
+<span class="nc" id="L1697">        ReplyHeader r = new ReplyHeader();</span>
+<span class="nc" id="L1698">        request.setData(data);</span>
+<span class="nc" id="L1699">        request.setFlags(createMode.toFlag());</span>
+<span class="nc" id="L1700">        request.setPath(serverPath);</span>
+<span class="nc" id="L1701">        request.setAcl(acl);</span>
+<span class="nc" id="L1702">        cnxn.queuePacket(h, r, request, response, cb, clientPath,</span>
+                serverPath, ctx, null);
+<span class="nc" id="L1704">    }</span>
+
+    /**
+     * The asynchronous version of create.
+     *
+     * @see #create(String, byte[], List, CreateMode, Stat)
+     */
+    public void create(final String path, byte data[], List&lt;ACL&gt; acl,
+            CreateMode createMode, Create2Callback cb, Object ctx)
+    {
+<span class="nc" id="L1714">        create(path, data, acl, createMode, cb, ctx, -1);</span>
+<span class="nc" id="L1715">    }</span>
+
+    /**
+     * The asynchronous version of create with ttl.
+     *
+     * @see #create(String, byte[], List, CreateMode, Stat, long)
+     */
+    public void create(final String path, byte data[], List&lt;ACL&gt; acl,
+            CreateMode createMode, Create2Callback cb, Object ctx, long ttl)
+    {
+<span class="nc" id="L1725">        final String clientPath = path;</span>
+<span class="nc" id="L1726">        PathUtils.validatePath(clientPath, createMode.isSequential());</span>
+<span class="nc" id="L1727">        EphemeralType.validateTTL(createMode, ttl);</span>
+
+<span class="nc" id="L1729">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L1731">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L1732">        setCreateHeader(createMode, h);</span>
+<span class="nc" id="L1733">        ReplyHeader r = new ReplyHeader();</span>
+<span class="nc" id="L1734">        Create2Response response = new Create2Response();</span>
+<span class="nc" id="L1735">        Record record = makeCreateRecord(createMode, serverPath, data, acl, ttl);</span>
+<span class="nc" id="L1736">        cnxn.queuePacket(h, r, record, response, cb, clientPath,</span>
+                serverPath, ctx, null);
+<span class="nc" id="L1738">    }</span>
+
+    /**
+     * Delete the node with the given path. The call will succeed if such a node
+     * exists, and the given version matches the node's version (if the given
+     * version is -1, it matches any node's versions).
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if the nodes does not exist.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.BadVersion will be
+     * thrown if the given version does not match the node's version.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NotEmpty will be thrown
+     * if the node has children.
+     * &lt;p&gt;
+     * This operation, if successful, will trigger all the watches on the node
+     * of the given path left by exists API calls, and the watches on the parent
+     * node left by getChildren API calls.
+     *
+     * @param path
+     *                the path of the node to be deleted.
+     * @param version
+     *                the expected node version.
+     * @throws InterruptedException IF the server transaction is interrupted
+     * @throws KeeperException If the server signals an error with a non-zero
+     *   return code.
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public void delete(final String path, int version)
+        throws InterruptedException, KeeperException
+    {
+<span class="nc" id="L1770">        final String clientPath = path;</span>
+<span class="nc" id="L1771">        PathUtils.validatePath(clientPath);</span>
+
+        final String serverPath;
+
+        // maintain semantics even in chroot case
+        // specifically - root cannot be deleted
+        // I think this makes sense even in chroot case.
+<span class="nc bnc" id="L1778" title="All 2 branches missed.">        if (clientPath.equals(&quot;/&quot;)) {</span>
+            // a bit of a hack, but delete(/) will never succeed and ensures
+            // that the same semantics are maintained
+<span class="nc" id="L1781">            serverPath = clientPath;</span>
+        } else {
+<span class="nc" id="L1783">            serverPath = prependChroot(clientPath);</span>
+        }
+
+<span class="nc" id="L1786">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L1787">        h.setType(ZooDefs.OpCode.delete);</span>
+<span class="nc" id="L1788">        DeleteRequest request = new DeleteRequest();</span>
+<span class="nc" id="L1789">        request.setPath(serverPath);</span>
+<span class="nc" id="L1790">        request.setVersion(version);</span>
+<span class="nc" id="L1791">        ReplyHeader r = cnxn.submitRequest(h, request, null, null);</span>
+<span class="nc bnc" id="L1792" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L1793">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+<span class="nc" id="L1796">    }</span>
+
+    /**
+     * Executes multiple ZooKeeper operations or none of them.
+     * &lt;p&gt;
+     * On success, a list of results is returned.
+     * On failure, an exception is raised which contains partial results and
+     * error details, see {@link KeeperException#getResults}
+     * &lt;p&gt;
+     * Note: The maximum allowable size of all of the data arrays in all of
+     * the setData operations in this single request is typically 1 MB
+     * (1,048,576 bytes). This limit is specified on the server via
+     * &lt;a href=&quot;http://zookeeper.apache.org/doc/current/zookeeperAdmin.html#Unsafe+Options&quot;&gt;jute.maxbuffer&lt;/a&gt;.
+     * Requests larger than this will cause a KeeperException to be
+     * thrown.
+     *
+     * @param ops An iterable that contains the operations to be done.
+     * These should be created using the factory methods on {@link Op}.
+     * @return A list of results, one for each input Op, the order of
+     * which exactly matches the order of the &lt;code&gt;ops&lt;/code&gt; input
+     * operations.
+     * @throws InterruptedException If the operation was interrupted.
+     * The operation may or may not have succeeded, but will not have
+     * partially succeeded if this exception is thrown.
+     * @throws KeeperException If the operation could not be completed
+     * due to some error in doing one of the specified ops.
+     * @throws IllegalArgumentException if an invalid path is specified
+     *
+     * @since 3.4.0
+     */
+    public List&lt;OpResult&gt; multi(Iterable&lt;Op&gt; ops) throws InterruptedException, KeeperException {
+<span class="nc bnc" id="L1827" title="All 2 branches missed.">        for (Op op : ops) {</span>
+<span class="nc" id="L1828">            op.validate();</span>
+<span class="nc" id="L1829">        }</span>
+<span class="nc" id="L1830">        return multiInternal(generateMultiTransaction(ops));</span>
+    }
+
+    /**
+     * The asynchronous version of multi.
+     *
+     * @see #multi(Iterable)
+     */
+    public void multi(Iterable&lt;Op&gt; ops, MultiCallback cb, Object ctx) {
+<span class="nc" id="L1839">        List&lt;OpResult&gt; results = validatePath(ops);</span>
+<span class="nc bnc" id="L1840" title="All 2 branches missed.">        if (results.size() &gt; 0) {</span>
+<span class="nc" id="L1841">            cb.processResult(KeeperException.Code.BADARGUMENTS.intValue(),</span>
+                    null, ctx, results);
+<span class="nc" id="L1843">            return;</span>
+        }
+<span class="nc" id="L1845">        multiInternal(generateMultiTransaction(ops), cb, ctx);</span>
+<span class="nc" id="L1846">    }</span>
+
+    private List&lt;OpResult&gt; validatePath(Iterable&lt;Op&gt; ops) {
+<span class="nc" id="L1849">        List&lt;OpResult&gt; results = new ArrayList&lt;OpResult&gt;();</span>
+<span class="nc" id="L1850">        boolean error = false;</span>
+<span class="nc bnc" id="L1851" title="All 2 branches missed.">        for (Op op : ops) {</span>
+            try {
+<span class="nc" id="L1853">                op.validate();</span>
+<span class="nc" id="L1854">            } catch (IllegalArgumentException iae) {</span>
+<span class="nc" id="L1855">                LOG.error(&quot;IllegalArgumentException: &quot; + iae.getMessage());</span>
+<span class="nc" id="L1856">                ErrorResult err = new ErrorResult(</span>
+<span class="nc" id="L1857">                        KeeperException.Code.BADARGUMENTS.intValue());</span>
+<span class="nc" id="L1858">                results.add(err);</span>
+<span class="nc" id="L1859">                error = true;</span>
+<span class="nc" id="L1860">                continue;</span>
+<span class="nc" id="L1861">            } catch (KeeperException ke) {</span>
+<span class="nc" id="L1862">                LOG.error(&quot;KeeperException: &quot; + ke.getMessage());</span>
+<span class="nc" id="L1863">                ErrorResult err = new ErrorResult(ke.code().intValue());</span>
+<span class="nc" id="L1864">                results.add(err);</span>
+<span class="nc" id="L1865">                error = true;</span>
+<span class="nc" id="L1866">                continue;</span>
+<span class="nc" id="L1867">            }</span>
+<span class="nc" id="L1868">            ErrorResult err = new ErrorResult(</span>
+<span class="nc" id="L1869">                    KeeperException.Code.RUNTIMEINCONSISTENCY.intValue());</span>
+<span class="nc" id="L1870">            results.add(err);</span>
+<span class="nc" id="L1871">        }</span>
+<span class="nc bnc" id="L1872" title="All 2 branches missed.">        if (false == error) {</span>
+<span class="nc" id="L1873">            results.clear();</span>
+        }
+<span class="nc" id="L1875">        return results;</span>
+    }
+
+    private MultiTransactionRecord generateMultiTransaction(Iterable&lt;Op&gt; ops) {
+        // reconstructing transaction with the chroot prefix
+<span class="nc" id="L1880">        List&lt;Op&gt; transaction = new ArrayList&lt;Op&gt;();</span>
+<span class="nc bnc" id="L1881" title="All 2 branches missed.">        for (Op op : ops) {</span>
+<span class="nc" id="L1882">            transaction.add(withRootPrefix(op));</span>
+<span class="nc" id="L1883">        }</span>
+<span class="nc" id="L1884">        return new MultiTransactionRecord(transaction);</span>
+    }
+
+    private Op withRootPrefix(Op op) {
+<span class="nc bnc" id="L1888" title="All 2 branches missed.">        if (null != op.getPath()) {</span>
+<span class="nc" id="L1889">            final String serverPath = prependChroot(op.getPath());</span>
+<span class="nc bnc" id="L1890" title="All 2 branches missed.">            if (!op.getPath().equals(serverPath)) {</span>
+<span class="nc" id="L1891">                return op.withChroot(serverPath);</span>
+            }
+        }
+<span class="nc" id="L1894">        return op;</span>
+    }
+
+    protected void multiInternal(MultiTransactionRecord request, MultiCallback cb, Object ctx) {
+<span class="nc" id="L1898">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L1899">        h.setType(ZooDefs.OpCode.multi);</span>
+<span class="nc" id="L1900">        MultiResponse response = new MultiResponse();</span>
+<span class="nc" id="L1901">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb, null, null, ctx, null);</span>
+<span class="nc" id="L1902">    }</span>
+
+    protected List&lt;OpResult&gt; multiInternal(MultiTransactionRecord request)
+        throws InterruptedException, KeeperException {
+<span class="nc" id="L1906">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L1907">        h.setType(ZooDefs.OpCode.multi);</span>
+<span class="nc" id="L1908">        MultiResponse response = new MultiResponse();</span>
+<span class="nc" id="L1909">        ReplyHeader r = cnxn.submitRequest(h, request, response, null);</span>
+<span class="nc bnc" id="L1910" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L1911">            throw KeeperException.create(KeeperException.Code.get(r.getErr()));</span>
+        }
+
+<span class="nc" id="L1914">        List&lt;OpResult&gt; results = response.getResultList();</span>
+        
+<span class="nc" id="L1916">        ErrorResult fatalError = null;</span>
+<span class="nc bnc" id="L1917" title="All 2 branches missed.">        for (OpResult result : results) {</span>
+<span class="nc bnc" id="L1918" title="All 4 branches missed.">            if (result instanceof ErrorResult &amp;&amp; ((ErrorResult)result).getErr() != KeeperException.Code.OK.intValue()) {</span>
+<span class="nc" id="L1919">                fatalError = (ErrorResult) result;</span>
+<span class="nc" id="L1920">                break;</span>
+            }
+<span class="nc" id="L1922">        }</span>
+
+<span class="nc bnc" id="L1924" title="All 2 branches missed.">        if (fatalError != null) {</span>
+<span class="nc" id="L1925">            KeeperException ex = KeeperException.create(KeeperException.Code.get(fatalError.getErr()));</span>
+<span class="nc" id="L1926">            ex.setMultiResults(results);</span>
+<span class="nc" id="L1927">            throw ex;</span>
+        }
+
+<span class="nc" id="L1930">        return results;</span>
+    }
+
+    /**
+     * A Transaction is a thin wrapper on the {@link #multi} method
+     * which provides a builder object that can be used to construct
+     * and commit an atomic set of operations.
+     *
+     * @since 3.4.0
+     *
+     * @return a Transaction builder object
+     */
+    public Transaction transaction() {
+<span class="nc" id="L1943">        return new Transaction(this);</span>
+    }
+
+    /**
+     * The asynchronous version of delete.
+     *
+     * @see #delete(String, int)
+     */
+    public void delete(final String path, int version, VoidCallback cb,
+            Object ctx)
+    {
+<span class="nc" id="L1954">        final String clientPath = path;</span>
+<span class="nc" id="L1955">        PathUtils.validatePath(clientPath);</span>
+
+        final String serverPath;
+
+        // maintain semantics even in chroot case
+        // specifically - root cannot be deleted
+        // I think this makes sense even in chroot case.
+<span class="nc bnc" id="L1962" title="All 2 branches missed.">        if (clientPath.equals(&quot;/&quot;)) {</span>
+            // a bit of a hack, but delete(/) will never succeed and ensures
+            // that the same semantics are maintained
+<span class="nc" id="L1965">            serverPath = clientPath;</span>
+        } else {
+<span class="nc" id="L1967">            serverPath = prependChroot(clientPath);</span>
+        }
+
+<span class="nc" id="L1970">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L1971">        h.setType(ZooDefs.OpCode.delete);</span>
+<span class="nc" id="L1972">        DeleteRequest request = new DeleteRequest();</span>
+<span class="nc" id="L1973">        request.setPath(serverPath);</span>
+<span class="nc" id="L1974">        request.setVersion(version);</span>
+<span class="nc" id="L1975">        cnxn.queuePacket(h, new ReplyHeader(), request, null, cb, clientPath,</span>
+                serverPath, ctx, null);
+<span class="nc" id="L1977">    }</span>
+
+    /**
+     * Return the stat of the node of the given path. Return null if no such a
+     * node exists.
+     * &lt;p&gt;
+     * If the watch is non-null and the call is successful (no exception is thrown),
+     * a watch will be left on the node with the given path. The watch will be
+     * triggered by a successful operation that creates/delete the node or sets
+     * the data on the node.
+     *
+     * @param path the node path
+     * @param watcher explicit watcher
+     * @return the stat of the node of the given path; return null if no such a
+     *         node exists.
+     * @throws KeeperException If the server signals an error
+     * @throws InterruptedException If the server transaction is interrupted.
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public Stat exists(final String path, Watcher watcher)
+        throws KeeperException, InterruptedException
+    {
+<span class="nc" id="L1999">        final String clientPath = path;</span>
+<span class="nc" id="L2000">        PathUtils.validatePath(clientPath);</span>
+
+        // the watch contains the un-chroot path
+<span class="nc" id="L2003">        WatchRegistration wcb = null;</span>
+<span class="nc bnc" id="L2004" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L2005">            wcb = new ExistsWatchRegistration(watcher, clientPath);</span>
+        }
+
+<span class="nc" id="L2008">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2010">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2011">        h.setType(ZooDefs.OpCode.exists);</span>
+<span class="nc" id="L2012">        ExistsRequest request = new ExistsRequest();</span>
+<span class="nc" id="L2013">        request.setPath(serverPath);</span>
+<span class="nc bnc" id="L2014" title="All 2 branches missed.">        request.setWatch(watcher != null);</span>
+<span class="nc" id="L2015">        SetDataResponse response = new SetDataResponse();</span>
+<span class="nc" id="L2016">        ReplyHeader r = cnxn.submitRequest(h, request, response, wcb);</span>
+<span class="nc bnc" id="L2017" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc bnc" id="L2018" title="All 2 branches missed.">            if (r.getErr() == KeeperException.Code.NONODE.intValue()) {</span>
+<span class="nc" id="L2019">                return null;</span>
+            }
+<span class="nc" id="L2021">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+
+<span class="nc bnc" id="L2025" title="All 2 branches missed.">        return response.getStat().getCzxid() == -1 ? null : response.getStat();</span>
+    }
+
+    /**
+     * Return the stat of the node of the given path. Return null if no such a
+     * node exists.
+     * &lt;p&gt;
+     * If the watch is true and the call is successful (no exception is thrown),
+     * a watch will be left on the node with the given path. The watch will be
+     * triggered by a successful operation that creates/delete the node or sets
+     * the data on the node.
+     *
+     * @param path
+     *                the node path
+     * @param watch
+     *                whether need to watch this node
+     * @return the stat of the node of the given path; return null if no such a
+     *         node exists.
+     * @throws KeeperException If the server signals an error
+     * @throws InterruptedException If the server transaction is interrupted.
+     */
+    public Stat exists(String path, boolean watch) throws KeeperException,
+        InterruptedException
+    {
+<span class="nc bnc" id="L2049" title="All 2 branches missed.">        return exists(path, watch ? watchManager.defaultWatcher : null);</span>
+    }
+
+    /**
+     * The asynchronous version of exists.
+     *
+     * @see #exists(String, Watcher)
+     */
+    public void exists(final String path, Watcher watcher,
+            StatCallback cb, Object ctx)
+    {
+<span class="nc" id="L2060">        final String clientPath = path;</span>
+<span class="nc" id="L2061">        PathUtils.validatePath(clientPath);</span>
+
+        // the watch contains the un-chroot path
+<span class="nc" id="L2064">        WatchRegistration wcb = null;</span>
+<span class="nc bnc" id="L2065" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L2066">            wcb = new ExistsWatchRegistration(watcher, clientPath);</span>
+        }
+
+<span class="nc" id="L2069">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2071">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2072">        h.setType(ZooDefs.OpCode.exists);</span>
+<span class="nc" id="L2073">        ExistsRequest request = new ExistsRequest();</span>
+<span class="nc" id="L2074">        request.setPath(serverPath);</span>
+<span class="nc bnc" id="L2075" title="All 2 branches missed.">        request.setWatch(watcher != null);</span>
+<span class="nc" id="L2076">        SetDataResponse response = new SetDataResponse();</span>
+<span class="nc" id="L2077">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb,</span>
+                clientPath, serverPath, ctx, wcb);
+<span class="nc" id="L2079">    }</span>
+
+    /**
+     * The asynchronous version of exists.
+     *
+     * @see #exists(String, boolean)
+     */
+    public void exists(String path, boolean watch, StatCallback cb, Object ctx) {
+<span class="nc bnc" id="L2087" title="All 2 branches missed.">        exists(path, watch ? watchManager.defaultWatcher : null, cb, ctx);</span>
+<span class="nc" id="L2088">    }</span>
+
+    /**
+     * Return the data and the stat of the node of the given path.
+     * &lt;p&gt;
+     * If the watch is non-null and the call is successful (no exception is
+     * thrown), a watch will be left on the node with the given path. The watch
+     * will be triggered by a successful operation that sets data on the node, or
+     * deletes the node.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if no node with the given path exists.
+     *
+     * @param path the given path
+     * @param watcher explicit watcher
+     * @param stat the stat of the node
+     * @return the data of the node
+     * @throws KeeperException If the server signals an error with a non-zero error code
+     * @throws InterruptedException If the server transaction is interrupted.
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public byte[] getData(final String path, Watcher watcher, Stat stat)
+        throws KeeperException, InterruptedException
+     {
+<span class="nc" id="L2112">        final String clientPath = path;</span>
+<span class="nc" id="L2113">        PathUtils.validatePath(clientPath);</span>
+
+        // the watch contains the un-chroot path
+<span class="nc" id="L2116">        WatchRegistration wcb = null;</span>
+<span class="nc bnc" id="L2117" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L2118">            wcb = new DataWatchRegistration(watcher, clientPath);</span>
+        }
+
+<span class="nc" id="L2121">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2123">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2124">        h.setType(ZooDefs.OpCode.getData);</span>
+<span class="nc" id="L2125">        GetDataRequest request = new GetDataRequest();</span>
+<span class="nc" id="L2126">        request.setPath(serverPath);</span>
+<span class="nc bnc" id="L2127" title="All 2 branches missed.">        request.setWatch(watcher != null);</span>
+<span class="nc" id="L2128">        GetDataResponse response = new GetDataResponse();</span>
+<span class="nc" id="L2129">        ReplyHeader r = cnxn.submitRequest(h, request, response, wcb);</span>
+<span class="nc bnc" id="L2130" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L2131">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+<span class="nc bnc" id="L2134" title="All 2 branches missed.">        if (stat != null) {</span>
+<span class="nc" id="L2135">            DataTree.copyStat(response.getStat(), stat);</span>
+        }
+<span class="nc" id="L2137">        return response.getData();</span>
+    }
+
+    /**
+     * Return the data and the stat of the node of the given path.
+     * &lt;p&gt;
+     * If the watch is true and the call is successful (no exception is
+     * thrown), a watch will be left on the node with the given path. The watch
+     * will be triggered by a successful operation that sets data on the node, or
+     * deletes the node.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if no node with the given path exists.
+     *
+     * @param path the given path
+     * @param watch whether need to watch this node
+     * @param stat the stat of the node
+     * @return the data of the node
+     * @throws KeeperException If the server signals an error with a non-zero error code
+     * @throws InterruptedException If the server transaction is interrupted.
+     */
+    public byte[] getData(String path, boolean watch, Stat stat)
+            throws KeeperException, InterruptedException {
+<span class="nc bnc" id="L2160" title="All 2 branches missed.">        return getData(path, watch ? watchManager.defaultWatcher : null, stat);</span>
+    }
+
+    /**
+     * The asynchronous version of getData.
+     *
+     * @see #getData(String, Watcher, Stat)
+     */
+    public void getData(final String path, Watcher watcher,
+            DataCallback cb, Object ctx)
+    {
+<span class="nc" id="L2171">        final String clientPath = path;</span>
+<span class="nc" id="L2172">        PathUtils.validatePath(clientPath);</span>
+
+        // the watch contains the un-chroot path
+<span class="nc" id="L2175">        WatchRegistration wcb = null;</span>
+<span class="nc bnc" id="L2176" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L2177">            wcb = new DataWatchRegistration(watcher, clientPath);</span>
+        }
+
+<span class="nc" id="L2180">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2182">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2183">        h.setType(ZooDefs.OpCode.getData);</span>
+<span class="nc" id="L2184">        GetDataRequest request = new GetDataRequest();</span>
+<span class="nc" id="L2185">        request.setPath(serverPath);</span>
+<span class="nc bnc" id="L2186" title="All 2 branches missed.">        request.setWatch(watcher != null);</span>
+<span class="nc" id="L2187">        GetDataResponse response = new GetDataResponse();</span>
+<span class="nc" id="L2188">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb,</span>
+                clientPath, serverPath, ctx, wcb);
+<span class="nc" id="L2190">    }</span>
+
+    /**
+     * The asynchronous version of getData.
+     *
+     * @see #getData(String, boolean, Stat)
+     */
+    public void getData(String path, boolean watch, DataCallback cb, Object ctx) {
+<span class="nc bnc" id="L2198" title="All 2 branches missed.">        getData(path, watch ? watchManager.defaultWatcher : null, cb, ctx);</span>
+<span class="nc" id="L2199">    }</span>
+
+    /**
+     * Return the last committed configuration (as known to the server to which the client is connected)
+     * and the stat of the configuration.
+     * &lt;p&gt;
+     * If the watch is non-null and the call is successful (no exception is
+     * thrown), a watch will be left on the configuration node (ZooDefs.CONFIG_NODE). The watch
+     * will be triggered by a successful reconfig operation
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if the configuration node doesn't exists.
+     *
+     * @param watcher explicit watcher
+     * @param stat the stat of the configuration node ZooDefs.CONFIG_NODE
+     * @return configuration data stored in ZooDefs.CONFIG_NODE
+     * @throws KeeperException If the server signals an error with a non-zero error code
+     * @throws InterruptedException If the server transaction is interrupted.
+     */
+    public byte[] getConfig(Watcher watcher, Stat stat)
+        throws KeeperException, InterruptedException
+     {
+<span class="nc" id="L2221">        final String configZnode = ZooDefs.CONFIG_NODE;</span>
+ 
+        // the watch contains the un-chroot path
+<span class="nc" id="L2224">        WatchRegistration wcb = null;</span>
+<span class="nc bnc" id="L2225" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L2226">            wcb = new DataWatchRegistration(watcher, configZnode);</span>
+        }
+
+<span class="nc" id="L2229">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2230">        h.setType(ZooDefs.OpCode.getData);</span>
+<span class="nc" id="L2231">        GetDataRequest request = new GetDataRequest();</span>
+<span class="nc" id="L2232">        request.setPath(configZnode);</span>
+<span class="nc bnc" id="L2233" title="All 2 branches missed.">        request.setWatch(watcher != null);</span>
+<span class="nc" id="L2234">        GetDataResponse response = new GetDataResponse();</span>
+<span class="nc" id="L2235">        ReplyHeader r = cnxn.submitRequest(h, request, response, wcb);</span>
+<span class="nc bnc" id="L2236" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L2237">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                   configZnode);
+        }
+<span class="nc bnc" id="L2240" title="All 2 branches missed.">        if (stat != null) {</span>
+<span class="nc" id="L2241">            DataTree.copyStat(response.getStat(), stat);</span>
+        }
+<span class="nc" id="L2243">        return response.getData();</span>
+    }
+
+    /**
+     * The asynchronous version of getConfig.
+     *
+     * @see #getConfig(Watcher, Stat)
+     */
+    public void getConfig(Watcher watcher,
+            DataCallback cb, Object ctx)
+    {
+<span class="nc" id="L2254">        final String configZnode = ZooDefs.CONFIG_NODE;</span>
+        
+        // the watch contains the un-chroot path
+<span class="nc" id="L2257">        WatchRegistration wcb = null;</span>
+<span class="nc bnc" id="L2258" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L2259">            wcb = new DataWatchRegistration(watcher, configZnode);</span>
+        }
+
+<span class="nc" id="L2262">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2263">        h.setType(ZooDefs.OpCode.getData);</span>
+<span class="nc" id="L2264">        GetDataRequest request = new GetDataRequest();</span>
+<span class="nc" id="L2265">        request.setPath(configZnode);</span>
+<span class="nc bnc" id="L2266" title="All 2 branches missed.">        request.setWatch(watcher != null);</span>
+<span class="nc" id="L2267">        GetDataResponse response = new GetDataResponse();</span>
+<span class="nc" id="L2268">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb,</span>
+               configZnode, configZnode, ctx, wcb);
+<span class="nc" id="L2270">    }</span>
+
+    
+    /**
+     * Return the last committed configuration (as known to the server to which the client is connected)
+     * and the stat of the configuration.
+     * &lt;p&gt;
+     * If the watch is true and the call is successful (no exception is
+     * thrown), a watch will be left on the configuration node (ZooDefs.CONFIG_NODE). The watch
+     * will be triggered by a successful reconfig operation
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if no node with the given path exists.
+     *
+     * @param watch whether need to watch this node
+     * @param stat the stat of the configuration node ZooDefs.CONFIG_NODE
+     * @return configuration data stored in ZooDefs.CONFIG_NODE
+     * @throws KeeperException If the server signals an error with a non-zero error code
+     * @throws InterruptedException If the server transaction is interrupted.
+     */
+    public byte[] getConfig(boolean watch, Stat stat)
+            throws KeeperException, InterruptedException {
+<span class="nc bnc" id="L2292" title="All 2 branches missed.">        return getConfig(watch ? watchManager.defaultWatcher : null, stat);</span>
+    }
+ 
+    /**
+     * The Asynchronous version of getConfig. 
+     * 
+     * @see #getData(String, boolean, Stat)
+     */
+    public void getConfig(boolean watch, DataCallback cb, Object ctx) {
+<span class="nc bnc" id="L2301" title="All 2 branches missed.">        getConfig(watch ? watchManager.defaultWatcher : null, cb, ctx);</span>
+<span class="nc" id="L2302">    }</span>
+
+    /**
+     * @deprecated instead use the reconfigure() methods instead in {@link org.apache.zookeeper.admin.ZooKeeperAdmin}
+     */
+    @Deprecated
+    public byte[] reconfig(String joiningServers, String leavingServers, String newMembers, long fromConfig, Stat stat) throws KeeperException, InterruptedException {
+<span class="nc" id="L2309">        return internalReconfig(joiningServers, leavingServers, newMembers, fromConfig, stat);</span>
+    }
+
+    /**
+     * @deprecated instead use the reconfigure() methods instead in {@link org.apache.zookeeper.admin.ZooKeeperAdmin}
+     */
+    @Deprecated
+    public byte[] reconfig(List&lt;String&gt; joiningServers, List&lt;String&gt; leavingServers, List&lt;String&gt; newMembers, long fromConfig, Stat stat) throws KeeperException, InterruptedException {
+<span class="nc" id="L2317">        return internalReconfig(joiningServers, leavingServers, newMembers, fromConfig, stat);</span>
+    }
+
+    /**
+     * @deprecated instead use the reconfigure() methods instead in {@link org.apache.zookeeper.admin.ZooKeeperAdmin}
+     */
+    @Deprecated
+    public void reconfig(String joiningServers, String leavingServers,
+                         String newMembers, long fromConfig, DataCallback cb, Object ctx) {
+<span class="nc" id="L2326">        internalReconfig(joiningServers, leavingServers, newMembers, fromConfig, cb, ctx);</span>
+<span class="nc" id="L2327">    }</span>
+
+    /**
+     * @deprecated instead use the reconfigure() methods instead in {@link org.apache.zookeeper.admin.ZooKeeperAdmin}
+     */
+    @Deprecated
+    public void reconfig(List&lt;String&gt; joiningServers,
+                         List&lt;String&gt; leavingServers, List&lt;String&gt; newMembers, long fromConfig,
+                         DataCallback cb, Object ctx) {
+<span class="nc" id="L2336">        internalReconfig(joiningServers, leavingServers, newMembers, fromConfig, cb, ctx);</span>
+<span class="nc" id="L2337">    }</span>
+
+    /**
+     * Set the data for the node of the given path if such a node exists and the
+     * given version matches the version of the node (if the given version is
+     * -1, it matches any node's versions). Return the stat of the node.
+     * &lt;p&gt;
+     * This operation, if successful, will trigger all the watches on the node
+     * of the given path left by getData calls.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if no node with the given path exists.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.BadVersion will be
+     * thrown if the given version does not match the node's version.
+     * &lt;p&gt;
+     * The maximum allowable size of the data array is 1 MB (1,048,576 bytes).
+     * Arrays larger than this will cause a KeeperException to be thrown.
+     *
+     * @param path
+     *                the path of the node
+     * @param data
+     *                the data to set
+     * @param version
+     *                the expected matching version
+     * @return the state of the node
+     * @throws InterruptedException If the server transaction is interrupted.
+     * @throws KeeperException If the server signals an error with a non-zero error code.
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public Stat setData(final String path, byte data[], int version)
+        throws KeeperException, InterruptedException
+    {
+<span class="nc" id="L2370">        final String clientPath = path;</span>
+<span class="nc" id="L2371">        PathUtils.validatePath(clientPath);</span>
+
+<span class="nc" id="L2373">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2375">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2376">        h.setType(ZooDefs.OpCode.setData);</span>
+<span class="nc" id="L2377">        SetDataRequest request = new SetDataRequest();</span>
+<span class="nc" id="L2378">        request.setPath(serverPath);</span>
+<span class="nc" id="L2379">        request.setData(data);</span>
+<span class="nc" id="L2380">        request.setVersion(version);</span>
+<span class="nc" id="L2381">        SetDataResponse response = new SetDataResponse();</span>
+<span class="nc" id="L2382">        ReplyHeader r = cnxn.submitRequest(h, request, response, null);</span>
+<span class="nc bnc" id="L2383" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L2384">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+<span class="nc" id="L2387">        return response.getStat();</span>
+    }
+
+    /**
+     * The asynchronous version of setData.
+     *
+     * @see #setData(String, byte[], int)
+     */
+    public void setData(final String path, byte data[], int version,
+            StatCallback cb, Object ctx)
+    {
+<span class="nc" id="L2398">        final String clientPath = path;</span>
+<span class="nc" id="L2399">        PathUtils.validatePath(clientPath);</span>
+
+<span class="nc" id="L2401">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2403">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2404">        h.setType(ZooDefs.OpCode.setData);</span>
+<span class="nc" id="L2405">        SetDataRequest request = new SetDataRequest();</span>
+<span class="nc" id="L2406">        request.setPath(serverPath);</span>
+<span class="nc" id="L2407">        request.setData(data);</span>
+<span class="nc" id="L2408">        request.setVersion(version);</span>
+<span class="nc" id="L2409">        SetDataResponse response = new SetDataResponse();</span>
+<span class="nc" id="L2410">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb,</span>
+                clientPath, serverPath, ctx, null);
+<span class="nc" id="L2412">    }</span>
+
+    /**
+     * Return the ACL and stat of the node of the given path.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if no node with the given path exists.
+     *
+     * @param path
+     *                the given path for the node
+     * @param stat
+     *                the stat of the node will be copied to this parameter if
+     *                not null.
+     * @return the ACL array of the given node.
+     * @throws InterruptedException If the server transaction is interrupted.
+     * @throws KeeperException If the server signals an error with a non-zero error code.
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public List&lt;ACL&gt; getACL(final String path, Stat stat)
+        throws KeeperException, InterruptedException
+    {
+<span class="nc" id="L2433">        final String clientPath = path;</span>
+<span class="nc" id="L2434">        PathUtils.validatePath(clientPath);</span>
+
+<span class="nc" id="L2436">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2438">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2439">        h.setType(ZooDefs.OpCode.getACL);</span>
+<span class="nc" id="L2440">        GetACLRequest request = new GetACLRequest();</span>
+<span class="nc" id="L2441">        request.setPath(serverPath);</span>
+<span class="nc" id="L2442">        GetACLResponse response = new GetACLResponse();</span>
+<span class="nc" id="L2443">        ReplyHeader r = cnxn.submitRequest(h, request, response, null);</span>
+<span class="nc bnc" id="L2444" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L2445">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+<span class="nc bnc" id="L2448" title="All 2 branches missed.">        if (stat != null) {</span>
+<span class="nc" id="L2449">            DataTree.copyStat(response.getStat(), stat);</span>
+        }
+<span class="nc" id="L2451">        return response.getAcl();</span>
+    }
+
+    /**
+     * The asynchronous version of getACL.
+     *
+     * @see #getACL(String, Stat)
+     */
+    public void getACL(final String path, Stat stat, ACLCallback cb,
+            Object ctx)
+    {
+<span class="nc" id="L2462">        final String clientPath = path;</span>
+<span class="nc" id="L2463">        PathUtils.validatePath(clientPath);</span>
+
+<span class="nc" id="L2465">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2467">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2468">        h.setType(ZooDefs.OpCode.getACL);</span>
+<span class="nc" id="L2469">        GetACLRequest request = new GetACLRequest();</span>
+<span class="nc" id="L2470">        request.setPath(serverPath);</span>
+<span class="nc" id="L2471">        GetACLResponse response = new GetACLResponse();</span>
+<span class="nc" id="L2472">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb,</span>
+                clientPath, serverPath, ctx, null);
+<span class="nc" id="L2474">    }</span>
+
+    /**
+     * Set the ACL for the node of the given path if such a node exists and the
+     * given aclVersion matches the acl version of the node. Return the stat of the
+     * node.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if no node with the given path exists.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.BadVersion will be
+     * thrown if the given aclVersion does not match the node's aclVersion.
+     *
+     * @param path the given path for the node
+     * @param acl the given acl for the node
+     * @param aclVersion the given acl version of the node
+     * @return the stat of the node.
+     * @throws InterruptedException If the server transaction is interrupted.
+     * @throws KeeperException If the server signals an error with a non-zero error code.
+     * @throws org.apache.zookeeper.KeeperException.InvalidACLException If the acl is invalide.
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public Stat setACL(final String path, List&lt;ACL&gt; acl, int aclVersion)
+        throws KeeperException, InterruptedException
+    {
+<span class="nc" id="L2499">        final String clientPath = path;</span>
+<span class="nc" id="L2500">        PathUtils.validatePath(clientPath);</span>
+
+<span class="nc" id="L2502">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2504">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2505">        h.setType(ZooDefs.OpCode.setACL);</span>
+<span class="nc" id="L2506">        SetACLRequest request = new SetACLRequest();</span>
+<span class="nc" id="L2507">        request.setPath(serverPath);</span>
+<span class="nc bnc" id="L2508" title="All 4 branches missed.">        if (acl != null &amp;&amp; acl.size() == 0) {</span>
+<span class="nc" id="L2509">            throw new KeeperException.InvalidACLException(clientPath);</span>
+        }
+<span class="nc" id="L2511">        request.setAcl(acl);</span>
+<span class="nc" id="L2512">        request.setVersion(aclVersion);</span>
+<span class="nc" id="L2513">        SetACLResponse response = new SetACLResponse();</span>
+<span class="nc" id="L2514">        ReplyHeader r = cnxn.submitRequest(h, request, response, null);</span>
+<span class="nc bnc" id="L2515" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L2516">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+<span class="nc" id="L2519">        return response.getStat();</span>
+    }
+
+    /**
+     * The asynchronous version of setACL.
+     *
+     * @see #setACL(String, List, int)
+     */
+    public void setACL(final String path, List&lt;ACL&gt; acl, int version,
+            StatCallback cb, Object ctx)
+    {
+<span class="nc" id="L2530">        final String clientPath = path;</span>
+<span class="nc" id="L2531">        PathUtils.validatePath(clientPath);</span>
+
+<span class="nc" id="L2533">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2535">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2536">        h.setType(ZooDefs.OpCode.setACL);</span>
+<span class="nc" id="L2537">        SetACLRequest request = new SetACLRequest();</span>
+<span class="nc" id="L2538">        request.setPath(serverPath);</span>
+<span class="nc" id="L2539">        request.setAcl(acl);</span>
+<span class="nc" id="L2540">        request.setVersion(version);</span>
+<span class="nc" id="L2541">        SetACLResponse response = new SetACLResponse();</span>
+<span class="nc" id="L2542">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb,</span>
+                clientPath, serverPath, ctx, null);
+<span class="nc" id="L2544">    }</span>
+
+    /**
+     * Return the list of the children of the node of the given path.
+     * &lt;p&gt;
+     * If the watch is non-null and the call is successful (no exception is thrown),
+     * a watch will be left on the node with the given path. The watch will be
+     * triggered by a successful operation that deletes the node of the given
+     * path or creates/delete a child under the node.
+     * &lt;p&gt;
+     * The list of children returned is not sorted and no guarantee is provided
+     * as to its natural or lexical order.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if no node with the given path exists.
+     *
+     * @param path
+     * @param watcher explicit watcher
+     * @return an unordered array of children of the node with the given path
+     * @throws InterruptedException If the server transaction is interrupted.
+     * @throws KeeperException If the server signals an error with a non-zero error code.
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public List&lt;String&gt; getChildren(final String path, Watcher watcher)
+        throws KeeperException, InterruptedException
+    {
+<span class="nc" id="L2570">        final String clientPath = path;</span>
+<span class="nc" id="L2571">        PathUtils.validatePath(clientPath);</span>
+
+        // the watch contains the un-chroot path
+<span class="nc" id="L2574">        WatchRegistration wcb = null;</span>
+<span class="nc bnc" id="L2575" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L2576">            wcb = new ChildWatchRegistration(watcher, clientPath);</span>
+        }
+
+<span class="nc" id="L2579">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2581">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2582">        h.setType(ZooDefs.OpCode.getChildren);</span>
+<span class="nc" id="L2583">        GetChildrenRequest request = new GetChildrenRequest();</span>
+<span class="nc" id="L2584">        request.setPath(serverPath);</span>
+<span class="nc bnc" id="L2585" title="All 2 branches missed.">        request.setWatch(watcher != null);</span>
+<span class="nc" id="L2586">        GetChildrenResponse response = new GetChildrenResponse();</span>
+<span class="nc" id="L2587">        ReplyHeader r = cnxn.submitRequest(h, request, response, wcb);</span>
+<span class="nc bnc" id="L2588" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L2589">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+<span class="nc" id="L2592">        return response.getChildren();</span>
+    }
+
+    /**
+     * Return the list of the children of the node of the given path.
+     * &lt;p&gt;
+     * If the watch is true and the call is successful (no exception is thrown),
+     * a watch will be left on the node with the given path. The watch will be
+     * triggered by a successful operation that deletes the node of the given
+     * path or creates/delete a child under the node.
+     * &lt;p&gt;
+     * The list of children returned is not sorted and no guarantee is provided
+     * as to its natural or lexical order.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if no node with the given path exists.
+     *
+     * @param path
+     * @param watch
+     * @return an unordered array of children of the node with the given path
+     * @throws InterruptedException If the server transaction is interrupted.
+     * @throws KeeperException If the server signals an error with a non-zero error code.
+     */
+    public List&lt;String&gt; getChildren(String path, boolean watch)
+            throws KeeperException, InterruptedException {
+<span class="nc bnc" id="L2617" title="All 2 branches missed.">        return getChildren(path, watch ? watchManager.defaultWatcher : null);</span>
+    }
+
+    /**
+     * The asynchronous version of getChildren.
+     *
+     * @see #getChildren(String, Watcher)
+     */
+    public void getChildren(final String path, Watcher watcher,
+            ChildrenCallback cb, Object ctx)
+    {
+<span class="nc" id="L2628">        final String clientPath = path;</span>
+<span class="nc" id="L2629">        PathUtils.validatePath(clientPath);</span>
+
+        // the watch contains the un-chroot path
+<span class="nc" id="L2632">        WatchRegistration wcb = null;</span>
+<span class="nc bnc" id="L2633" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L2634">            wcb = new ChildWatchRegistration(watcher, clientPath);</span>
+        }
+
+<span class="nc" id="L2637">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2639">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2640">        h.setType(ZooDefs.OpCode.getChildren);</span>
+<span class="nc" id="L2641">        GetChildrenRequest request = new GetChildrenRequest();</span>
+<span class="nc" id="L2642">        request.setPath(serverPath);</span>
+<span class="nc bnc" id="L2643" title="All 2 branches missed.">        request.setWatch(watcher != null);</span>
+<span class="nc" id="L2644">        GetChildrenResponse response = new GetChildrenResponse();</span>
+<span class="nc" id="L2645">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb,</span>
+                clientPath, serverPath, ctx, wcb);
+<span class="nc" id="L2647">    }</span>
+
+    /**
+     * The asynchronous version of getChildren.
+     *
+     * @see #getChildren(String, boolean)
+     */
+    public void getChildren(String path, boolean watch, ChildrenCallback cb,
+            Object ctx)
+    {
+<span class="nc bnc" id="L2657" title="All 2 branches missed.">        getChildren(path, watch ? watchManager.defaultWatcher : null, cb, ctx);</span>
+<span class="nc" id="L2658">    }</span>
+
+    /**
+     * For the given znode path return the stat and children list.
+     * &lt;p&gt;
+     * If the watch is non-null and the call is successful (no exception is thrown),
+     * a watch will be left on the node with the given path. The watch will be
+     * triggered by a successful operation that deletes the node of the given
+     * path or creates/delete a child under the node.
+     * &lt;p&gt;
+     * The list of children returned is not sorted and no guarantee is provided
+     * as to its natural or lexical order.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if no node with the given path exists.
+     *
+     * @since 3.3.0
+     * 
+     * @param path
+     * @param watcher explicit watcher
+     * @param stat stat of the znode designated by path
+     * @return an unordered array of children of the node with the given path
+     * @throws InterruptedException If the server transaction is interrupted.
+     * @throws KeeperException If the server signals an error with a non-zero error code.
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public List&lt;String&gt; getChildren(final String path, Watcher watcher,
+            Stat stat)
+        throws KeeperException, InterruptedException
+    {
+<span class="nc" id="L2688">        final String clientPath = path;</span>
+<span class="nc" id="L2689">        PathUtils.validatePath(clientPath);</span>
+
+        // the watch contains the un-chroot path
+<span class="nc" id="L2692">        WatchRegistration wcb = null;</span>
+<span class="nc bnc" id="L2693" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L2694">            wcb = new ChildWatchRegistration(watcher, clientPath);</span>
+        }
+
+<span class="nc" id="L2697">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2699">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2700">        h.setType(ZooDefs.OpCode.getChildren2);</span>
+<span class="nc" id="L2701">        GetChildren2Request request = new GetChildren2Request();</span>
+<span class="nc" id="L2702">        request.setPath(serverPath);</span>
+<span class="nc bnc" id="L2703" title="All 2 branches missed.">        request.setWatch(watcher != null);</span>
+<span class="nc" id="L2704">        GetChildren2Response response = new GetChildren2Response();</span>
+<span class="nc" id="L2705">        ReplyHeader r = cnxn.submitRequest(h, request, response, wcb);</span>
+<span class="nc bnc" id="L2706" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L2707">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+<span class="nc bnc" id="L2710" title="All 2 branches missed.">        if (stat != null) {</span>
+<span class="nc" id="L2711">            DataTree.copyStat(response.getStat(), stat);</span>
+        }
+<span class="nc" id="L2713">        return response.getChildren();</span>
+    }
+
+    /**
+     * For the given znode path return the stat and children list.
+     * &lt;p&gt;
+     * If the watch is true and the call is successful (no exception is thrown),
+     * a watch will be left on the node with the given path. The watch will be
+     * triggered by a successful operation that deletes the node of the given
+     * path or creates/delete a child under the node.
+     * &lt;p&gt;
+     * The list of children returned is not sorted and no guarantee is provided
+     * as to its natural or lexical order.
+     * &lt;p&gt;
+     * A KeeperException with error code KeeperException.NoNode will be thrown
+     * if no node with the given path exists.
+     *
+     * @since 3.3.0
+     * 
+     * @param path
+     * @param watch
+     * @param stat stat of the znode designated by path
+     * @return an unordered array of children of the node with the given path
+     * @throws InterruptedException If the server transaction is interrupted.
+     * @throws KeeperException If the server signals an error with a non-zero
+     *  error code.
+     */
+    public List&lt;String&gt; getChildren(String path, boolean watch, Stat stat)
+            throws KeeperException, InterruptedException {
+<span class="nc bnc" id="L2742" title="All 2 branches missed.">        return getChildren(path, watch ? watchManager.defaultWatcher : null,</span>
+                stat);
+    }
+
+    /**
+     * The asynchronous version of getChildren.
+     *
+     * @since 3.3.0
+     * 
+     * @see #getChildren(String, Watcher, Stat)
+     */
+    public void getChildren(final String path, Watcher watcher,
+            Children2Callback cb, Object ctx)
+    {
+<span class="nc" id="L2756">        final String clientPath = path;</span>
+<span class="nc" id="L2757">        PathUtils.validatePath(clientPath);</span>
+
+        // the watch contains the un-chroot path
+<span class="nc" id="L2760">        WatchRegistration wcb = null;</span>
+<span class="nc bnc" id="L2761" title="All 2 branches missed.">        if (watcher != null) {</span>
+<span class="nc" id="L2762">            wcb = new ChildWatchRegistration(watcher, clientPath);</span>
+        }
+
+<span class="nc" id="L2765">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2767">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2768">        h.setType(ZooDefs.OpCode.getChildren2);</span>
+<span class="nc" id="L2769">        GetChildren2Request request = new GetChildren2Request();</span>
+<span class="nc" id="L2770">        request.setPath(serverPath);</span>
+<span class="nc bnc" id="L2771" title="All 2 branches missed.">        request.setWatch(watcher != null);</span>
+<span class="nc" id="L2772">        GetChildren2Response response = new GetChildren2Response();</span>
+<span class="nc" id="L2773">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb,</span>
+                clientPath, serverPath, ctx, wcb);
+<span class="nc" id="L2775">    }</span>
+
+    /**
+     * The asynchronous version of getChildren.
+     *
+     * @since 3.3.0
+     * 
+     * @see #getChildren(String, boolean, Stat)
+     */
+    public void getChildren(String path, boolean watch, Children2Callback cb,
+            Object ctx)
+    {
+<span class="nc bnc" id="L2787" title="All 2 branches missed.">        getChildren(path, watch ? watchManager.defaultWatcher : null, cb, ctx);</span>
+<span class="nc" id="L2788">    }</span>
+
+    /**
+     * Asynchronous sync. Flushes channel between process and leader.
+     * @param path
+     * @param cb a handler for the callback
+     * @param ctx context to be provided to the callback
+     * @throws IllegalArgumentException if an invalid path is specified
+     */
+    public void sync(final String path, VoidCallback cb, Object ctx){
+<span class="nc" id="L2798">        final String clientPath = path;</span>
+<span class="nc" id="L2799">        PathUtils.validatePath(clientPath);</span>
+
+<span class="nc" id="L2801">        final String serverPath = prependChroot(clientPath);</span>
+
+<span class="nc" id="L2803">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2804">        h.setType(ZooDefs.OpCode.sync);</span>
+<span class="nc" id="L2805">        SyncRequest request = new SyncRequest();</span>
+<span class="nc" id="L2806">        SyncResponse response = new SyncResponse();</span>
+<span class="nc" id="L2807">        request.setPath(serverPath);</span>
+<span class="nc" id="L2808">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb,</span>
+                clientPath, serverPath, ctx, null);
+<span class="nc" id="L2810">    }</span>
+
+    /**
+     * For the given znode path, removes the specified watcher of given
+     * watcherType.
+     *
+     * &lt;p&gt;
+     * Watcher shouldn't be null. A successful call guarantees that, the
+     * removed watcher won't be triggered.
+     * &lt;/p&gt;
+     *
+     * @param path
+     *            - the path of the node
+     * @param watcher
+     *            - a concrete watcher
+     * @param watcherType
+     *            - the type of watcher to be removed
+     * @param local
+     *            - whether the watcher can be removed locally when there is no
+     *            server connection
+     * @throws InterruptedException
+     *             if the server transaction is interrupted.
+     * @throws KeeperException.NoWatcherException
+     *             if no watcher exists that match the specified parameters
+     * @throws KeeperException
+     *             if the server signals an error with a non-zero error code.
+     * @throws IllegalArgumentException
+     *             if any of the following is true:
+     *             &lt;ul&gt;
+     *             &lt;li&gt; {@code path} is invalid
+     *             &lt;li&gt; {@code watcher} is null
+     *             &lt;/ul&gt;
+     *
+     * @since 3.5.0
+     */
+    public void removeWatches(String path, Watcher watcher,
+            WatcherType watcherType, boolean local)
+            throws InterruptedException, KeeperException {
+<span class="fc" id="L2848">        validateWatcher(watcher);</span>
+<span class="nc" id="L2849">        removeWatches(ZooDefs.OpCode.checkWatches, path, watcher,</span>
+                watcherType, local);
+<span class="nc" id="L2851">    }</span>
+
+    /**
+     * The asynchronous version of removeWatches.
+     *
+     * @see #removeWatches
+     */
+    public void removeWatches(String path, Watcher watcher,
+            WatcherType watcherType, boolean local, VoidCallback cb, Object ctx) {
+<span class="nc" id="L2860">        validateWatcher(watcher);</span>
+<span class="nc" id="L2861">        removeWatches(ZooDefs.OpCode.checkWatches, path, watcher,</span>
+                watcherType, local, cb, ctx);
+<span class="nc" id="L2863">    }</span>
+
+    /**
+     * For the given znode path, removes all the registered watchers of given
+     * watcherType.
+     *
+     * &lt;p&gt;
+     * A successful call guarantees that, the removed watchers won't be
+     * triggered.
+     * &lt;/p&gt;
+     *
+     * @param path
+     *            - the path of the node
+     * @param watcherType
+     *            - the type of watcher to be removed
+     * @param local
+     *            - whether watches can be removed locally when there is no
+     *            server connection
+     * @throws InterruptedException
+     *             if the server transaction is interrupted.
+     * @throws KeeperException.NoWatcherException
+     *             if no watcher exists that match the specified parameters
+     * @throws KeeperException
+     *             if the server signals an error with a non-zero error code.
+     * @throws IllegalArgumentException
+     *             if an invalid {@code path} is specified
+     *
+     * @since 3.5.0
+     */
+    public void removeAllWatches(String path, WatcherType watcherType,
+            boolean local) throws InterruptedException, KeeperException {
+
+<span class="nc" id="L2895">        removeWatches(ZooDefs.OpCode.removeWatches, path, null, watcherType,</span>
+                local);
+<span class="nc" id="L2897">    }</span>
+
+    /**
+     * The asynchronous version of removeAllWatches.
+     *
+     * @see #removeAllWatches
+     */
+    public void removeAllWatches(String path, WatcherType watcherType,
+            boolean local, VoidCallback cb, Object ctx) {
+
+<span class="nc" id="L2907">        removeWatches(ZooDefs.OpCode.removeWatches, path, null,</span>
+                watcherType, local, cb, ctx);
+<span class="nc" id="L2909">    }</span>
+
+    private void validateWatcher(Watcher watcher) {
+<span class="fc bfc" id="L2912" title="All 2 branches covered.">        if (watcher == null) {</span>
+<span class="fc" id="L2913">            throw new IllegalArgumentException(</span>
+                    &quot;Invalid Watcher, shouldn't be null!&quot;);
+        }
+<span class="fc" id="L2916">    }</span>
+
+    private void removeWatches(int opCode, String path, Watcher watcher,
+            WatcherType watcherType, boolean local)
+            throws InterruptedException, KeeperException {
+<span class="fc" id="L2921">        PathUtils.validatePath(path);</span>
+<span class="fc" id="L2922">        final String clientPath = path;</span>
+<span class="fc" id="L2923">        final String serverPath = prependChroot(clientPath);</span>
+<span class="fc" id="L2924">        WatchDeregistration wcb = new WatchDeregistration(clientPath, watcher,</span>
+                watcherType, local, watchManager);
+
+<span class="fc" id="L2927">        RequestHeader h = new RequestHeader();</span>
+<span class="fc" id="L2928">        h.setType(opCode);</span>
+<span class="fc" id="L2929">        Record request = getRemoveWatchesRequest(opCode, watcherType,</span>
+                serverPath);
+
+<span class="fc" id="L2932">        ReplyHeader r = cnxn.submitRequest(h, request, null, null, wcb);</span>
+<span class="pc bpc" id="L2933" title="1 of 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="fc" id="L2934">            throw KeeperException.create(KeeperException.Code.get(r.getErr()),</span>
+                    clientPath);
+        }
+<span class="nc" id="L2937">    }</span>
+
+    private void removeWatches(int opCode, String path, Watcher watcher,
+            WatcherType watcherType, boolean local, VoidCallback cb, Object ctx) {
+<span class="nc" id="L2941">        PathUtils.validatePath(path);</span>
+<span class="nc" id="L2942">        final String clientPath = path;</span>
+<span class="nc" id="L2943">        final String serverPath = prependChroot(clientPath);</span>
+<span class="nc" id="L2944">        WatchDeregistration wcb = new WatchDeregistration(clientPath, watcher,</span>
+                watcherType, local, watchManager);
+
+<span class="nc" id="L2947">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L2948">        h.setType(opCode);</span>
+<span class="nc" id="L2949">        Record request = getRemoveWatchesRequest(opCode, watcherType,</span>
+                serverPath);
+
+<span class="nc" id="L2952">        cnxn.queuePacket(h, new ReplyHeader(), request, null, cb, clientPath,</span>
+                serverPath, ctx, null, wcb);
+<span class="nc" id="L2954">    }</span>
+
+    private Record getRemoveWatchesRequest(int opCode, WatcherType watcherType,
+            final String serverPath) {
+<span class="fc" id="L2958">        Record request = null;</span>
+<span class="pc bpc" id="L2959" title="2 of 3 branches missed.">        switch (opCode) {</span>
+        case ZooDefs.OpCode.checkWatches:
+<span class="fc" id="L2961">            CheckWatchesRequest chkReq = new CheckWatchesRequest();</span>
+<span class="fc" id="L2962">            chkReq.setPath(serverPath);</span>
+<span class="fc" id="L2963">            chkReq.setType(watcherType.getIntValue());</span>
+<span class="fc" id="L2964">            request = chkReq;</span>
+<span class="fc" id="L2965">            break;</span>
+        case ZooDefs.OpCode.removeWatches:
+<span class="nc" id="L2967">            RemoveWatchesRequest rmReq = new RemoveWatchesRequest();</span>
+<span class="nc" id="L2968">            rmReq.setPath(serverPath);</span>
+<span class="nc" id="L2969">            rmReq.setType(watcherType.getIntValue());</span>
+<span class="nc" id="L2970">            request = rmReq;</span>
+<span class="nc" id="L2971">            break;</span>
+        default:
+<span class="nc" id="L2973">            LOG.warn(&quot;unknown type &quot; + opCode);</span>
+            break;
+        }
+<span class="fc" id="L2976">        return request;</span>
+    }
+
+    public States getState() {
+<span class="nc" id="L2980">        return cnxn.getState();</span>
+    }
+
+    /**
+     * String representation of this ZooKeeper client. Suitable for things
+     * like logging.
+     * 
+     * Do NOT count on the format of this string, it may change without
+     * warning.
+     * 
+     * @since 3.3.0
+     */
+    @Override
+    public String toString() {
+<span class="nc" id="L2994">        States state = getState();</span>
+<span class="nc" id="L2995">        return (&quot;State:&quot; + state.toString()</span>
+<span class="nc bnc" id="L2996" title="All 2 branches missed.">                + (state.isConnected() ?</span>
+<span class="nc" id="L2997">                        &quot; Timeout:&quot; + getSessionTimeout() + &quot; &quot; :</span>
+<span class="nc" id="L2998">                        &quot; &quot;)</span>
+                + cnxn);
+    }
+
+    /*
+     * Methods to aid in testing follow.
+     * 
+     * THESE METHODS ARE EXPECTED TO BE USED FOR TESTING ONLY!!!
+     */
+
+    /**
+     * Wait up to wait milliseconds for the underlying threads to shutdown.
+     * THIS METHOD IS EXPECTED TO BE USED FOR TESTING ONLY!!!
+     * 
+     * @since 3.3.0
+     * 
+     * @param wait max wait in milliseconds
+     * @return true iff all threads are shutdown, otw false
+     */
+    protected boolean testableWaitForShutdown(int wait)
+        throws InterruptedException
+    {
+<span class="nc" id="L3020">        cnxn.sendThread.join(wait);</span>
+<span class="nc bnc" id="L3021" title="All 2 branches missed.">        if (cnxn.sendThread.isAlive()) return false;</span>
+<span class="nc" id="L3022">        cnxn.eventThread.join(wait);</span>
+<span class="nc bnc" id="L3023" title="All 2 branches missed.">        if (cnxn.eventThread.isAlive()) return false;</span>
+<span class="nc" id="L3024">        return true;</span>
+    }
+
+    /**
+     * Returns the address to which the socket is connected. Useful for testing
+     * against an ensemble - test client may need to know which server
+     * to shutdown if interested in verifying that the code handles
+     * disconnection/reconnection correctly.
+     * THIS METHOD IS EXPECTED TO BE USED FOR TESTING ONLY!!!
+     *
+     * @since 3.3.0
+     * 
+     * @return ip address of the remote side of the connection or null if
+     *         not connected
+     */
+    protected SocketAddress testableRemoteSocketAddress() {
+<span class="nc" id="L3040">        return cnxn.sendThread.getClientCnxnSocket().getRemoteSocketAddress();</span>
+    }
+
+    /** 
+     * Returns the local address to which the socket is bound.
+     * THIS METHOD IS EXPECTED TO BE USED FOR TESTING ONLY!!!
+     *
+     * @since 3.3.0
+     * 
+     * @return ip address of the remote side of the connection or null if
+     *         not connected
+     */
+    protected SocketAddress testableLocalSocketAddress() {
+<span class="nc" id="L3053">        return cnxn.sendThread.getClientCnxnSocket().getLocalSocketAddress();</span>
+    }
+
+    private ClientCnxnSocket getClientCnxnSocket() throws IOException {
+<span class="fc" id="L3057">        String clientCnxnSocketName = getClientConfig().getProperty(</span>
+                ZKClientConfig.ZOOKEEPER_CLIENT_CNXN_SOCKET);
+<span class="pc bpc" id="L3059" title="1 of 2 branches missed.">        if (clientCnxnSocketName == null) {</span>
+<span class="fc" id="L3060">            clientCnxnSocketName = ClientCnxnSocketNIO.class.getName();</span>
+        }
+        try {
+<span class="fc" id="L3063">            Constructor&lt;?&gt; clientCxnConstructor = Class.forName(clientCnxnSocketName).getDeclaredConstructor(ZKClientConfig.class);</span>
+<span class="fc" id="L3064">            ClientCnxnSocket clientCxnSocket = (ClientCnxnSocket) clientCxnConstructor.newInstance(getClientConfig());</span>
+<span class="fc" id="L3065">            return clientCxnSocket;</span>
+<span class="nc" id="L3066">        } catch (Exception e) {</span>
+<span class="nc" id="L3067">            IOException ioe = new IOException(&quot;Couldn't instantiate &quot;</span>
+                    + clientCnxnSocketName);
+<span class="nc" id="L3069">            ioe.initCause(e);</span>
+<span class="nc" id="L3070">            throw ioe;</span>
+        }
+    }
+
+    protected byte[] internalReconfig(String joiningServers, String leavingServers, String newMembers, long fromConfig, Stat stat) throws KeeperException, InterruptedException {
+<span class="nc" id="L3075">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L3076">        h.setType(ZooDefs.OpCode.reconfig);</span>
+<span class="nc" id="L3077">        ReconfigRequest request = new ReconfigRequest(joiningServers, leavingServers, newMembers, fromConfig);</span>
+<span class="nc" id="L3078">        GetDataResponse response = new GetDataResponse();</span>
+<span class="nc" id="L3079">        ReplyHeader r = cnxn.submitRequest(h, request, response, null);</span>
+<span class="nc bnc" id="L3080" title="All 2 branches missed.">        if (r.getErr() != 0) {</span>
+<span class="nc" id="L3081">            throw KeeperException.create(KeeperException.Code.get(r.getErr()), &quot;&quot;);</span>
+        }
+<span class="nc bnc" id="L3083" title="All 2 branches missed.">        if (stat != null) {</span>
+<span class="nc" id="L3084">            DataTree.copyStat(response.getStat(), stat);</span>
+        }
+<span class="nc" id="L3086">        return response.getData();</span>
+    }
+
+    protected byte[] internalReconfig(List&lt;String&gt; joiningServers, List&lt;String&gt; leavingServers, List&lt;String&gt; newMembers, long fromConfig, Stat stat) throws KeeperException, InterruptedException {
+<span class="nc" id="L3090">        return internalReconfig(StringUtils.joinStrings(joiningServers, &quot;,&quot;),</span>
+<span class="nc" id="L3091">                StringUtils.joinStrings(leavingServers, &quot;,&quot;),</span>
+<span class="nc" id="L3092">                StringUtils.joinStrings(newMembers, &quot;,&quot;),</span>
+                fromConfig, stat);
+    }
+
+    protected void internalReconfig(String joiningServers, String leavingServers,
+                         String newMembers, long fromConfig, DataCallback cb, Object ctx) {
+<span class="nc" id="L3098">        RequestHeader h = new RequestHeader();</span>
+<span class="nc" id="L3099">        h.setType(ZooDefs.OpCode.reconfig);</span>
+<span class="nc" id="L3100">        ReconfigRequest request = new ReconfigRequest(joiningServers, leavingServers, newMembers, fromConfig);</span>
+<span class="nc" id="L3101">        GetDataResponse response = new GetDataResponse();</span>
+<span class="nc" id="L3102">        cnxn.queuePacket(h, new ReplyHeader(), request, response, cb,</span>
+                ZooDefs.CONFIG_NODE, ZooDefs.CONFIG_NODE, ctx, null);
+<span class="nc" id="L3104">    }</span>
+
+    protected void internalReconfig(List&lt;String&gt; joiningServers,
+                         List&lt;String&gt; leavingServers, List&lt;String&gt; newMembers, long fromConfig,
+                         DataCallback cb, Object ctx) {
+<span class="nc" id="L3109">        internalReconfig(StringUtils.joinStrings(joiningServers, &quot;,&quot;),</span>
+<span class="nc" id="L3110">                StringUtils.joinStrings(leavingServers, &quot;,&quot;),</span>
+<span class="nc" id="L3111">                StringUtils.joinStrings(newMembers, &quot;,&quot;),</span>
+                fromConfig, cb, ctx);
+<span class="nc" id="L3113">    }</span>
+}
+</pre><div class="footer"><span class="right">Created with <a href="http://www.jacoco.org/jacoco">JaCoCo</a> 0.8.2.201808211720</span></div></body></html>
