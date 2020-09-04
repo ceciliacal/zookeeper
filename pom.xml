@@ -279,6 +279,28 @@
         <maven.compiler.release>8</maven.compiler.release>
       </properties>
     </profile>
+	 <profile>
+      <id>coverage</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.jacoco</groupId>
+            <artifactId>jacoco-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>prepare-agent</id>
+                <goals>
+                  <goal>prepare-agent</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
   </profiles>
 
   <properties>
@@ -308,6 +330,9 @@
     <commons-collections.version>3.2.2</commons-collections.version>
     <spotbugsannotations.version>3.1.9</spotbugsannotations.version>
     <checkstyle.version>8.17</checkstyle.version>
+	<aggregate.report.dir>tests/target/site/jacoco-aggregate/jacoco.xml</aggregate.report.dir>
+	<jacoco-maven-plugin.version>0.8.0</jacoco-maven-plugin.version>
+	 <maven-surefire-plugin.version>3.0.0-M4</maven-surefire-plugin.version>
   </properties>
 
   <dependencyManagement>
@@ -469,6 +494,16 @@
   <build>
     <pluginManagement>
       <plugins>
+		 <plugin>
+          <groupId>org.sonarsource.scanner.maven</groupId>
+          <artifactId>sonar-maven-plugin</artifactId>
+          <version>3.6.0.1398</version>
+        </plugin>
+        <plugin>
+          <groupId>org.jacoco</groupId>
+          <artifactId>jacoco-maven-plugin</artifactId>
+          <version>0.8.4</version>
+        </plugin>		
         <plugin>
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>properties-maven-plugin</artifactId>
@@ -611,6 +646,17 @@
     </pluginManagement>
 
     <plugins>
+	<plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.0.0-M4</version>
+        <configuration>
+          <forkCount>${forkCount.variable}</forkCount>
+          <reuseForks>false</reuseForks>
+          <forkedProcessTimeoutInSeconds>1800</forkedProcessTimeoutInSeconds>
+          <rerunFailingTestsCount>0</rerunFailingTestsCount>
+        </configuration>
+      </plugin>
       <plugin>
         <groupId>pl.project13.maven</groupId>
         <artifactId>git-commit-id-plugin</artifactId>
@@ -814,7 +860,21 @@
         </configuration>
       </plugin>
     </plugins>
+	
+	<!--
+	<reporting>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-report-plugin</artifactId>
+        <version>3.0.0-M5</version>
+      </plugin>
+    </plugins>
+  </reporting>
+  -->
 
+  
+  
     <resources>
       <resource>
         <directory>${project.basedir}src/main/java/resources</directory>
