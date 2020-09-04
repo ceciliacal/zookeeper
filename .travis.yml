@@ -1,8 +1,8 @@
 language: java
 sudo: false
 jdk:
-  - openjdk8
-  #- openjdk11
+  #- openjdk8
+  - openjdk11
 
 cache:
   directories:
@@ -13,12 +13,14 @@ addons:
     packages:
     - libcppunit-dev
     
- addons:
   sonarcloud:
-    organization: ceciliacal
-    token: 331a1df367982550e16360321497cab14c6a817e   
+    organization: "ceciliacal"
+    token: "331a1df367982550e16360321497cab14c6a817e"  
+    
 
-script: mvn clean install -q -Ppit sonar:sonar -Dsonar.projectKey=ceciliacal_zookeeper -DskipTests spotbugs:check checkstyle:check -Pfull-build
+install: mvn clean install -q --DskipTests=true
+
+script: mvn clean verify  sonar:sonar -Dsonar.projectKey=ceciliacal_zookeeper spotbugs:check checkstyle:check -Pfull-build
 
 branches:
   only:

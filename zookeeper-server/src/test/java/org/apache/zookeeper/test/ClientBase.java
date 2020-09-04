@@ -379,11 +379,15 @@ public abstract class ClientBase extends ZKTestCase {
 
     static File createTmpDir(File parentDir, boolean createInitFile) throws IOException {
         File tmpFile = File.createTempFile("test", ".junit", parentDir);
+        System.out.println("----- file: "+tmpFile.getAbsolutePath());
+
         // don't delete tmpFile - this ensures we don't attempt to create
         // a tmpDir with a duplicate name
         File tmpDir = new File(tmpFile + ".dir");
+        System.out.println("----- dir: "+tmpDir.getAbsolutePath());
         Assert.assertFalse(tmpDir.exists()); // never true if tmpfile does it's job
         Assert.assertTrue(tmpDir.mkdirs());
+
 
         // todo not every tmp directory needs this file
         if (createInitFile) {
