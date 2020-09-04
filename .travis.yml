@@ -1,14 +1,27 @@
 language: java
+sudo: false
 jdk:
-- openjdk8
+  - openjdk8
+  #- openjdk11
+
+cache:
+  directories:
+  - "$HOME/.m2"
 
 addons:
+  apt:
+    packages:
+    - libcppunit-dev
+    
+ addons:
   sonarcloud:
     organization: ceciliacal
-    token: 9dec0af2e72859868064557aad6dfe58c169a577
+    token: 331a1df367982550e16360321497cab14c6a817e   
 
-install: 
-  - mvn clean install -q -DskipTests=true 
+script: mvn clean install -q -Ppit sonar:sonar -Dsonar.projectKey=ceciliacal_zookeeper -DskipTests spotbugs:check checkstyle:check -Pfull-build
 
-script:
-  - mvn clean verify org.jacoco:jacoco-maven-plugin:prepare-agent install sonar:sonar -Dsonar.projectKey=ceciliacal_zookeeper 
+branches:
+  only:
+  - master
+  - branch-3.5
+  - branch-3.4

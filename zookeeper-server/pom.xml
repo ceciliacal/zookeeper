@@ -148,7 +148,7 @@
   
    <properties>
     <sonar.coverage.jacoco.xmlReportPaths>${basedir}/../${aggregate.report.dir}</sonar.coverage.jacoco.xmlReportPaths>
-	<surefire.version>3.0.0-M4</surefire.version>
+	<surefire.version>2.21.0</surefire.version>
   </properties>
 
   <build>
